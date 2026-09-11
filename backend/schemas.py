@@ -73,6 +73,7 @@ class Message(BaseModel):
     content: str
     action: Optional[TutorAction] = None
     diagnosis: Optional[dict] = None   # 本轮诊断结果摘要
+    clarify: Optional[dict] = None     # 澄清信息（candidates/question，仅澄清阶段消息携带）
 
 
 class Session(BaseModel):
@@ -83,6 +84,8 @@ class Session(BaseModel):
     cognitive: Optional[CognitiveModel] = None
     knowledge: Optional[KnowledgeModel] = None
     status: Literal["active", "completed"] = "active"
+    # 生命周期阶段：clarifying（澄清目标中，知识模型未建）→ active（学习中）→ completed（已完成）
+    stage: Literal["clarifying", "active", "completed"] = "active"
 
 
 # ---------------------------------------------------------------------------

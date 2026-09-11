@@ -35,17 +35,27 @@ def init_db() -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'active',
+            stage TEXT NOT NULL DEFAULT 'active',
             messages_json TEXT NOT NULL DEFAULT '[]',
             cognitive_json TEXT,
             knowledge_json TEXT
         )
         """
     )
+    # 迁移：老库补 stage 列（clarifying/active/completed 生命周期）
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+    if "stage" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN stage TEXT NOT NULL DEFAULT 'active'")
     conn.commit()
     conn.close()
 
 
-def create_session(goal: str, knowledge: dict, cognitive: dict) -> dict:
+def create_session(
+    goal: str,
+    knowledge: Optional[dict] = None,
+    cognitive: Optional[dict] = None,
+    stage: str = "active",
+) -> dict:
     sid = uuid.uuid4().hex
     now = _now()
     row = {
@@ -54,23 +64,25 @@ def create_session(goal: str, knowledge: dict, cognitive: dict) -> dict:
         "created_at": now,
         "updated_at": now,
         "status": "active",
+        "stage": stage,
         "messages": [],
         "cognitive": cognitive,
         "knowledge": knowledge,
     }
     conn = _connect()
     conn.execute(
-        "INSERT INTO sessions (id, goal, created_at, updated_at, status, messages_json, cognitive_json, knowledge_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, goal, created_at, updated_at, status, stage, messages_json, cognitive_json, knowledge_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             sid,
             goal,
             now,
             now,
             "active",
+            stage,
             "[]",
-            json.dumps(cognitive, ensure_ascii=False),
-            json.dumps(knowledge, ensure_ascii=False),
+            json.dumps(cognitive, ensure_ascii=False) if cognitive is not None else None,
+            json.dumps(knowledge, ensure_ascii=False) if knowledge is not None else None,
         ),
     )
     conn.commit()
@@ -91,6 +103,7 @@ def get_session(sid: str) -> Optional[dict]:
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
         "status": r["status"],
+        "stage": r["stage"],
         "messages": json.loads(r["messages_json"]),
         "cognitive": json.loads(r["cognitive_json"]) if r["cognitive_json"] else None,
         "knowledge": json.loads(r["knowledge_json"]) if r["knowledge_json"] else None,
@@ -145,6 +158,36 @@ def update_session(sid: str, cognitive: dict, knowledge: dict, status: str = "ac
             json.dumps(cognitive, ensure_ascii=False),
             json.dumps(knowledge, ensure_ascii=False),
             status,
+            _now(),
+            sid,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_goal(
+    sid: str,
+    goal: str,
+    knowledge: Optional[dict],
+    cognitive: Optional[dict],
+    stage: str = "active",
+) -> None:
+    """更新会话的目标与知识/认知模型，并切换生命周期阶段。
+
+    用于「确认目标」与「中途改目标」两个场景：
+    - 澄清阶段（stage=clarifying）：knowledge/cognitive 传 None，仅更新 goal 与阶段
+    - 重建阶段（stage=active）：传入新构建的 knowledge/cognitive
+    """
+    conn = _connect()
+    conn.execute(
+        "UPDATE sessions SET goal = ?, knowledge_json = ?, cognitive_json = ?, stage = ?, status = ?, updated_at = ? WHERE id = ?",
+        (
+            goal,
+            json.dumps(knowledge, ensure_ascii=False) if knowledge is not None else None,
+            json.dumps(cognitive, ensure_ascii=False) if cognitive is not None else None,
+            stage,
+            "completed" if stage == "completed" else "active",
             _now(),
             sid,
         ),

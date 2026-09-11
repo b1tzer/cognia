@@ -34,6 +34,11 @@ export interface CognitiveModel {
   updated_at: string
 }
 
+export interface ClarifyInfo {
+  candidates: string[]
+  question: string
+}
+
 export interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -41,6 +46,7 @@ export interface Message {
   diagnosis?: DiagnosticResult | null
   decision?: ActionDecision | null
   trace?: LLMTrace[] | null
+  clarify?: ClarifyInfo | null
 }
 
 // 一次 LLM 调用的思考轨迹（用于「思考过程」折叠面板展示）
@@ -50,6 +56,7 @@ export interface LLMTrace {
   system: string          // 发给 LLM 的 system prompt
   user: string            // 发给 LLM 的 user prompt
   output: string          // LLM 原始输出
+  note?: string           // 异常/降级标注（如 reasoning 截断回退）
   usage?: {
     prompt_tokens: number
     completion_tokens: number
@@ -78,6 +85,8 @@ export interface ActionDecision {
   reasons: ActionReason
 }
 
+export type SessionStage = 'clarifying' | 'active' | 'completed'
+
 export interface Session {
   id: string
   goal: string
@@ -87,6 +96,7 @@ export interface Session {
   cognitive: CognitiveModel | null
   knowledge: KnowledgeModel | null
   status: 'active' | 'completed'
+  stage: SessionStage
   focus_concept?: Concept | null
 }
 
@@ -94,10 +104,12 @@ export interface ChatResponse {
   session_id: string
   action: TutorAction
   reply: string
-  diagnosis: DiagnosticResult
-  decision: ActionDecision
-  cognitive: CognitiveModel
+  diagnosis: DiagnosticResult | null
+  decision: ActionDecision | null
+  cognitive: CognitiveModel | null
   status: 'active' | 'completed'
+  stage?: SessionStage
   focus_concept: Concept | null
   trace?: LLMTrace[]
+  clarify?: ClarifyInfo | null
 }

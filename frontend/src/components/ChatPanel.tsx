@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
-import type { Message, Session, CognitiveState, TutorAction, LLMTrace } from '../types'
+import type { Message, Session, CognitiveState, TutorAction, LLMTrace, ClarifyInfo } from '../types'
 
 interface Props {
   session: Session
   onSend: (content: string) => void
+  onConfirmGoal: (goal: string) => void
+  onUpdateGoal: (goal: string) => void
   onDeleteMessage: (index: number) => void
   onUpdateMessage: (index: number, content: string) => void
   busy: boolean
@@ -36,11 +38,17 @@ const QUICK_ACTIONS = [
   { label: '回到上一个概念', text: '回到上一个概念' },
 ]
 
-export default function ChatPanel({ session, onSend, onDeleteMessage, onUpdateMessage, busy, error }: Props) {
+export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal, onDeleteMessage, onUpdateMessage, busy, error }: Props) {
   const [input, setInput] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editText, setEditText] = useState('')
+  const [editingGoal, setEditingGoal] = useState(false)
+  const [goalText, setGoalText] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // 澄清信息：取最后一条携带 clarify 的 assistant 消息
+  const clarifyInfo: ClarifyInfo | null =
+    [...session.messages].reverse().find((m) => m.role === 'assistant' && m.clarify)?.clarify ?? null
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -52,6 +60,20 @@ export default function ChatPanel({ session, onSend, onDeleteMessage, onUpdateMe
     onSend(t)
     setInput('')
   }
+
+  const startEditGoal = () => {
+    setGoalText(session.goal)
+    setEditingGoal(true)
+  }
+
+  const saveGoal = () => {
+    const t = goalText.trim()
+    if (!t || busy) return
+    onUpdateGoal(t)
+    setEditingGoal(false)
+  }
+
+  const cancelGoal = () => setEditingGoal(false)
 
   const startEdit = (index: number, content: string) => {
     setEditingIndex(index)
@@ -70,7 +92,27 @@ export default function ChatPanel({ session, onSend, onDeleteMessage, onUpdateMe
   return (
     <div className="chat-panel">
       <div className="chat-header">
-        <div className="chat-header-goal">{session.goal}</div>
+        <div className="chat-header-goal">
+          {editingGoal ? (
+            <div className="goal-edit">
+              <input
+                className="goal-edit-input"
+                value={goalText}
+                onChange={(e) => setGoalText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && saveGoal()}
+                autoFocus
+                disabled={busy}
+              />
+              <button className="btn btn-primary btn-sm" onClick={saveGoal} disabled={busy || !goalText.trim()}>确定</button>
+              <button className="btn btn-ghost btn-sm" onClick={cancelGoal}>取消</button>
+            </div>
+          ) : (
+            <>
+              <span className="chat-header-goal-text">{session.goal}</span>
+              <button className="goal-edit-btn" title="修改目标" onClick={startEditGoal} disabled={busy}>✎</button>
+            </>
+          )}
+        </div>
         {session.status === 'completed' && <span className="badge badge-done">已完成</span>}
       </div>
 
@@ -101,46 +143,52 @@ export default function ChatPanel({ session, onSend, onDeleteMessage, onUpdateMe
 
       {error && <div className="error-tip inline">{error}</div>}
 
-      <div className="quick-actions">
-        {QUICK_ACTIONS.map((a) => (
-          <button
-            key={a.label}
-            className="quick-chip"
-            onClick={() => onSend(a.text)}
-            disabled={busy || session.status === 'completed'}
-          >
-            {a.label}
-          </button>
-        ))}
-      </div>
+      {session.stage === 'clarifying' ? (
+        <ClarifyBar clarify={clarifyInfo} busy={busy} onConfirm={onConfirmGoal} />
+      ) : (
+        <>
+          <div className="quick-actions">
+            {QUICK_ACTIONS.map((a) => (
+              <button
+                key={a.label}
+                className="quick-chip"
+                onClick={() => onSend(a.text)}
+                disabled={busy || session.status === 'completed'}
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
 
-      <div className="chat-input-bar">
-        <textarea
-          className="chat-input"
-          placeholder={
-            session.status === 'completed'
-              ? '本目标已完成，点击右上角「新目标」继续'
-              : '用自己的话表达你的理解…（Enter 发送，Shift+Enter 换行）'
-          }
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-          rows={2}
-          disabled={busy || session.status === 'completed'}
-        />
-        <button
-          className="btn btn-primary send-btn"
-          onClick={submit}
-          disabled={busy || !input.trim() || session.status === 'completed'}
-        >
-          发送
-        </button>
-      </div>
+          <div className="chat-input-bar">
+            <textarea
+              className="chat-input"
+              placeholder={
+                session.status === 'completed'
+                  ? '本目标已完成，点击右上角「新目标」继续'
+                  : '用自己的话表达你的理解…（Enter 发送，Shift+Enter 换行）'
+              }
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  submit()
+                }
+              }}
+              rows={2}
+              disabled={busy || session.status === 'completed'}
+            />
+            <button
+              className="btn btn-primary send-btn"
+              onClick={submit}
+              disabled={busy || !input.trim() || session.status === 'completed'}
+            >
+              发送
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -164,6 +212,9 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
     <div className={`bubble-row ${isUser ? 'user' : 'assistant'}`}>
       <div className="bubble-avatar">{isUser ? '我' : '◆'}</div>
       <div className="bubble-main">
+        {!isUser && msg.trace && msg.trace.length > 0 && (
+          <TracePanel trace={msg.trace} thinking={!isUser && !msg.content} />
+        )}
         {!isUser && msg.action && (
           <span className="action-tag">{ACTION_LABEL[msg.action]}</span>
         )}
@@ -207,9 +258,6 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
           !msg.decision.reasons.pedagogical_intent.includes('回退') && (
             <div className="decision-tag">🎯 {msg.decision.reasons.pedagogical_intent}</div>
           )}
-        {!isUser && msg.trace && msg.trace.length > 0 && (
-          <TracePanel trace={msg.trace} />
-        )}
       </div>
       {!editing && (
         <div className="bubble-tools">
@@ -233,8 +281,11 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
 // 「思考过程」折叠面板：展示每层 LLM 调用的 prompt 与原始输出
 // 参考 Cursor/Claude 的「可折叠过程记录」模式：默认收起，点开逐层查看
 // ---------------------------------------------------------------------------
-function TracePanel({ trace }: { trace: LLMTrace[] }) {
-  const [open, setOpen] = useState(false)
+function TracePanel({ trace, thinking }: { trace: LLMTrace[]; thinking?: boolean }) {
+  const [open, setOpen] = useState(!!thinking)
+  useEffect(() => {
+    if (thinking) setOpen(true)
+  }, [thinking])
   return (
     <div className="trace-panel">
       <button className="trace-toggle" onClick={() => setOpen(!open)}>
@@ -263,6 +314,7 @@ function TraceStep({ trace, index }: { trace: LLMTrace; index: number }) {
         <span className="trace-step-model">{trace.model}</span>
       </summary>
       <div className="trace-body">
+        {trace.note && <div className="trace-note">⚠️ {trace.note}</div>}
         <div className="trace-section">
           <div className="trace-section-title">System Prompt</div>
           <pre className="trace-pre">{trace.system}</pre>
@@ -282,5 +334,45 @@ function TraceStep({ trace, index }: { trace: LLMTrace; index: number }) {
         )}
       </div>
     </details>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 目标澄清面板：展示候选理解（可点选）与自定义输入，让用户确认学习目标
+// ---------------------------------------------------------------------------
+function ClarifyBar({ clarify, busy, onConfirm }: { clarify: ClarifyInfo | null; busy: boolean; onConfirm: (goal: string) => void }) {
+  const [text, setText] = useState('')
+  const candidates = clarify?.candidates ?? []
+
+  const confirm = (g: string) => {
+    if (!g || busy) return
+    onConfirm(g)
+  }
+
+  return (
+    <div className="clarify-bar">
+      {candidates.length > 0 && (
+        <div className="clarify-candidates">
+          {candidates.map((c) => (
+            <button key={c} className="clarify-chip" disabled={busy} onClick={() => confirm(c)}>
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="clarify-input-row">
+        <input
+          className="clarify-input"
+          placeholder="都不是？直接输入你真正想学的目标…"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && confirm(text.trim())}
+          disabled={busy}
+        />
+        <button className="btn btn-primary" disabled={busy || !text.trim()} onClick={() => confirm(text.trim())}>
+          确认
+        </button>
+      </div>
+    </div>
   )
 }

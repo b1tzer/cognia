@@ -97,7 +97,7 @@ def _diagnose_with_llm(
         _DIAG_SYSTEM + _rules_suffix(),
         f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}{focus_line}",
         temperature=0.2,
-        max_tokens=800,
+        max_tokens=1500,
         trace=trace,
         trace_label="认知诊断",
     )

@@ -76,6 +76,19 @@ export default function App() {
     )
     try {
       await api.sendChatStream(session.id, content, {
+        onTrace: (step, index) => {
+          setSession((prev) => {
+            if (!prev) return prev
+            const msgs = [...prev.messages]
+            const last = msgs[msgs.length - 1]
+            if (last && last.role === 'assistant') {
+              const trace = [...(last.trace || [])]
+              trace[index] = step
+              msgs[msgs.length - 1] = { ...last, trace }
+            }
+            return { ...prev, messages: msgs }
+          })
+        },
         onToken: (token) => {
           setSession((prev) => {
             if (!prev) return prev
@@ -88,6 +101,15 @@ export default function App() {
           })
         },
         onDone: (r: ChatResponse) => {
+          // 改目标/澄清这类结构性变更：直接重载会话，拿到完整的新 messages/knowledge/cognitive
+          if (r.stage) {
+            api.getSession(session.id).then((s) => {
+              setSession(s)
+              setFocusId(s.focus_concept?.id ?? null)
+            }).catch(() => {})
+            refreshSessions()
+            return
+          }
           setFocusId(r.focus_concept?.id ?? null)
           setSession((prev) => {
             if (!prev) return prev
@@ -118,6 +140,38 @@ export default function App() {
       })
     } catch (e: any) {
       setError(e.message || '发送失败')
+    } finally {
+      setBusy(false)
+    }
+  }, [session, refreshSessions])
+
+  const handleConfirmGoal = useCallback(async (goal: string) => {
+    if (!session) return
+    setBusy(true)
+    setError(null)
+    try {
+      const s = await api.confirmGoal(session.id, goal)
+      setSession(s)
+      setFocusId(s.focus_concept?.id ?? null)
+      refreshSessions()
+    } catch (e: any) {
+      setError(e.message || '确认目标失败')
+    } finally {
+      setBusy(false)
+    }
+  }, [session, refreshSessions])
+
+  const handleUpdateGoal = useCallback(async (goal: string) => {
+    if (!session) return
+    setBusy(true)
+    setError(null)
+    try {
+      const s = await api.updateGoal(session.id, goal)
+      setSession(s)
+      setFocusId(s.focus_concept?.id ?? null)
+      refreshSessions()
+    } catch (e: any) {
+      setError(e.message || '修改目标失败')
     } finally {
       setBusy(false)
     }
@@ -204,6 +258,8 @@ export default function App() {
           <ChatPanel
             session={session}
             onSend={handleSend}
+            onConfirmGoal={handleConfirmGoal}
+            onUpdateGoal={handleUpdateGoal}
             onDeleteMessage={handleDeleteMessage}
             onUpdateMessage={handleUpdateMessage}
             busy={busy}

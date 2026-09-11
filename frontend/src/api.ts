@@ -1,4 +1,4 @@
-import type { ChatResponse, Session, Message } from './types'
+import type { ChatResponse, Session, Message, LLMTrace } from './types'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -27,6 +27,20 @@ export function getSession(id: string): Promise<Session> {
   return request<Session>(`/api/sessions/${id}`)
 }
 
+export function confirmGoal(sessionId: string, goal: string): Promise<Session> {
+  return request<Session>(`/api/sessions/${sessionId}/confirm-goal`, {
+    method: 'POST',
+    body: JSON.stringify({ goal }),
+  })
+}
+
+export function updateGoal(sessionId: string, goal: string): Promise<Session> {
+  return request<Session>(`/api/sessions/${sessionId}/goal`, {
+    method: 'PUT',
+    body: JSON.stringify({ goal }),
+  })
+}
+
 export function sendChat(sessionId: string, content: string): Promise<ChatResponse> {
   return request<ChatResponse>(`/api/sessions/${sessionId}/chat`, {
     method: 'POST',
@@ -36,6 +50,7 @@ export function sendChat(sessionId: string, content: string): Promise<ChatRespon
 
 export interface StreamCallbacks {
   onToken: (content: string) => void
+  onTrace: (step: LLMTrace, index: number) => void
   onDone: (data: ChatResponse) => void
   onError: (err: Error) => void
 }
@@ -82,6 +97,8 @@ export async function sendChatStream(
           const evt = JSON.parse(payload)
           if (evt.type === 'token' && typeof evt.content === 'string') {
             cb.onToken(evt.content)
+          } else if (evt.type === 'trace' && evt.step) {
+            cb.onTrace(evt.step as LLMTrace, Number(evt.index ?? 0))
           } else if (evt.type === 'done' && evt.data) {
             cb.onDone(evt.data as ChatResponse)
           }

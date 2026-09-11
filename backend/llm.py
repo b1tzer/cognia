@@ -49,6 +49,7 @@ def _record_trace(
     user: str,
     output: str,
     usage: Any,
+    note: str = "",
 ) -> None:
     """把一次 LLM 调用记录进思考轨迹（trace）。
 
@@ -58,13 +59,14 @@ def _record_trace(
     - system / user：发给 LLM 的完整 prompt
     - output：LLM 原始输出（未解析）
     - usage：本次 token 用量
+    - note：可选备注（如「reasoning 截断降级」等异常标注）
 
     trace 为 None 时跳过（不采集），保证不影响正常流程。
     """
     if trace is None:
         return
     u = usage or {}
-    trace.append({
+    entry = {
         "label": label,
         "model": model,
         "system": system,
@@ -75,7 +77,10 @@ def _record_trace(
             "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
             "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
         },
-    })
+    }
+    if note:
+        entry["note"] = note
+    trace.append(entry)
 
 def _extract_json(text: str) -> Any:
     """从模型输出中稳健地提取 JSON 对象/数组。
@@ -151,8 +156,20 @@ def chat_json(
                     ],
                 )
                 _record_usage(resp)
-                raw = resp.choices[0].message.content or ""
-                _record_trace(trace, trace_label, model, system, user, raw, getattr(resp, "usage", None))
+                msg = resp.choices[0].message
+                raw = msg.content or ""
+                reasoning = getattr(msg, "reasoning_content", None) or ""
+                note = ""
+                # 推理模型（如 glm）的 reasoning 会消耗 completion token，
+                # 当 max_tokens 被 reasoning 吃满时 content 会为空（截断）。
+                # 此时回退到 reasoning_content，尝试从中提取 JSON，避免静默降级到规则。
+                if not raw.strip():
+                    if reasoning.strip():
+                        note = "content 为空（reasoning 截断），已从 reasoning_content 回退提取"
+                        raw = reasoning
+                    else:
+                        note = "content 与 reasoning_content 均为空，本次调用无有效输出"
+                _record_trace(trace, trace_label, model, system, user, raw, getattr(resp, "usage", None), note=note)
                 data = _extract_json(raw)
                 if isinstance(data, dict):
                     return data

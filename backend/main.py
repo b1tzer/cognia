@@ -21,6 +21,7 @@ import optimizer
 import cognitive as cog
 import decision
 import domain_model
+import goal_clarify
 import tutor
 from schemas import (
     ChatRequest,
@@ -115,6 +116,64 @@ def _complete_reply() -> str:
     )
 
 
+def _clarify_session(sid: str, goal: str, clarify: dict) -> dict:
+    """进入澄清阶段：不建知识模型，追加澄清提问消息，等待用户确认目标。"""
+    db.update_goal(sid, goal, None, None, stage="clarifying")
+    msg = {
+        "role": "assistant",
+        "content": clarify["question"],
+        "action": None,
+        "diagnosis": None,
+        "clarify": {"candidates": clarify["candidates"], "question": clarify["question"]},
+    }
+    db.append_messages(sid, [msg])
+    s = db.get_session(sid)
+    s["focus_concept"] = None
+    return s
+
+
+def _finalize_goal(sid: str, goal: str) -> dict:
+    """用确定的目标构建知识模型与认知模型，切回 active 并追加开场白。"""
+    knowledge = domain_model.build_knowledge_model(goal)
+    cognitive = _build_cognitive(goal, knowledge.concepts)
+    knowledge_dict = knowledge.model_dump()
+    focus = decision.next_focus_concept(knowledge_dict, cognitive)
+    intro = tutor.build_intro(knowledge_dict, focus)
+    db.update_goal(sid, goal, knowledge_dict, cognitive, stage="active")
+    msg = {"role": "assistant", "content": intro, "action": "probe", "diagnosis": None}
+    db.append_messages(sid, [msg])
+    s = db.get_session(sid)
+    s["focus_concept"] = focus
+    return s
+
+
+def _handle_goal_change(sid: str, raw_text: str) -> dict:
+    """处理「中途修改目标」：让 LLM 从自然语言中规范化出真实目标，走澄清/重建。
+
+    返回与 _persist 对齐的响应 payload，额外携带 stage/clarify 供前端判断是否重载。
+    """
+    clarify = goal_clarify.clarify_goal(raw_text)
+    if clarify["need_clarify"]:
+        s = _clarify_session(sid, clarify["goal"], clarify)
+    else:
+        s = _finalize_goal(sid, clarify["goal"])
+
+    last_msg = s["messages"][-1] if s["messages"] else {}
+    return {
+        "session_id": sid,
+        "action": "probe",
+        "reply": last_msg.get("content", ""),
+        "diagnosis": None,
+        "decision": None,
+        "cognitive": s.get("cognitive"),
+        "status": s.get("status"),
+        "stage": s.get("stage"),
+        "focus_concept": s.get("focus_concept"),
+        "trace": [],
+        "clarify": last_msg.get("clarify"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # 路由
 # ---------------------------------------------------------------------------
@@ -129,19 +188,42 @@ def start_session(req: StartSessionRequest):
     if not goal:
         raise HTTPException(status_code=400, detail="学习目标不能为空")
 
-    knowledge = domain_model.build_knowledge_model(goal)
-    cognitive = _build_cognitive(goal, knowledge.concepts)
-    knowledge_dict = knowledge.model_dump()
+    # 需求澄清：有歧义/同名概念时先确认，再构建知识模型
+    clarify = goal_clarify.clarify_goal(goal)
+    if clarify["need_clarify"]:
+        session = db.create_session(goal, stage="clarifying")
+        return _clarify_session(session["id"], goal, clarify)
 
-    session = db.create_session(goal, knowledge_dict, cognitive)
-    focus = decision.next_focus_concept(knowledge_dict, cognitive)
-    intro = tutor.build_intro(knowledge_dict, focus)
+    session = db.create_session(goal, stage="active")
+    return _finalize_goal(session["id"], goal)
 
-    msg = {"role": "assistant", "content": intro, "action": "probe", "diagnosis": None}
-    db.append_messages(session["id"], [msg])
-    session["messages"] = [msg]
-    session["focus_concept"] = focus
-    return session
+
+@app.post("/api/sessions/{sid}/confirm-goal")
+def confirm_goal(sid: str, req: StartSessionRequest):
+    """澄清阶段：用户确认目标（点选候选或输入自定义）后，构建知识模型正式开始。"""
+    s = db.get_session(sid)
+    if s is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    goal = req.goal.strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="学习目标不能为空")
+    return _finalize_goal(sid, goal)
+
+
+@app.put("/api/sessions/{sid}/goal")
+def update_goal(sid: str, req: StartSessionRequest):
+    """中途修改目标：重建知识模型与认知模型，目标有歧义则先转澄清。"""
+    s = db.get_session(sid)
+    if s is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    goal = req.goal.strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="学习目标不能为空")
+
+    clarify = goal_clarify.clarify_goal(goal)
+    if clarify["need_clarify"]:
+        return _clarify_session(sid, goal, clarify)
+    return _finalize_goal(sid, goal)
 
 
 @app.get("/api/sessions")
@@ -334,7 +416,18 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
 
 @app.post("/api/sessions/{sid}/chat")
 def chat(sid: str, req: ChatRequest):
-    s = _get_active_session(sid)
+    s = db.get_session(sid)
+    if s is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    # 澄清阶段或改目标意图 → 目标处理分支（重建/继续澄清）
+    if s.get("stage") == "clarifying" or goal_clarify.detect_goal_change_intent(req.content):
+        _persist_user_message(sid, req.content)
+        return _handle_goal_change(sid, req.content)
+
+    if s["status"] == "completed":
+        raise HTTPException(status_code=400, detail="该学习目标已完成")
+
     _persist_user_message(sid, req.content)  # 立即落库用户消息，防刷新丢失
     ctx = _process_turn(s, req.content)
 
@@ -349,12 +442,33 @@ def chat(sid: str, req: ChatRequest):
 
 @app.post("/api/sessions/{sid}/chat/stream")
 def chat_stream(sid: str, req: ChatRequest):
-    s = _get_active_session(sid)
+    s = db.get_session(sid)
+    if s is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    # 澄清阶段或改目标意图 → 目标处理分支（返回简单 SSE 流，done 携带 stage/clarify）
+    if s.get("stage") == "clarifying" or goal_clarify.detect_goal_change_intent(req.content):
+        _persist_user_message(sid, req.content)
+        payload = _handle_goal_change(sid, req.content)
+
+        def goal_stream():
+            yield f"data: {json.dumps({'type': 'done', 'data': payload}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(goal_stream(), media_type="text/event-stream")
+
+    if s["status"] == "completed":
+        raise HTTPException(status_code=400, detail="该学习目标已完成")
+
     _persist_user_message(sid, req.content)  # 立即落库用户消息，防刷新丢失
     ctx = _process_turn(s, req.content)
     reply, action, status, is_stream = _resolve_reply(ctx)
 
     def event_stream():
+        # 先推送「思考过程」轨迹（焦点选择/认知诊断/教学决策等各层 LLM 调用），
+        # 让用户在回答输出之前就能实时看到产品是如何一步步思考的。
+        for i, step in enumerate(ctx["trace"]):
+            yield f"data: {json.dumps({'type': 'trace', 'step': step, 'index': i}, ensure_ascii=False)}\n\n"
+
         if is_stream:
             parts: list[str] = []
             for delta in tutor.stream_tutor_reply(

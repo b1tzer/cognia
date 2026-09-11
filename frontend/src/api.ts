@@ -130,6 +130,12 @@ export function updateMessage(sessionId: string, index: number, content: string)
   })
 }
 
+export function regenerateMessage(sessionId: string, index: number): Promise<Session> {
+  return request<Session>(`/api/sessions/${sessionId}/messages/${index}/regenerate`, {
+    method: 'POST',
+  })
+}
+
 export function getHealth(): Promise<{ ok: boolean; ai_enabled: boolean; model: string | null }> {
   return request('/api/health')
 }

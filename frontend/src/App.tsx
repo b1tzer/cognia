@@ -213,6 +213,21 @@ export default function App() {
     }
   }, [session])
 
+  const handleRegenerate = useCallback(async (index: number) => {
+    if (!session) return
+    setBusy(true)
+    setError(null)
+    try {
+      const s = await api.regenerateMessage(session.id, index)
+      setSession(s)
+      setFocusId(s.focus_concept?.id ?? null)
+    } catch (e: any) {
+      setError(e.message || '重新生成失败')
+    } finally {
+      setBusy(false)
+    }
+  }, [session])
+
   if (!session) {
     return (
       <div className="app">
@@ -262,6 +277,7 @@ export default function App() {
             onUpdateGoal={handleUpdateGoal}
             onDeleteMessage={handleDeleteMessage}
             onUpdateMessage={handleUpdateMessage}
+            onRegenerate={handleRegenerate}
             busy={busy}
             error={error}
           />

@@ -11,6 +11,7 @@ interface Props {
   onUpdateGoal: (goal: string) => void
   onDeleteMessage: (index: number) => void
   onUpdateMessage: (index: number, content: string) => void
+  onRegenerate: (index: number) => void
   busy: boolean
   error: string | null
 }
@@ -38,7 +39,7 @@ const QUICK_ACTIONS = [
   { label: '回到上一个概念', text: '回到上一个概念' },
 ]
 
-export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal, onDeleteMessage, onUpdateMessage, busy, error }: Props) {
+export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal, onDeleteMessage, onUpdateMessage, onRegenerate, busy, error }: Props) {
   const [input, setInput] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editText, setEditText] = useState('')
@@ -138,6 +139,7 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
             onEditSave={saveEdit}
             onEditCancel={cancelEdit}
             onDelete={onDeleteMessage}
+            onRegenerate={onRegenerate}
           />
         ))}
         {busy && session.messages[session.messages.length - 1]?.role !== 'assistant' && (
@@ -213,9 +215,10 @@ interface BubbleProps {
   onEditSave: (index: number) => void
   onEditCancel: () => void
   onDelete: (index: number) => void
+  onRegenerate: (index: number) => void
 }
 
-function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEditSave, onEditCancel, onDelete }: BubbleProps) {
+function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEditSave, onEditCancel, onDelete, onRegenerate }: BubbleProps) {
   const isUser = msg.role === 'user'
   const diag = msg.diagnosis
   return (
@@ -271,16 +274,24 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
       </div>
       {!editing && (
         <div className="bubble-tools">
-          {isUser && (
-            <button className="bubble-tool" title="编辑" onClick={() => onEditStart(index, msg.content)}>
-              ✎
-            </button>
+          {isUser ? (
+            <>
+              <button className="bubble-tool" title="编辑" onClick={() => onEditStart(index, msg.content)}>
+                ✎
+              </button>
+              <button className="bubble-tool" title="删除" onClick={() => {
+                if (window.confirm('删除这条消息？')) onDelete(index)
+              }}>
+                ✕
+              </button>
+            </>
+          ) : (
+            diag && (
+              <button className="bubble-tool" title="重新生成" onClick={() => onRegenerate(index)}>
+                ↻
+              </button>
+            )
           )}
-          <button className="bubble-tool" title="删除" onClick={() => {
-            if (window.confirm('删除这条消息？')) onDelete(index)
-          }}>
-            ✕
-          </button>
         </div>
       )}
     </div>

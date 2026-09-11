@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 import config
 from llm import chat_json
+import prompt_rules
 from schemas import ActionDecision, ActionReason, DiagnosticResult
 
 # 认知状态四分类的中文标签（决策层自持，避免跨模块依赖）
@@ -155,7 +156,7 @@ def decide_action_llm(
         evidence_count=evidence_count,
         consecutive_failures=consecutive_failures,
         candidates=cand_text,
-    )
+    ) + prompt_rules.rules_suffix("decision_action")
     data = chat_json(system, "", temperature=0.2, max_tokens=400)
     if not data:
         return None
@@ -353,7 +354,7 @@ def select_focus_llm(
     )
     system = _FOCUS_SELECT_SYSTEM.format(
         goal=knowledge.get("goal", ""), candidates=cand_desc
-    )
+    ) + prompt_rules.rules_suffix("decision_action")
     data = chat_json(system, "", temperature=0.2, max_tokens=400)
     if not data:
         return None

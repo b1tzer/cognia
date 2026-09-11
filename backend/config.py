@@ -86,3 +86,15 @@ DB_PATH = os.getenv("COGNIA_DB", str(BASE_DIR / "cognia.db"))
 # --------------------------------------------------------------------------
 HOST = os.getenv("COGNIA_HOST", "0.0.0.0")
 PORT = int(os.getenv("COGNIA_PORT", "8000"))
+
+# --------------------------------------------------------------------------
+# 在线 Prompt 优化反馈回路（慢循环）
+# --------------------------------------------------------------------------
+# 总开关：是否启用后台在线优化
+OPTIMIZER_ENABLED = os.getenv("COGNIA_OPTIMIZER_ENABLED", "1") != "0"
+# 优化周期（秒），默认 1 小时
+OPTIMIZER_INTERVAL_SECONDS = int(os.getenv("COGNIA_OPTIMIZER_INTERVAL", "3600"))
+# 每层每轮最多采样的样本数（节约 token）
+OPTIMIZER_MAX_SAMPLES_PER_LAYER = int(os.getenv("COGNIA_OPTIMIZER_MAX_SAMPLES", "20"))
+# 每层最少样本数，低于此值跳过本轮（数据不足不做优化）
+OPTIMIZER_MIN_SAMPLES = int(os.getenv("COGNIA_OPTIMIZER_MIN_SAMPLES", "5"))

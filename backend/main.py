@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 import db
+import optimizer
 import cognitive as cog
 import decision
 import domain_model
@@ -303,6 +305,25 @@ if DIST.exists():
         return FileResponse(DIST / "index.html")
 
 
+_optimizer_task: asyncio.Task | None = None
+
+
 @app.on_event("startup")
-def startup():
+async def startup():
     db.init_db()
+    # 启动在线 Prompt 优化反馈回路（慢循环）
+    if config.OPTIMIZER_ENABLED and config.AI_ENABLED:
+        global _optimizer_task
+        _optimizer_task = asyncio.create_task(optimizer.optimize_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    global _optimizer_task
+    if _optimizer_task is not None:
+        _optimizer_task.cancel()
+        try:
+            await _optimizer_task
+        except asyncio.CancelledError:
+            pass
+        _optimizer_task = None

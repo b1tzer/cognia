@@ -134,6 +134,24 @@ def list_sessions() -> list[dict]:
     conn.close()
     return [dict(r) for r in rows]
 
+def recent_sessions(limit: int = 50) -> list[dict]:
+    """按最近更新倒序返回最多 limit 条完整会话（含 messages/knowledge/cognitive）。
+
+    供在线 Prompt 优化器提取真实对话配对使用。
+    """
+    conn = _connect()
+    cur = conn.execute(
+        "SELECT id FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
+    )
+    ids = [r["id"] for r in cur.fetchall()]
+    conn.close()
+    sessions = []
+    for sid in ids:
+        s = get_session(sid)
+        if s is not None:
+            sessions.append(s)
+    return sessions
+
 
 def delete_session(sid: str) -> bool:
     """删除整个学习目标（会话）。返回是否删除成功。"""

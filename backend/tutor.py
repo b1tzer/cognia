@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from llm import chat_text
+import prompt_rules
 from schemas import Concept, DiagnosticResult
 
 # ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ def _tutor_with_llm(
         misconceptions="；".join(concept.common_misconceptions) or "暂无记录",
         state_label=_STATE_LABEL.get(diagnosis.state, "半理解"),
         action_label=_ACTION_LABEL.get(action, "追问"),
-    )
+    ) + prompt_rules.rules_suffix("tutor")
     user = f"学习者表达：{diagnosis.evidence or ''}"
     if diagnosis.misconception:
         user += f"\n已识别的误解：{diagnosis.misconception}"

@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from llm import chat_json
+import prompt_rules
 from schemas import Concept, KnowledgeModel
 
 # ---------------------------------------------------------------------------
@@ -28,7 +29,7 @@ _BUILD_SYSTEM = """你是资深课程设计师。把学习目标拆成一张概�
 
 
 def _build_with_llm(goal: str) -> KnowledgeModel | None:
-    data = chat_json(_BUILD_SYSTEM, f"学习目标：{goal}", temperature=0.3)
+    data = chat_json(_BUILD_SYSTEM + prompt_rules.rules_suffix("domain_model"), f"学习目标：{goal}", temperature=0.3)
     if not data:
         return None
     # 逐条校验，跳过缺失 id/name 等无效节点，提升对不稳定输出的容错

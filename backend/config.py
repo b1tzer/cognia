@@ -92,9 +92,14 @@ PORT = int(os.getenv("COGNIA_PORT", "8000"))
 # --------------------------------------------------------------------------
 # 总开关：是否启用后台在线优化
 OPTIMIZER_ENABLED = os.getenv("COGNIA_OPTIMIZER_ENABLED", "1") != "0"
-# 优化周期（秒），默认 1 小时
-OPTIMIZER_INTERVAL_SECONDS = int(os.getenv("COGNIA_OPTIMIZER_INTERVAL", "3600"))
+# 检查节拍（秒）：定时器作为「检查水位」的节拍，而非直接执行优化的节拍
+OPTIMIZER_INTERVAL_SECONDS = int(os.getenv("COGNIA_OPTIMIZER_INTERVAL", "600"))
+# 数据增量触发阈值：自上次优化以来「新增对话轮次」达到该值才真正执行优化，
+# 未达到则本轮什么都不做（不调用任何 LLM，零 token 浪费）
+OPTIMIZER_MIN_NEW_TURNS = int(os.getenv("COGNIA_OPTIMIZER_MIN_NEW_TURNS", "10"))
 # 每层每轮最多采样的样本数（节约 token）
 OPTIMIZER_MAX_SAMPLES_PER_LAYER = int(os.getenv("COGNIA_OPTIMIZER_MAX_SAMPLES", "20"))
-# 每层最少样本数，低于此值跳过本轮（数据不足不做优化）
+# 单层样本下限：某层可提取的新样本数低于此值则跳过该层（二次保护）
 OPTIMIZER_MIN_SAMPLES = int(os.getenv("COGNIA_OPTIMIZER_MIN_SAMPLES", "5"))
+# 水位状态文件：记录各会话已消费到的消息位置，避免重复消费旧数据
+OPTIMIZER_STATE_PATH = os.getenv("COGNIA_OPTIMIZER_STATE", str(BASE_DIR / "optimizer_state.json"))

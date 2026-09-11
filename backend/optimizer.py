@@ -1,8 +1,10 @@
 """在线 Prompt 优化反馈回路引擎（慢循环）。
 
-北极星指标「诊断准确度随对话自我迭代」的在线执行器：
-- 后台周期任务（optimize_loop）定期触发
-- 从 SQLite 真实对话中提取各层样本（替代手动 eval/samples.json）
+北极星指标「诊断准确度随对话自我迭代」的在线执行器，**数据增量驱动**：
+- optimize_loop 作为「检查节拍」定期唤醒，但每次先判断自上次优化以来
+  「新增对话轮次」是否达到阈值（OPTIMIZER_MIN_NEW_TURNS），未达到则什么都不做
+- 达到阈值后，仅消费**新增的那批消息**（水位线 watermark 记录各会话已消费位置），
+  从 SQLite 真实对话中提取各层样本（替代手动 eval/samples.json）
 - 用 LLM-as-judge 做无标注质量评估
 - 对判错的样本提炼优化规则，注入对应层 prompt
 - 质量门：注入后复评认可率上升才保留，否则回滚（保证不退化）
@@ -13,8 +15,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import config
@@ -124,27 +129,86 @@ def _mastery_of(cognitive: dict, concept_id: str | None) -> dict:
     return {}
 
 
-def extract_samples(layer: str, limit: int) -> list[dict]:
-    """从真实对话中提取某层样本（最多 limit 条）。
+# ---------------------------------------------------------------------------
+# 水位线（watermark）状态：记录各会话已消费到的消息位置
+# ---------------------------------------------------------------------------
+def _state_path() -> Path:
+    return Path(config.OPTIMIZER_STATE_PATH)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def load_state() -> dict:
+    """加载水位状态。文件缺失/损坏时安全返回初始状态。"""
+    try:
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": 1, "last_optimized_at": "", "watermark": {}}
+    return {
+        "version": data.get("version", 1),
+        "last_optimized_at": data.get("last_optimized_at", ""),
+        "watermark": data.get("watermark", {}) or {},
+    }
+
+
+def save_state(state: dict) -> None:
+    """保存水位状态（原子写：先写临时文件再替换）。"""
+    path = _state_path()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _recent_sessions_safe(limit: int) -> list[dict]:
+    """安全读取最近会话；数据库异常时返回空列表（后台任务不崩溃）。"""
+    try:
+        return db.recent_sessions(limit)
+    except Exception:
+        logger.exception("optimizer: db.recent_sessions 失败")
+        return []
+
+
+def count_new_user_turns(sessions: list[dict], watermark: dict) -> int:
+    """统计自上次水位以来新增的用户消息（对话轮次）数。"""
+    total = 0
+    for s in sessions:
+        start = max(0, watermark.get(s["id"], 0))
+        msgs = s.get("messages", [])
+        total += sum(1 for m in msgs[start:] if m.get("role") == "user")
+    return total
+
+
+def advance_watermark(sessions: list[dict], watermark: dict) -> dict:
+    """把水位推进到每个会话当前的末尾（标记这批消息已被消费）。"""
+    new_wm = dict(watermark)
+    for s in sessions:
+        new_wm[s["id"]] = len(s.get("messages", []))
+    return new_wm
+
+
+def extract_samples(layer: str, limit: int, watermark: dict | None = None) -> list[dict]:
+    """从真实对话中提取某层样本（最多 limit 条），只提取水位之后的新消息。
 
     诊断层：用户消息（携带诊断结果）
     决策层：助手消息（携带 action 与诊断结果）
     回复层：助手消息（携带 reply 与诊断结果）
-    知识模型层：每个会话的知识模型
+    知识模型层：每个「新会话」的知识模型（概念图不随对话变化，只在会话首次出现时提取一次）
     """
+    watermark = watermark or {}
     samples: list[dict] = []
-    try:
-        sessions = db.recent_sessions(limit * 2)  # 多取会话，消息可产多样本
-    except Exception:
-        logger.exception("extract_samples: db.recent_sessions 失败，本轮跳过")
-        return samples
+    sessions = _recent_sessions_safe(limit * 2)  # 多取会话，消息可产多样本
     for s in sessions:
         goal = s.get("goal", "")
         knowledge = s.get("knowledge") or {}
         cognitive = s.get("cognitive") or {}
+        start = max(0, watermark.get(s["id"], 0))
+        msgs = s.get("messages", [])
 
         if layer == "domain_model":
-            if knowledge.get("concepts"):
+            # 新会话（尚未被消费过）才提取其知识模型
+            if s["id"] not in watermark and knowledge.get("concepts"):
                 samples.append({
                     "layer": layer,
                     "session_id": s["id"],
@@ -154,7 +218,7 @@ def extract_samples(layer: str, limit: int) -> list[dict]:
                 })
             continue
 
-        for msg in s.get("messages", []):
+        for msg in msgs[start:]:
             if len(samples) >= limit:
                 return samples
             diag = msg.get("diagnosis") or {}
@@ -329,13 +393,13 @@ def reevaluate(layer: str, sample: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 单层一轮优化
 # ---------------------------------------------------------------------------
-def run_cycle(layer: str, limit: int | None = None) -> dict:
+def run_cycle(layer: str, limit: int | None = None, watermark: dict | None = None) -> dict:
     """对单层执行一轮完整优化：采集 → 评估 → 提炼 → 质量门 → 注入/回滚。
 
-    返回本轮结果摘要（供日志与测试断言）。
+    仅消费水位之后的新消息。返回本轮结果摘要（供日志与测试断言）。
     """
     limit = limit or config.OPTIMIZER_MAX_SAMPLES_PER_LAYER
-    samples = extract_samples(layer, limit)
+    samples = extract_samples(layer, limit, watermark)
     if len(samples) < config.OPTIMIZER_MIN_SAMPLES:
         return {
             "layer": layer,
@@ -391,15 +455,47 @@ def run_cycle(layer: str, limit: int | None = None) -> dict:
 
 
 def run_all_cycles(limit: int | None = None) -> dict:
-    """对所有可优化层执行一轮优化，返回汇总。"""
-    summary: dict[str, Any] = {"layers": {}, "optimized": 0, "rolled_back": 0}
+    """对所有可优化层执行一轮优化，返回汇总。
+
+    数据增量门控：先统计自上次优化以来的新增对话轮次，未达阈值则本轮
+    什么都不做（不调用任何 LLM）；达到阈值才消费新增数据，并在结束后
+    推进水位，避免下轮重复消费同一批消息。
+    """
+    limit = limit or config.OPTIMIZER_MAX_SAMPLES_PER_LAYER
+    state = load_state()
+    watermark = state.get("watermark", {})
+
+    sessions = _recent_sessions_safe(limit * 2)
+    new_turns = count_new_user_turns(sessions, watermark)
+
+    # 数据增量门控：新增对话轮次不足 → 不执行任何优化
+    if new_turns < config.OPTIMIZER_MIN_NEW_TURNS:
+        return {
+            "status": "waiting_for_data",
+            "new_turns": new_turns,
+            "threshold": config.OPTIMIZER_MIN_NEW_TURNS,
+            "layers": {},
+        }
+
+    summary: dict[str, Any] = {
+        "status": "executed",
+        "new_turns": new_turns,
+        "layers": {},
+        "optimized": 0,
+        "rolled_back": 0,
+    }
     for layer in OPTIMIZABLE_LAYERS:
-        result = run_cycle(layer, limit)
+        result = run_cycle(layer, limit, watermark)
         summary["layers"][layer] = result
         if result.get("status") == "optimized":
             summary["optimized"] += 1
         elif result.get("status") == "rolled_back":
             summary["rolled_back"] += 1
+
+    # 推进水位：无论本轮各层优化是否采纳，这批新消息都已被评估消费
+    state["watermark"] = advance_watermark(sessions, watermark)
+    state["last_optimized_at"] = _now_iso()
+    save_state(state)
     return summary
 
 
@@ -416,12 +512,19 @@ async def optimize_loop() -> None:
                     config.AI_ENABLED, config.OPTIMIZER_ENABLED)
         return
 
-    logger.info("optimizer loop started (interval=%ss)", config.OPTIMIZER_INTERVAL_SECONDS)
+    logger.info(
+        "optimizer loop started (check_interval=%ss, min_new_turns=%s)",
+        config.OPTIMIZER_INTERVAL_SECONDS, config.OPTIMIZER_MIN_NEW_TURNS,
+    )
     while True:
         started = time.time()
         try:
             summary = await asyncio.to_thread(run_all_cycles)
-            logger.info("optimizer cycle done: %s", summary)
+            if summary.get("status") == "executed":
+                logger.info("optimizer cycle executed: %s", summary)
+            else:
+                # 数据增量未达标，本轮空转（不调用 LLM）
+                logger.debug("optimizer waiting for data: %s", summary)
         except Exception:
             logger.exception("optimizer cycle failed")
         elapsed = time.time() - started

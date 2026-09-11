@@ -190,5 +190,61 @@ class TestRunCycle(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
 
 
+class TestWatermark(unittest.TestCase):
+    def test_count_new_user_turns(self):
+        sessions = [
+            {"id": "a", "messages": [
+                {"role": "assistant"}, {"role": "user"},
+                {"role": "assistant"}, {"role": "user"},
+            ]},
+        ]
+        wm = {"a": 2}  # 已消费前 2 条（assistant, user）
+        self.assertEqual(optimizer.count_new_user_turns(sessions, wm), 1)
+
+    def test_count_new_user_turns_no_watermark(self):
+        sessions = [
+            {"id": "a", "messages": [
+                {"role": "user"}, {"role": "assistant"}, {"role": "user"},
+            ]},
+        ]
+        self.assertEqual(optimizer.count_new_user_turns(sessions, {}), 2)
+
+    def test_advance_watermark(self):
+        sessions = [{"id": "a", "messages": [1, 2, 3, 4]}]
+        wm = {"a": 2, "b": 5}
+        new = optimizer.advance_watermark(sessions, wm)
+        self.assertEqual(new["a"], 4)
+        self.assertEqual(new["b"], 5)  # 未出现的会话水位不动
+
+
+class TestRunAllCycles(unittest.TestCase):
+    @mock.patch.object(optimizer, "save_state")
+    @mock.patch.object(optimizer, "run_cycle")
+    @mock.patch.object(optimizer, "count_new_user_turns", return_value=3)
+    @mock.patch.object(optimizer, "_recent_sessions_safe", return_value=[])
+    @mock.patch.object(optimizer, "load_state", return_value={"watermark": {}, "last_optimized_at": ""})
+    def test_waiting_for_data(self, load, recent, count, run, save):
+        # 新增对话轮次 < 阈值 → 不执行任何优化、不推进水位
+        result = optimizer.run_all_cycles(limit=10)
+        self.assertEqual(result["status"], "waiting_for_data")
+        self.assertEqual(result["new_turns"], 3)
+        run.assert_not_called()
+        save.assert_not_called()
+
+    @mock.patch.object(optimizer, "save_state")
+    @mock.patch.object(optimizer, "advance_watermark", return_value={"sid": 5})
+    @mock.patch.object(optimizer, "run_cycle", return_value={"status": "optimized", "samples": 5})
+    @mock.patch.object(optimizer, "count_new_user_turns", return_value=12)
+    @mock.patch.object(optimizer, "_recent_sessions_safe", return_value=[{"id": "sid", "messages": []}])
+    @mock.patch.object(optimizer, "load_state", return_value={"watermark": {}, "last_optimized_at": ""})
+    def test_executed_advance_watermark(self, load, recent, count, run, advance, save):
+        # 新增对话轮次达标 → 执行并推进水位
+        result = optimizer.run_all_cycles(limit=10)
+        self.assertEqual(result["status"], "executed")
+        self.assertEqual(result["optimized"], 4)  # 4 层均 optimized
+        advance.assert_called_once()
+        save.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/components/ChatPanel.tsx","./src/components/CognitivePanel.tsx","./src/components/GoalInput.tsx","./src/components/KnowledgeGraph.tsx","./src/components/SessionList.tsx"],"version":"5.6.3"}

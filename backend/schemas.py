@@ -61,6 +61,7 @@ class CognitiveModel(BaseModel):
     goal: str
     concepts: list[ConceptMastery] = Field(default_factory=list)
     updated_at: str = ""
+    profile: Optional[dict] = None   # 用户画像（千人千面）：level/label/params
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import config
@@ -25,6 +27,10 @@ _DIAG_SYSTEM = """你是一名严谨的认知诊断专家。给你一个学习�
 - misconceived：存在明确的概念错误或误解
 - insufficient：信息不足，表达太空泛或干脆承认不知道，无法判断
 
+判别原则（务必遵守，优先级最高）：
+- 判断「misconceived」必须基于「概念本身的语义错误」，不能仅因为表述口语化、不精确、或出现"其实/本质上"等措辞就误判为误解；若语义本质正确、只是措辞不够严谨，应归入 partial 或 understood。
+- 判断「understood」应聚焦「最终结论的语义正确性」，不被表达过程中的犹豫、自我否定、或"说不清楚"等语气信号误导；只要最终结论正确且能说出关键机制，就应判为 understood。
+
 同时你要：
 - concept_ids：这段陈述主要涉及哪些概念 id（从给定列表中选择）
 - evidence：用一句话说明判断依据（引述学习者的原话要点）
@@ -35,6 +41,34 @@ _DIAG_SYSTEM = """你是一名严谨的认知诊断专家。给你一个学习�
 {"state":"partial","confidence":0.7,"concept_ids":["..."],"evidence":"...","misconception":"...","missing":["..."]}
 """
 
+# ---------------------------------------------------------------------------
+# 诊断经验库（「诊断自我迭代」的持久化载体）
+#
+# 记录从历史诊断错误中总结出的判别原则，注入诊断 prompt 以持续修正。
+# 这是北极星指标「诊断准确度随对话自我迭代」的落地机制。
+# ---------------------------------------------------------------------------
+_RULES_PATH = Path(__file__).resolve().parent / "eval" / "diagnosis_rules.json"
+
+
+def load_diagnosis_rules() -> list[str]:
+    """加载诊断经验规则。文件缺失或损坏时安全降级为空列表。"""
+    try:
+        data = json.loads(_RULES_PATH.read_text(encoding="utf-8"))
+        rules = data.get("rules", [])
+        return [r.strip() for r in rules if r and r.strip()]
+    except Exception:
+        return []
+
+
+def _rules_suffix() -> str:
+    """把经验规则拼成追加到 system prompt 的片段；无规则时为空串。"""
+    rules = load_diagnosis_rules()
+    if not rules:
+        return ""
+    lines = ["", "此外，请务必遵守以下从历史诊断错误中总结出的判别原则（优先级高于上面的通用描述）："]
+    lines += [f"- {r}" for r in rules]
+    return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # 诊断
@@ -44,7 +78,7 @@ def _diagnose_with_llm(goal: str, concepts: list[Concept], user_text: str) -> Di
         f"- {c.id}：{c.name}（{c.summary}）" for c in concepts
     )
     data = chat_json(
-        _DIAG_SYSTEM,
+        _DIAG_SYSTEM + _rules_suffix(),
         f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}",
         temperature=0.2,
     )
@@ -138,6 +172,53 @@ def diagnose(
 
 
 # ---------------------------------------------------------------------------
+# 用户画像（千人千面）：不同背景的起点与学习速度不同
+# ---------------------------------------------------------------------------
+# 先验水平 -> BKT 参数
+PROFILE_PARAMS = {
+    "novice": {
+        "label": "新手",
+        "P_L0": 0.20,
+        "P_LEARN": 0.15,
+        "P_GUESS": 0.25,
+        "P_SLIP": 0.12,
+    },
+    "intermediate": {
+        "label": "有基础",
+        "P_L0": 0.35,
+        "P_LEARN": 0.20,
+        "P_GUESS": 0.20,
+        "P_SLIP": 0.10,
+    },
+    "advanced": {
+        "label": "进阶",
+        "P_L0": 0.50,
+        "P_LEARN": 0.28,
+        "P_GUESS": 0.15,
+        "P_SLIP": 0.08,
+    },
+}
+
+_ADVANCED_HINTS = ("进阶", "深入", "原理", "优化", "性能", "高级", "底层", "源码", "架构", "分布式")
+_NOVICE_HINTS = ("入门", "基础", "新手", "初学", "零基础", "小白", "了解", "概览", "是什么")
+
+
+def infer_prior_level(goal: str) -> str:
+    """从学习目标推断先验水平（千人千面的入口）。"""
+    low = goal.lower()
+    if any(h in low for h in _ADVANCED_HINTS):
+        return "advanced"
+    if any(h in low for h in _NOVICE_HINTS):
+        return "novice"
+    return "intermediate"
+
+
+def get_profile_params(level: str) -> dict:
+    """返回某先验水平对应的 BKT 参数（未知水平安全降级到 intermediate）。"""
+    return PROFILE_PARAMS.get(level, PROFILE_PARAMS["intermediate"])
+
+
+# ---------------------------------------------------------------------------
 # BKT 贝叶斯更新
 # ---------------------------------------------------------------------------
 # 认知状态 -> 软正确分数（0 完全错误，1 完全正确）
@@ -149,19 +230,28 @@ _STATE_SCORE = {
 }
 
 
-def bayes_update(prior: float, state: str, confidence: float) -> float:
+def bayes_update(
+    prior: float,
+    state: str,
+    confidence: float,
+    slip: float | None = None,
+    guess: float | None = None,
+    learn: float | None = None,
+) -> float:
     """根据一次诊断证据，用软化贝叶斯规则更新掌握概率。
 
     prior: 当前掌握概率 P(mastered)
     state: 认知状态
     confidence: 诊断置信度（用于缩放证据强度）
+    slip/guess/learn: 可选，用于千人千面（不传则用全局 config 默认值）
     """
     raw_score = _STATE_SCORE.get(state, 0.5)
     # 低置信度 -> 证据向 0.5 靠拢，削弱更新幅度
     score = 0.5 + (raw_score - 0.5) * max(0.0, min(1.0, confidence))
 
-    slip = config.P_SLIP
-    guess = config.P_GUESS
+    slip = config.P_SLIP if slip is None else slip
+    guess = config.P_GUESS if guess is None else guess
+    learn = config.P_LEARN if learn is None else learn
 
     # P(observation | mastered) 与 P(observation | not mastered)
     p_obs_mastered = score * (1 - slip) + (1 - score) * slip
@@ -174,7 +264,7 @@ def bayes_update(prior: float, state: str, confidence: float) -> float:
     posterior = num / den
 
     # 学习转移：未掌握者有一定概率通过学习转入掌握
-    posterior += (1 - posterior) * config.P_LEARN * max(0.0, min(1.0, confidence)) * 0.3
+    posterior += (1 - posterior) * learn * max(0.0, min(1.0, confidence)) * 0.3
 
     return max(0.0, min(1.0, posterior))
 

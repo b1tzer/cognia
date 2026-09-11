@@ -42,14 +42,21 @@ def _now() -> str:
 
 
 def _build_cognitive(goal: str, concepts: list[Concept]) -> dict:
-    """初始化认知模型：每个概念赋予初始掌握概率。"""
+    """初始化认知模型：按用户先验水平赋予不同的初始掌握概率（千人千面）。"""
+    level = cog.infer_prior_level(goal)
+    params = cog.get_profile_params(level)
     return {
         "goal": goal,
+        "profile": {
+            "level": level,
+            "label": params["label"],
+            "params": {k: v for k, v in params.items() if k != "label"},
+        },
         "concepts": [
             {
                 "concept_id": c.id,
                 "concept_name": c.name,
-                "mastery": config.P_L0,
+                "mastery": params["P_L0"],
                 "state": "insufficient",
                 "evidence_count": 0,
                 "last_evidence": "",
@@ -145,11 +152,19 @@ def chat(sid: str, req: ChatRequest):
     if not target_ids:
         target_ids = [c.id for c in concepts]
 
+    profile_params = (cognitive.get("profile") or {}).get("params") or {}
     for cid in target_ids:
         m = mastery_map.get(cid)
         if m is None:
             continue
-        new_mastery = cog.bayes_update(m["mastery"], diagnosis.state, diagnosis.confidence)
+        new_mastery = cog.bayes_update(
+            m["mastery"],
+            diagnosis.state,
+            diagnosis.confidence,
+            slip=profile_params.get("P_SLIP"),
+            guess=profile_params.get("P_GUESS"),
+            learn=profile_params.get("P_LEARN"),
+        )
         m["mastery"] = round(new_mastery, 4)
         m["evidence_count"] += 1
         m["last_evidence"] = diagnosis.evidence or req.content[:60]
@@ -178,7 +193,7 @@ def chat(sid: str, req: ChatRequest):
             status = "completed"
             action = "advance"
         else:
-            reply = tutor.generate_tutor_reply(Concept(**focus), diagnosis)
+            reply = tutor.generate_tutor_reply(Concept(**focus), diagnosis, action)
             status = "active"
 
     # 5. 持久化

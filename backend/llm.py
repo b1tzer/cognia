@@ -16,6 +16,29 @@ from typing import Any, Optional
 
 import config
 
+# ---------------------------------------------------------------------------
+# token 用量观测（用于成本核算，落地「节约」约束）
+# ---------------------------------------------------------------------------
+_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+
+def reset_usage() -> None:
+    """清零 token 用量计数器。"""
+    for k in _usage:
+        _usage[k] = 0
+
+def get_usage() -> dict[str, int]:
+    """返回累计 token 用量快照（副本，避免外部误改）。"""
+    return dict(_usage)
+
+def _record_usage(resp: Any) -> None:
+    """从 OpenAI 响应累加 token 用量（含重试失败轮次的真实消耗）。"""
+    usage = getattr(resp, "usage", None)
+    if not usage:
+        return
+    _usage["prompt_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+    _usage["completion_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
+    _usage["total_tokens"] += int(getattr(usage, "total_tokens", 0) or 0)
+    _usage["calls"] += 1
 
 def _extract_json(text: str) -> Any:
     """从模型输出中稳健地提取 JSON 对象/数组。
@@ -85,6 +108,7 @@ def chat_json(
                         {"role": "user", "content": user},
                     ],
                 )
+                _record_usage(resp)
                 data = _extract_json(resp.choices[0].message.content)
                 if isinstance(data, dict):
                     return data
@@ -123,6 +147,7 @@ def chat_text(
                         {"role": "user", "content": user},
                     ],
                 )
+                _record_usage(resp)
                 content = (resp.choices[0].message.content or "").strip()
                 # content 为空时回退到 reasoning_content（兼容极少数推理模型）
                 if not content:

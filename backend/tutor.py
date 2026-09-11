@@ -17,6 +17,9 @@ from schemas import Concept, DiagnosticResult
 def decide_action(state: str, evidence_count: int) -> str:
     """根据认知状态与证据数量决定教学动作。"""
     if state == "misconceived":
+        # 连续误解（纠错无效）→ 回溯到前置概念重新巩固
+        if evidence_count >= 2:
+            return "backtrack"
         return "correct"
     if state == "insufficient":
         if evidence_count >= 2:
@@ -32,20 +35,21 @@ def decide_action(state: str, evidence_count: int) -> str:
 # ---------------------------------------------------------------------------
 # LLM 苏格拉底回复
 # ---------------------------------------------------------------------------
-_TUTOR_SYSTEM = """你是一名苏格拉底式导师（Socratic tutor），目标是帮助学习者真正理解概念，
-而不是直接告诉他答案。你的教学原则：通过提问引导学习者自己发现、修正、深化理解。
+_TUTOR_SYSTEM = """你是一名苏格拉底式导师（Socratic tutor），目标是帮助学习者真正理解概念。
 
 你现在聚焦于概念「{concept}」。概念说明：{summary}
 「真正理解它」意味着：{why_matters}
 常见误解：{misconceptions}
 
 学习者刚才的表达被诊断为：{state_label}
+你本次的教学动作是：{action_label}
 
-请按状态采取策略，**只输出一小段话（一个核心问题或简短引导），不要长篇大论，不要直接给完整答案**：
-- 信息不足：用一个开放式问题引导他说出已知内容（如"你目前对 X 了解多少？"）
-- 半理解：针对他模糊/遗漏处追问澄清，帮他补全因果链
-- 错误：不直接纠错，用一个反例或反问让他自己发现矛盾
-- 理解正确：先肯定，再抛一个更有挑战性的问题检验迁移能力
+请严格按教学动作执行，**只输出一小段话，不要长篇大论**：
+- probe（追问）：针对他模糊/遗漏处提问引导，让他自己补全因果链
+- explain（解释）：直接、简明地把这个知识点讲清楚，帮他建立正确理解（此时不要绕弯子提问）
+- correct（纠错）：不直接纠错，用一个反例或反问让他自己发现矛盾
+- backtrack（回溯）：温和指出当前概念反复卡住，建议先退回到它的前置概念重新巩固，并点明两者关系
+- advance（继续）：先肯定，再抛一个更有挑战性的问题检验迁移能力
 """
 
 _STATE_LABEL = {
@@ -55,10 +59,19 @@ _STATE_LABEL = {
     "insufficient": "信息不足",
 }
 
+_ACTION_LABEL = {
+    "probe": "追问",
+    "explain": "解释",
+    "correct": "纠错",
+    "backtrack": "回溯",
+    "advance": "继续",
+}
+
 
 def _tutor_with_llm(
     concept: Concept,
     diagnosis: DiagnosticResult,
+    action: str,
 ) -> Optional[str]:
     system = _TUTOR_SYSTEM.format(
         concept=concept.name,
@@ -66,6 +79,7 @@ def _tutor_with_llm(
         why_matters=concept.why_matters or "建立准确的心智模型",
         misconceptions="；".join(concept.common_misconceptions) or "暂无记录",
         state_label=_STATE_LABEL.get(diagnosis.state, "半理解"),
+        action_label=_ACTION_LABEL.get(action, "追问"),
     )
     user = f"学习者表达：{diagnosis.evidence or ''}"
     if diagnosis.misconception:
@@ -76,41 +90,52 @@ def _tutor_with_llm(
 # ---------------------------------------------------------------------------
 # 模板降级回复
 # ---------------------------------------------------------------------------
-def _tutor_template(concept: Concept, diagnosis: DiagnosticResult) -> str:
+def _tutor_template(concept: Concept, diagnosis: DiagnosticResult, action: str) -> str:
     name = concept.name
-    state = diagnosis.state
-    if state == "insufficient":
+    if action == "explain":
+        why = f"真正理解它的关键在于：{concept.why_matters}。" if concept.why_matters else ""
         return (
-            f"我们先别急着下结论。关于「{name}」，你能用一两句话说说你已经知道的吗？"
-            "哪怕是零散的印象或模糊的理解都可以，我会根据你的说法来判断该从哪里入手。"
+            f"看得出这块对你来说还比较陌生，我先直接讲清楚，帮你把地基打起来。\n"
+            f"「{name}」的核心是：{concept.summary or '理解它的机制与因果'}。{why}"
+            "听完之后，你用自己的话复述一遍，我来看看你是不是真的懂了。"
         )
-    if state == "misconceived":
+    if action == "correct":
         hint = diagnosis.misconception or f"你对「{name}」的理解里可能藏着一个容易忽略的地方"
         return (
             f"有意思，你刚才提到「{name}」时，我留意到“{hint}”。"
             "先不直接告诉你答案——你试着反问自己：如果这个说法成立，会出现什么自相矛盾的结果？"
-            "或者，你能不能举一个反例来检验它？"
         )
-    if state == "partial":
+    if action == "backtrack":
         return (
-            f"你已经抓到了「{name}」的一部分，方向是对的。"
-            f"但还有一个关键环节没串起来——{concept.why_matters or '它背后的因果链'}。"
-            "你能试着把它和前面学过的东西连起来，说说“为什么会这样”吗？"
+            f"我们在「{name}」上绕了几次，可能说明更基础的一环还没完全打通。"
+            "先不急着往下走——退一步，回到它的前置概念，把那个基础重新理清楚，"
+            "再来攻克这里，会顺利很多。"
         )
-    # understood
+    if action == "advance":
+        return (
+            f"很好，你对「{name}」的理解基本到位。既然已经掌握，我们把它放到新场景里检验一下："
+            f"如果换一个你之前没见过的情境，{concept.why_matters or '这个机制'}还会成立吗？"
+            "试着举一个例子说明它为什么成立（或不成立）。"
+        )
+    # probe（默认追问）
+    if diagnosis.state == "insufficient":
+        return (
+            f"我们先别急着下结论。关于「{name}」，你能用一两句话说说你已经知道的吗？"
+            "哪怕是零散的印象或模糊的理解都可以。"
+        )
     return (
-        f"很好，你对「{name}」的理解基本到位。既然已经掌握，我们把它放到新场景里检验一下："
-        f"如果换一个你之前没见过的情境，{concept.why_matters or '这个机制'}还会成立吗？"
-        "试着举一个例子说明它为什么成立（或不成立）。"
+        f"你已经抓到了「{name}」的一部分，方向是对的。"
+        f"但还有一个关键环节没串起来——{concept.why_matters or '它背后的因果链'}。"
+        "你能试着把它和前面学过的东西连起来，说说“为什么会这样”吗？"
     )
 
 
-def generate_tutor_reply(concept: Concept, diagnosis: DiagnosticResult) -> str:
-    """生成苏格拉底式回复，LLM 优先，降级到模板。"""
-    text = _tutor_with_llm(concept, diagnosis)
+def generate_tutor_reply(concept: Concept, diagnosis: DiagnosticResult, action: str) -> str:
+    """生成教学回复，LLM 优先，降级到模板。"""
+    text = _tutor_with_llm(concept, diagnosis, action)
     if text:
         return text.strip()
-    return _tutor_template(concept, diagnosis)
+    return _tutor_template(concept, diagnosis, action)
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ export default function CognitivePanel({ session }: Props) {
       <div className="concept-list">
         {concepts.map((c) => {
           const color = STATE_COLOR[c.state]
+          const pct = Math.round(c.mastery * 100)
           return (
             <div key={c.concept_id} className="concept-row">
               <div className="concept-row-top">
@@ -39,16 +40,26 @@ export default function CognitivePanel({ session }: Props) {
                   {STATE_LABEL[c.state]}
                 </span>
               </div>
+              <div className="concept-bar">
+                <div
+                  className="concept-bar-fill"
+                  style={{ width: `${pct}%`, background: color }}
+                />
+              </div>
+              <div className="concept-meta">
+                {c.evidence_count > 0 ? `已反馈 ${c.evidence_count} 次` : '尚未反馈'}
+                {c.consecutive_failures >= 3 ? ' · 连续卡壳' : ''}
+              </div>
             </div>
           )
         })}
       </div>
 
       {session.cognitive?.concepts.some((c) => c.state === 'misconceived') && (
-        <div className="panel-note warn">
-          检测到误解，导师会优先引导纠错。
-        </div>
+        <div className="panel-note warn">检测到误解，导师会优先引导纠错。</div>
       )}
-    </div>
+      {concepts.some((c) => c.consecutive_failures >= 3) && (
+        <div className="panel-note warn">有概念连续卡壳，导师可能回溯到前置概念巩固。</div>
+      )}    </div>
   )
 }

@@ -24,6 +24,7 @@ export interface ConceptMastery {
   mastery: number
   state: CognitiveState
   evidence_count: number
+  consecutive_failures: number
   last_evidence: string
 }
 
@@ -38,6 +39,7 @@ export interface Message {
   content: string
   action?: TutorAction | null
   diagnosis?: DiagnosticResult | null
+  decision?: ActionDecision | null
 }
 
 export interface DiagnosticResult {
@@ -49,6 +51,18 @@ export interface DiagnosticResult {
   missing: string[]
 }
 
+export interface ActionReason {
+  evidence_cited: string
+  criterion_used: string
+  pedagogical_intent: string
+  confidence: number
+}
+
+export interface ActionDecision {
+  chosen_action: TutorAction
+  reasons: ActionReason
+}
+
 export interface Session {
   id: string
   goal: string
@@ -58,6 +72,7 @@ export interface Session {
   cognitive: CognitiveModel | null
   knowledge: KnowledgeModel | null
   status: 'active' | 'completed'
+  focus_concept?: Concept | null
 }
 
 export interface ChatResponse {
@@ -65,6 +80,7 @@ export interface ChatResponse {
   action: TutorAction
   reply: string
   diagnosis: DiagnosticResult
+  decision: ActionDecision
   cognitive: CognitiveModel
   status: 'active' | 'completed'
   focus_concept: Concept | null

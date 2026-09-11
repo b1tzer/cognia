@@ -13,6 +13,7 @@ export default function App() {
   const [aiEnabled, setAiEnabled] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [focusId, setFocusId] = useState<string | null>(null)
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -33,6 +34,7 @@ export default function App() {
     try {
       const s = await api.createSession(goal)
       setSession(s)
+      setFocusId(s.focus_concept?.id ?? null)
       refreshSessions()
     } catch (e: any) {
       setError(e.message || '创建会话失败')
@@ -45,7 +47,9 @@ export default function App() {
     setBusy(true)
     setError(null)
     try {
-      setSession(await api.getSession(id))
+      const s = await api.getSession(id)
+      setSession(s)
+      setFocusId(null)
     } catch (e: any) {
       setError(e.message || '加载会话失败')
     } finally {
@@ -65,6 +69,7 @@ export default function App() {
     )
     try {
       const r: ChatResponse = await api.sendChat(session.id, content)
+      setFocusId(r.focus_concept?.id ?? null)
       setSession((prev) => {
         if (!prev) return prev
         return {
@@ -73,7 +78,7 @@ export default function App() {
           cognitive: r.cognitive,
           messages: [
             ...prev.messages,
-            { role: 'assistant', content: r.reply, action: r.action, diagnosis: r.diagnosis },
+            { role: 'assistant', content: r.reply, action: r.action, diagnosis: r.diagnosis, decision: r.decision },
           ],
         }
       })
@@ -87,6 +92,7 @@ export default function App() {
 
   const handleNew = useCallback(() => {
     setSession(null)
+    setFocusId(null)
     setError(null)
   }, [])
 
@@ -182,7 +188,7 @@ export default function App() {
           <KnowledgeGraph
             knowledge={session.knowledge}
             cognitive={session.cognitive}
-            focusId={session.messages.length > 0 ? undefined : undefined}
+            focusId={focusId ?? undefined}
           />
         </div>
       )}

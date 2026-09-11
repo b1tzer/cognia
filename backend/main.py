@@ -136,6 +136,7 @@ def start_session(req: StartSessionRequest):
     msg = {"role": "assistant", "content": intro, "action": "probe", "diagnosis": None}
     db.append_messages(session["id"], [msg])
     session["messages"] = [msg]
+    session["focus_concept"] = focus
     return session
 
 
@@ -239,9 +240,20 @@ def chat(sid: str, req: ChatRequest):
             reply = tutor.generate_tutor_reply(Concept(**focus), diagnosis, action)
             status = "active"
 
+    # 完成时统一决策语义为「完成推进」，保证 decision 与 action 一致
+    if status == "completed":
+        decision_result = decision.ActionDecision(
+            chosen_action="advance",
+            reasons=decision.ActionReason(
+                criterion_used="完成判定",
+                pedagogical_intent="学习目标已完成",
+                confidence=1.0,
+            ),
+        )
+
     # 5. 持久化
     user_msg = {"role": "user", "content": req.content, "action": None, "diagnosis": diagnosis.model_dump()}
-    ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": diagnosis.model_dump()}
+    ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": diagnosis.model_dump(), "decision": decision_result.model_dump()}
     db.append_messages(sid, [user_msg, ai_msg])
     db.update_session(sid, cognitive, knowledge, status=status)
 
@@ -250,6 +262,7 @@ def chat(sid: str, req: ChatRequest):
         "action": action,
         "reply": reply,
         "diagnosis": diagnosis.model_dump(),
+        "decision": decision_result.model_dump(),
         "cognitive": cognitive,
         "status": status,
         "focus_concept": focus,

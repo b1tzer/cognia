@@ -194,6 +194,11 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
             诊断：{STATE_LABEL[diag.state]}
           </div>
         )}
+        {!isUser &&
+          msg.decision?.reasons?.pedagogical_intent &&
+          !msg.decision.reasons.pedagogical_intent.includes('回退') && (
+            <div className="decision-tag">🎯 {msg.decision.reasons.pedagogical_intent}</div>
+          )}
       </div>
       {!editing && (
         <div className="bubble-tools">

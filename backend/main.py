@@ -239,7 +239,7 @@ def chat(sid: str, req: ChatRequest):
             status = "completed"
             action = "advance"
         else:
-            reply = tutor.generate_tutor_reply(Concept(**focus), diagnosis, action)
+            reply = tutor.generate_tutor_reply(Concept(**focus), diagnosis, action, req.content)
             status = "active"
 
     # 完成时统一决策语义为「完成推进」，保证 decision 与 action 一致

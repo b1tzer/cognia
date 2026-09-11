@@ -112,9 +112,14 @@ _UNKNOWN_HINTS = (
 
 
 def _heuristic_diagnose(concepts: list[Concept], user_text: str, focus_concept_id: str | None) -> DiagnosticResult:
-    """无 LLM 时的启发式诊断。诚实标注能力边界，主要依赖否定信号与信息量。"""
+    """无 LLM 时的启发式诊断。诚实标注能力边界，主要依赖否定信号与信息量。
+
+    evidence 字段严格保持「学习者原话要点」语义，只引用原话截断，
+    绝不写入引擎自述文案（避免内部机制状态泄漏到回复层）。
+    """
     t = user_text.strip()
     low = t.lower()
+    snippet = t[:60] if t else ""  # 引用原话要点，而非引擎自述
 
     # 信息不足：明确否定 / 表达过短
     if any(h in t for h in _UNKNOWN_HINTS) or len(t) < 8:
@@ -122,7 +127,7 @@ def _heuristic_diagnose(concepts: list[Concept], user_text: str, focus_concept_i
             state="insufficient",
             confidence=0.85 if len(t) < 8 else 0.9,
             concept_ids=[focus_concept_id] if focus_concept_id else [],
-            evidence="表达空泛或明确表示不清楚",
+            evidence=snippet,
             misconception="",
             missing=[],
         )
@@ -133,7 +138,7 @@ def _heuristic_diagnose(concepts: list[Concept], user_text: str, focus_concept_i
             state="misconceived",
             confidence=0.7,
             concept_ids=[focus_concept_id] if focus_concept_id else [],
-            evidence="表达中出现自我纠正/混淆信号",
+            evidence=snippet,
             misconception="学习者自述存在混淆",
             missing=[],
         )
@@ -145,7 +150,7 @@ def _heuristic_diagnose(concepts: list[Concept], user_text: str, focus_concept_i
             state="partial",
             confidence=0.5,
             concept_ids=[focus_concept_id] if focus_concept_id else [],
-            evidence="表达包含相关概念词，信息量一般，倾向半理解（离线模式无法验证语义准确性）",
+            evidence=snippet,
             misconception="",
             missing=[],
         )
@@ -155,7 +160,7 @@ def _heuristic_diagnose(concepts: list[Concept], user_text: str, focus_concept_i
         state="partial",
         confidence=0.4,
         concept_ids=[focus_concept_id] if focus_concept_id else [],
-        evidence="启发式判定，证据不足",
+        evidence=snippet,
         misconception="",
         missing=[],
     )

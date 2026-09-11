@@ -53,6 +53,7 @@ def _tutor_with_llm(
     concept: Concept,
     diagnosis: DiagnosticResult,
     action: str,
+    user_text: str = "",
 ) -> Optional[str]:
     system = _TUTOR_SYSTEM.format(
         concept=concept.name,
@@ -62,7 +63,10 @@ def _tutor_with_llm(
         state_label=_STATE_LABEL.get(diagnosis.state, "半理解"),
         action_label=_ACTION_LABEL.get(action, "追问"),
     ) + prompt_rules.rules_suffix("tutor")
-    user = f"学习者表达：{diagnosis.evidence or ''}"
+    # 学习者表达应直接来自真实用户输入；evidence 仅作诊断依据参考，
+    # 不作为学习者原话反推（避免内部状态串台到回复层）
+    learner_text = user_text or diagnosis.evidence or ""
+    user = f"学习者表达：{learner_text}"
     if diagnosis.misconception:
         user += f"\n已识别的误解：{diagnosis.misconception}"
     return chat_text(system, user, temperature=0.6, max_tokens=1500)
@@ -111,9 +115,14 @@ def _tutor_template(concept: Concept, diagnosis: DiagnosticResult, action: str) 
     )
 
 
-def generate_tutor_reply(concept: Concept, diagnosis: DiagnosticResult, action: str) -> str:
-    """生成教学回复，LLM 优先，降级到模板。"""
-    text = _tutor_with_llm(concept, diagnosis, action)
+def generate_tutor_reply(
+    concept: Concept,
+    diagnosis: DiagnosticResult,
+    action: str,
+    user_text: str = "",
+) -> str:
+    """生成教学回复，LLM 优先，降级到模板。user_text 为学习者本轮真实输入。"""
+    text = _tutor_with_llm(concept, diagnosis, action, user_text)
     if text:
         return text.strip()
     return _tutor_template(concept, diagnosis, action)

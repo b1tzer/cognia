@@ -84,6 +84,11 @@ class TestBuildActionCandidates(unittest.TestCase):
         cands = decision.build_action_candidates("partial", 0, 0)
         self.assertEqual([c["action"] for c in cands], ["probe", "explain"])
 
+    def test_partial_stagnation(self):
+        # 停滞检测：partial 连续多轮无突破 → 优先 explain
+        cands = decision.build_action_candidates("partial", 3, 0)
+        self.assertEqual(cands[0]["action"], "explain")
+
     def test_understood(self):
         cands = decision.build_action_candidates("understood", 0, 0)
         self.assertEqual([c["action"] for c in cands], ["advance"])

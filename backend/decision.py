@@ -69,14 +69,25 @@ def build_action_candidates(
                 "why_eligible": "若判断其基础薄弱，可改为直接解释",
             })
     elif state == "partial":
-        candidates.append({
-            "action": "probe",
-            "why_eligible": "方向对但有遗漏，追问补全因果链",
-        })
-        candidates.append({
-            "action": "explain",
-            "why_eligible": "若遗漏点单一明确，可定向解释",
-        })
+        if evidence_count >= config.STAGNATION_WINDOW:
+            # 停滞检测：连续多轮半理解无突破 → 优先解释打破「问而不教」
+            candidates.append({
+                "action": "explain",
+                "why_eligible": "连续多轮半理解无突破，改为直接解释打破停滞",
+            })
+            candidates.append({
+                "action": "probe",
+                "why_eligible": "若仍愿意自行补全，可继续追问",
+            })
+        else:
+            candidates.append({
+                "action": "probe",
+                "why_eligible": "方向对但有遗漏，追问补全因果链",
+            })
+            candidates.append({
+                "action": "explain",
+                "why_eligible": "若遗漏点单一明确，可定向解释",
+            })
     elif state == "understood":
         candidates.append({
             "action": "advance",

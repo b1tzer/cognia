@@ -40,12 +40,16 @@ export default function CognitivePanel({ session }: Props) {
                   {STATE_LABEL[c.state]}
                 </span>
               </div>
-              <div className="concept-bar">
-                <div
-                  className="concept-bar-fill"
-                  style={{ width: `${pct}%`, background: color }}
-                />
-              </div>
+              {c.evidence_count > 0 ? (
+                <div className="concept-bar">
+                  <div
+                    className="concept-bar-fill"
+                    style={{ width: `${pct}%`, background: color }}
+                  />
+                </div>
+              ) : (
+                <div className="concept-bar concept-bar-empty" aria-label="待诊断" />
+              )}
               <div className="concept-meta">
                 {c.evidence_count > 0 ? `已反馈 ${c.evidence_count} 次` : '尚未反馈'}
                 {c.consecutive_failures >= 3 ? ' · 连续卡壳' : ''}

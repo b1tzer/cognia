@@ -1074,6 +1074,17 @@ body {
   transition: width 0.4s ease;
 }
 
+.concept-bar-empty {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--panel-2) 0,
+    var(--panel-2) 5px,
+    transparent 5px,
+    transparent 10px
+  );
+  border: 1px dashed var(--border);
+}
+
 .concept-meta {
   font-size: 11px;
   color: var(--text-faint);

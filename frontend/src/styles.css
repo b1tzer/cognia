@@ -42,6 +42,12 @@ body {
   flex-direction: column;
 }
 
+/* 主界面（进入会话后）：锁定视口高度，禁止整体滚动，仅内部区域滚动 */
+.app-main {
+  height: 100vh;
+  overflow: hidden;
+}
+
 /* ---------- 顶栏 ---------- */
 .topbar {
   display: flex;
@@ -255,7 +261,6 @@ body {
   flex: 1;
   display: flex;
   min-height: 0;
-  height: calc(100vh - 62px);
 }
 
 .sidebar {
@@ -296,6 +301,7 @@ body {
 }
 
 .session-item {
+  position: relative;
   display: block;
   width: 100%;
   text-align: left;
@@ -317,6 +323,34 @@ body {
 .session-item.active {
   background: var(--panel-2);
   border-color: var(--accent);
+}
+
+.session-item-del {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+.session-item:hover .session-item-del {
+  display: flex;
+}
+
+.session-item-del:hover {
+  background: var(--border);
+  color: var(--red);
 }
 
 .session-item-goal {
@@ -360,6 +394,7 @@ body {
 
 .chat-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px;
   display: flex;
@@ -429,11 +464,76 @@ body {
   color: #fff;
 }
 
+.bubble-tools {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.bubble-row:hover .bubble-tools {
+  display: flex;
+}
+
+.bubble-tool {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.bubble-tool:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.bubble-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.bubble-edit-input {
+  width: 100%;
+  min-height: 60px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 14.5px;
+  padding: 10px 12px;
+  resize: vertical;
+  outline: none;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.bubble-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.btn-sm {
+  padding: 6px 14px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+
 .action-tag {
   font-size: 11px;
   color: var(--accent);
-  background: rgba(56, 189, 248, 0.1);
-  border: 1px solid rgba(56, 189, 248, 0.3);
+  background: rgba(74, 107, 93, 0.12);
+  border: 1px solid rgba(74, 107, 93, 0.3);
   padding: 2px 8px;
   border-radius: 999px;
 }
@@ -475,6 +575,36 @@ body {
 @keyframes blink {
   0%, 80%, 100% { opacity: 0.25; }
   40% { opacity: 1; }
+}
+
+.quick-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 20px 0;
+  flex-wrap: wrap;
+}
+
+.quick-chip {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.quick-chip:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
+.quick-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .chat-input-bar {
@@ -613,6 +743,7 @@ body {
   background: var(--bg-soft);
   padding: 12px 16px 16px;
   height: 300px;
+  flex-shrink: 0;
 }
 
 .graph-wrap {

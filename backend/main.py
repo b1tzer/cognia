@@ -237,6 +237,25 @@ def chat(sid: str, req: ChatRequest):
         "focus_concept": focus,
     }
 
+@app.delete("/api/sessions/{sid}")
+def delete_session(sid: str):
+    if not db.delete_session(sid):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"ok": True}
+
+@app.delete("/api/sessions/{sid}/messages/{index}")
+def delete_message(sid: str, index: int):
+    messages = db.delete_message(sid, index)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    return {"ok": True, "messages": messages}
+
+@app.put("/api/sessions/{sid}/messages/{index}")
+def update_message(sid: str, index: int, req: ChatRequest):
+    messages = db.update_message(sid, index, req.content)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    return {"ok": True, "messages": messages}
 
 # ---------------------------------------------------------------------------
 # 前端静态托管（构建产物）

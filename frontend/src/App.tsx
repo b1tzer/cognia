@@ -90,6 +90,36 @@ export default function App() {
     setError(null)
   }, [])
 
+  const handleDeleteSession = useCallback(async (id: string) => {
+    try {
+      await api.deleteSession(id)
+      if (session?.id === id) setSession(null)
+      refreshSessions()
+    } catch (e: any) {
+      setError(e.message || '删除失败')
+    }
+  }, [session, refreshSessions])
+
+  const handleDeleteMessage = useCallback(async (index: number) => {
+    if (!session) return
+    try {
+      const r = await api.deleteMessage(session.id, index)
+      setSession((prev) => (prev ? { ...prev, messages: r.messages } : prev))
+    } catch (e: any) {
+      setError(e.message || '删除消息失败')
+    }
+  }, [session])
+
+  const handleUpdateMessage = useCallback(async (index: number, content: string) => {
+    if (!session) return
+    try {
+      const r = await api.updateMessage(session.id, index, content)
+      setSession((prev) => (prev ? { ...prev, messages: r.messages } : prev))
+    } catch (e: any) {
+      setError(e.message || '修改消息失败')
+    }
+  }, [session])
+
   if (!session) {
     return (
       <div className="app">
@@ -105,7 +135,7 @@ export default function App() {
         {sessions.length > 0 && (
           <div className="recent">
             <h3>继续学习</h3>
-            <SessionList sessions={sessions} onSelect={handleSelect} activeId={null} />
+            <SessionList sessions={sessions} onSelect={handleSelect} onDelete={handleDeleteSession} activeId={null} />
           </div>
         )}
       </div>
@@ -128,11 +158,18 @@ export default function App() {
 
       <div className="workspace">
         <aside className="sidebar">
-          <SessionList sessions={sessions} onSelect={handleSelect} activeId={session.id} />
+          <SessionList sessions={sessions} onSelect={handleSelect} onDelete={handleDeleteSession} activeId={session.id} />
         </aside>
 
         <main className="chat-col">
-          <ChatPanel session={session} onSend={handleSend} busy={busy} error={error} />
+          <ChatPanel
+            session={session}
+            onSend={handleSend}
+            onDeleteMessage={handleDeleteMessage}
+            onUpdateMessage={handleUpdateMessage}
+            busy={busy}
+            error={error}
+          />
         </main>
 
         <aside className="insight-col">

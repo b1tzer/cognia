@@ -1,4 +1,4 @@
-import type { ChatResponse, Session } from './types'
+import type { ChatResponse, Session, Message } from './types'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -30,6 +30,21 @@ export function getSession(id: string): Promise<Session> {
 export function sendChat(sessionId: string, content: string): Promise<ChatResponse> {
   return request<ChatResponse>(`/api/sessions/${sessionId}/chat`, {
     method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+}
+
+export function deleteSession(sessionId: string): Promise<{ ok: boolean }> {
+  return request(`/api/sessions/${sessionId}`, { method: 'DELETE' })
+}
+
+export function deleteMessage(sessionId: string, index: number): Promise<{ ok: boolean; messages: Message[] }> {
+  return request(`/api/sessions/${sessionId}/messages/${index}`, { method: 'DELETE' })
+}
+
+export function updateMessage(sessionId: string, index: number, content: string): Promise<{ ok: boolean; messages: Message[] }> {
+  return request(`/api/sessions/${sessionId}/messages/${index}`, {
+    method: 'PUT',
     body: JSON.stringify({ content }),
   })
 }

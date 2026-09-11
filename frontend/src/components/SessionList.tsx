@@ -9,6 +9,7 @@ interface SessionMeta {
 interface Props {
   sessions: SessionMeta[]
   onSelect: (id: string) => void
+  onDelete: (id: string) => void
   activeId: string | null
 }
 
@@ -26,7 +27,7 @@ function fmtTime(iso: string): string {
   }
 }
 
-export default function SessionList({ sessions, onSelect, activeId }: Props) {
+export default function SessionList({ sessions, onSelect, onDelete, activeId }: Props) {
   if (sessions.length === 0) {
     return <div className="session-empty">暂无学习记录</div>
   }
@@ -34,7 +35,7 @@ export default function SessionList({ sessions, onSelect, activeId }: Props) {
     <div className="session-list">
       <div className="session-title">学习记录</div>
       {sessions.map((s) => (
-        <button
+        <div
           key={s.id}
           className={`session-item ${s.id === activeId ? 'active' : ''}`}
           onClick={() => onSelect(s.id)}
@@ -44,7 +45,17 @@ export default function SessionList({ sessions, onSelect, activeId }: Props) {
           <div className="session-item-meta">
             {s.status === 'completed' ? '✅ 已完成' : '⏳ 进行中'} · {fmtTime(s.updated_at)}
           </div>
-        </button>
+          <button
+            className="session-item-del"
+            onClick={(e) => {
+              e.stopPropagation()
+              if (window.confirm(`删除学习目标「${s.goal}」？此操作不可撤销。`)) onDelete(s.id)
+            }}
+            title="删除学习目标"
+          >
+            ✕
+          </button>
+        </div>
       ))}
     </div>
   )

@@ -133,3 +133,56 @@ def list_sessions() -> list[dict]:
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def delete_session(sid: str) -> bool:
+    """删除整个学习目标（会话）。返回是否删除成功。"""
+    conn = _connect()
+    cur = conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
+def delete_message(sid: str, index: int) -> Optional[list[dict]]:
+    """删除会话中指定索引的消息，返回删除后的消息列表；失败返回 None。"""
+    conn = _connect()
+    cur = conn.execute("SELECT messages_json FROM sessions WHERE id = ?", (sid,))
+    r = cur.fetchone()
+    if r is None:
+        conn.close()
+        return None
+    messages = json.loads(r["messages_json"])
+    if index < 0 or index >= len(messages):
+        conn.close()
+        return None
+    messages.pop(index)
+    conn.execute(
+        "UPDATE sessions SET messages_json = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(messages, ensure_ascii=False), _now(), sid),
+    )
+    conn.commit()
+    conn.close()
+    return messages
+
+
+def update_message(sid: str, index: int, content: str) -> Optional[list[dict]]:
+    """修改会话中指定索引消息的 content，返回修改后的消息列表；失败返回 None。"""
+    conn = _connect()
+    cur = conn.execute("SELECT messages_json FROM sessions WHERE id = ?", (sid,))
+    r = cur.fetchone()
+    if r is None:
+        conn.close()
+        return None
+    messages = json.loads(r["messages_json"])
+    if index < 0 or index >= len(messages):
+        conn.close()
+        return None
+    messages[index]["content"] = content
+    conn.execute(
+        "UPDATE sessions SET messages_json = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(messages, ensure_ascii=False), _now(), sid),
+    )
+    conn.commit()
+    conn.close()
+    return messages

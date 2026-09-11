@@ -20,20 +20,13 @@ const STATE_LABEL: Record<CognitiveState, string> = {
 
 export default function CognitivePanel({ session }: Props) {
   const concepts = session.cognitive?.concepts ?? []
-  const mastered = concepts.filter((c) => c.mastery >= 0.8).length
-  const progress = concepts.length ? Math.round((mastered / concepts.length) * 100) : 0
 
   return (
     <div className="cognitive-panel">
       <div className="panel-header">
         <div className="panel-title">认知状态</div>
-        <div className="panel-sub">{mastered}/{concepts.length} 已掌握</div>
+        <div className="panel-sub">随对话动态更新</div>
       </div>
-
-      <div className="progress-track">
-        <div className="progress-fill" style={{ width: `${progress}%` }} />
-      </div>
-      <div className="progress-label">整体掌握度 {progress}%</div>
 
       <div className="concept-list">
         {concepts.map((c) => {
@@ -46,15 +39,6 @@ export default function CognitivePanel({ session }: Props) {
                   {STATE_LABEL[c.state]}
                 </span>
               </div>
-              <div className="concept-bar">
-                <div
-                  className="concept-bar-fill"
-                  style={{ width: `${Math.round(c.mastery * 100)}%`, background: color }}
-                />
-              </div>
-              <div className="concept-meta">
-                掌握 {(c.mastery * 100).toFixed(0)}% · 证据 {c.evidence_count}
-              </div>
             </div>
           )
         })}
@@ -62,7 +46,7 @@ export default function CognitivePanel({ session }: Props) {
 
       {session.cognitive?.concepts.some((c) => c.state === 'misconceived') && (
         <div className="panel-note warn">
-          ⚠️ 检测到误解，导师会优先引导纠错。
+          检测到误解，导师会优先引导纠错。
         </div>
       )}
     </div>

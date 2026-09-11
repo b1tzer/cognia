@@ -37,6 +37,10 @@ DOMAIN_GOAL = {
     "http": "理解 HTTP 协议",
     "git": "理解 Git 版本控制",
     "python": "理解 Python 核心机制",
+    "javascript": "理解 JavaScript 核心机制",
+    "database": "理解数据库核心机制",
+    "network": "理解计算机网络核心协议",
+    "machine-learning": "理解机器学习核心概念",
 }
 
 # ---------------------------------------------------------------------------

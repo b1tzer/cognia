@@ -2,8 +2,17 @@
   "meta": {
     "version": 1,
     "description": "Cognia 诊断引擎评测集：每样本含期望认知状态（ground truth），用于度量诊断准确率（北极星指标）。",
-    "states": ["understood", "partial", "misconceived", "insufficient"],
-    "domains": ["http", "git", "python"]
+    "states": [
+      "understood",
+      "partial",
+      "misconceived",
+      "insufficient"
+    ],
+    "domains": [
+      "http",
+      "git",
+      "python"
+    ]
   },
   "samples": [
     {
@@ -70,7 +79,6 @@
       "expected_state": "insufficient",
       "note": "明确否定，无有效信息"
     },
-
     {
       "id": "g-understood-1",
       "domain": "git",
@@ -135,7 +143,6 @@
       "expected_state": "insufficient",
       "note": "明确否定，无有效信息"
     },
-
     {
       "id": "p-understood-1",
       "domain": "python",
@@ -200,7 +207,6 @@
       "expected_state": "insufficient",
       "note": "表达空泛，无法判断"
     },
-
     {
       "id": "h-self-correct",
       "domain": "http",
@@ -225,7 +231,6 @@
       "expected_state": "insufficient",
       "note": "边界：信息量极低，应判信息不足"
     },
-
     {
       "id": "h-hard-1",
       "domain": "http",
@@ -297,6 +302,350 @@
       "user_text": "闭包会捕获变量在定义那一刻的值，所以循环里创建的闭包都会记住各自的循环变量值。",
       "expected_state": "misconceived",
       "note": "困难：误以为闭包捕获的是值（快照），实际捕获的是变量引用"
+    },
+    {
+      "id": "js-understood-1",
+      "domain": "javascript",
+      "kind": "core",
+      "user_text": "闭包就是函数记住了它定义时所在的作用域，即使函数在别的地方调用，也还能访问到那个作用域里的变量。比如计数器函数每次调用都能对同一个 count 变量加一，就是因为内层函数引用着外层那次调用的变量，那个变量不会被垃圾回收掉。",
+      "expected_state": "understood",
+      "note": "对闭包机制描述准确，讲清了作用域捕获和变量不被回收的因果，无概念错误。"
+    },
+    {
+      "id": "js-understood-2",
+      "domain": "javascript",
+      "kind": "core",
+      "user_text": "事件循环是因为 JS 单线程，同步代码先执行完，然后 microtask 队列先清空，再到 macrotask 队列。Promise 的 then 回调是 microtask，setTimeout 是 macrotask，所以 Promise 的回调会比 setTimeout 先执行。",
+      "expected_state": "understood",
+      "note": "准确说出单线程前提、microtask 与 macrotask 的优先级顺序及典型例子，机制清晰。"
+    },
+    {
+      "id": "js-partial-1",
+      "domain": "javascript",
+      "kind": "core",
+      "user_text": "原型链就是子对象找不到属性的时候，就去它的原型上找。Object.create 可以用来设置原型。类的继承应该也是走这个机制吧，不过具体 new 和 class 底层怎么连的我也不是特别清楚。",
+      "expected_state": "partial",
+      "note": "方向正确（属性查找沿原型链），但对 new/class 底层联系和 prototype 与 __proto__ 区别含糊，理解不完整。"
+    },
+    {
+      "id": "js-partial-2",
+      "domain": "javascript",
+      "kind": "core",
+      "user_text": "this 的指向跟调用方式有关，普通函数里谁调用就指向谁，箭头函数没有自己的 this 会往外层找。但有些情况比如在对象方法里嵌套普通函数，this 会丢，这个我一直有点搞混。",
+      "expected_state": "partial",
+      "note": "核心规则（调用方式决定 this、箭头函数无自身 this）对，但嵌套函数 this 丢失等细节说不清，属于半理解。"
+    },
+    {
+      "id": "js-misconceived-1",
+      "domain": "javascript",
+      "kind": "core",
+      "user_text": "const 声明的变量就是真正不变的，不管赋的是对象还是数组，里面的内容都改不了。所以想存变化的数据就必须用 let。",
+      "expected_state": "misconceived",
+      "note": "错误认为 const 声明对象/数组内部内容不可变，实际 const 只是不能重新赋值引用，存在概念错误。"
+    },
+    {
+      "id": "js-misconceived-2",
+      "domain": "javascript",
+      "kind": "core",
+      "user_text": "== 和 === 其实差不多，反正比较的时候都会自动把类型转一下，用哪个都行。",
+      "expected_state": "misconceived",
+      "note": "错误认为 === 也会做类型转换；=== 不做隐式类型转换，== 才会，属明确概念错误。"
+    },
+    {
+      "id": "js-insufficient-1",
+      "domain": "javascript",
+      "kind": "core",
+      "user_text": "异步编程我大概知道一点，就是让程序不用一直等着，不然会卡住。具体怎么搞的我不太清楚。",
+      "expected_state": "insufficient",
+      "note": "表达太空泛，仅停留在「不用等待」的表层，无任何机制说明，信息不足。"
+    },
+    {
+      "id": "js-insufficient-2",
+      "domain": "javascript",
+      "kind": "core",
+      "user_text": "JavaScript 的作用域这些东西我学得不多，讲不清它到底怎么工作的，感觉挺复杂的。",
+      "expected_state": "insufficient",
+      "note": "直接承认理解有限，没有给出任何可判断的具体内容，属于信息不足。"
+    },
+    {
+      "id": "js-hard-1",
+      "domain": "javascript",
+      "kind": "hard",
+      "user_text": "那个 Promise.all 会等所有都完成再走，只要有一个失败好像整个就 reject 了吧，但我也不太确定，可能还有个 allSettled 能拿到每个结果？其实我平时用得少，可能就是等全部成功这种。",
+      "expected_state": "partial",
+      "note": "对 Promise.all（全成功返回、任一失败 reject）理解正确，也提到 allSettled，但措辞绕且自我否定、结论摇摆，仅部分肯定，判为 partial。"
+    },
+    {
+      "id": "js-hard-2",
+      "domain": "javascript",
+      "kind": "hard",
+      "user_text": "宏任务和微任务谁先谁后？微任务吧，Promise 回调那种就是微任务，会插队先跑。不过有人又说 setTimeout 会先执行，搞得我也晕，反正 promise 那些回调是在当前栈清空后马上执行的就对了。",
+      "expected_state": "partial",
+      "note": "核心结论（微任务先于宏任务、栈清空后执行）正确，但夹杂「setTimeout 先执行」的错误干扰且自我怀疑，表述混乱，部分对部分错，判 partial。"
+    },
+    {
+      "id": "js-hard-3",
+      "domain": "javascript",
+      "kind": "hard",
+      "user_text": "我也说不清闭包到底算不算值捕获，还是引用捕获，反正函数外面还能访问到那个变量。可能变量被复制了一份吧，不然函数跑完变量没了怎么还能用？不对，应该是住在外层作用域里……反正就是能记住。",
+      "expected_state": "partial",
+      "note": "能说出闭包「记住变量」的现象，但在值捕获 vs 引用捕获上摇摆、自我否定，结论含混，判 partial。"
+    },
+    {
+      "id": "db-understood-1",
+      "domain": "database",
+      "kind": "core",
+      "user_text": "主键就是每行数据的唯一标识，比如用户表里用 user_id，这样能保证不会有两行重复，查数据的时候通过主键索引能很快定位到那一行。外键就是用来关联另一张表的，比如订单表里有个 user_id 指向用户表的 user_id，这样就能保证订单一定属于一个存在的用户。",
+      "expected_state": "understood",
+      "note": "准确区分主键和外键，说清了唯一标识作用、索引加速查询、参照完整性约束，无概念错误"
+    },
+    {
+      "id": "db-understood-2",
+      "domain": "database",
+      "kind": "core",
+      "user_text": "事务的 ACID 嘛，原子性就是要么全做要么全不做，一致性是事务前后数据要符合所有规则，隔离性是并发事务之间互不干扰，持久性是提交了就真的写进去了。比如转账，A 扣钱 B 加钱，中间崩了就得回滚，不然钱就丢了。",
+      "expected_state": "understood",
+      "note": "ACID 四个特性解释准确，转账例子恰当说明了原子性和回滚机制，表达清晰"
+    },
+    {
+      "id": "db-partial-1",
+      "domain": "database",
+      "kind": "core",
+      "user_text": "索引就是给数据建个目录，查起来快。不过索引也不是越多越好，因为每次插入数据都要更新索引，会慢。嗯……具体慢多少我不太清楚，反正就是有代价。",
+      "expected_state": "partial",
+      "note": "正确理解索引的加速作用和写入代价，但表述模糊，缺乏具体机制说明（如 B+ 树结构、回表等）"
+    },
+    {
+      "id": "db-partial-2",
+      "domain": "database",
+      "kind": "core",
+      "user_text": "三范式就是第一范式每个字段不能再分，第二范式要有主键而且非主属性要完全依赖主键，第三范式不能有传递依赖。反正设计表的时候照着这个来就不会有冗余。但实际工作中有时也会反范式，不过我不太确定什么时候该反。",
+      "expected_state": "partial",
+      "note": "三范式定义基本正确，但表达偏机械记忆，对反范式化的适用场景理解模糊，缺乏实际权衡分析"
+    },
+    {
+      "id": "db-misconceived-1",
+      "domain": "database",
+      "kind": "core",
+      "user_text": "索引就像给表加了个排序，所以建了索引之后查询永远比没索引快。我一般把所有经常查的字段都加上索引，这样肯定没问题。",
+      "expected_state": "misconceived",
+      "note": "错误认为索引永远加速查询，忽略了选择性低的字段（如性别）、小表全表扫描更快、索引维护开销等场景"
+    },
+    {
+      "id": "db-misconceived-2",
+      "domain": "database",
+      "kind": "core",
+      "user_text": "LEFT JOIN 就是以左边表为主，右边表没有匹配的就用 NULL 填充。那 RIGHT JOIN 也一样，反正 JOIN 就是拼起来，用哪个都一样，结果行数不会变。",
+      "expected_state": "misconceived",
+      "note": "JOIN 描述前半部分正确，但后半句 '结果行数不会变' 错误——JOIN 可能导致行数膨胀（一对多匹配时），混淆了 JOIN 与行数关系"
+    },
+    {
+      "id": "db-insufficient-1",
+      "domain": "database",
+      "kind": "core",
+      "user_text": "数据库的隔离级别……好像有四个吧，读未提交、读已提交、可重复读、串行化。具体每个是干嘛的我不太记得了，反正级别越高越安全但越慢。",
+      "expected_state": "insufficient",
+      "note": "能列举四个级别名称但无法解释各自解决的问题（脏读、不可重复读、幻读），表达过于空泛"
+    },
+    {
+      "id": "db-insufficient-2",
+      "domain": "database",
+      "kind": "core",
+      "user_text": "SQL 注入就是别人在输入框里写 SQL 语句来攻击数据库。怎么防？好像用参数化查询吧，具体怎么写我不太会。",
+      "expected_state": "insufficient",
+      "note": "知道 SQL 注入的概念和参数化查询的术语，但无法说明原理（拼接 vs 预编译）和具体实现方式"
+    },
+    {
+      "id": "db-hard-1",
+      "domain": "database",
+      "kind": "hard",
+      "user_text": "我觉得 NoSQL 比 SQL 好，因为 NoSQL 不用写那些复杂的 JOIN，数据存成 JSON 直接取出来就能用，扩展也方便。但好像有些场景还是得用关系型数据库……不过我也说不清什么场景，可能是数据特别重要的时候吧？",
+      "expected_state": "partial",
+      "note": "前半段偏向 NoSQL 优势（部分正确），后半段自我质疑但结论模糊。诊断难点：学习者表现出摇摆认知，需要区分是 partial 还是 insufficient——最终判断为 partial 因为方向对但缺乏对比分析能力"
+    },
+    {
+      "id": "db-hard-2",
+      "domain": "database",
+      "kind": "hard",
+      "user_text": "视图就是一张虚拟表，存的是 SQL 查询。那它跟普通表到底有什么区别呢？好像视图也能查，也能插入数据？不对，视图好像不能直接插数据，但有时候又能……我有点搞混了。",
+      "expected_state": "misconceived",
+      "note": "诊断难点：学习者知道视图是虚拟表的概念，但对可更新视图与只读视图的区分完全混乱，自我否定但未触及正确边界。核心错误在于认为视图的 DML 行为是模糊的、随机的，忽视了视图可更新性的条件规则"
+    },
+    {
+      "id": "db-hard-3",
+      "domain": "database",
+      "kind": "hard",
+      "user_text": "索引能加快查询我懂，但为什么有时候加了索引反而变慢了呢？是不是因为索引占空间？还是因为数据量不够大？我觉得可能是 MySQL 优化器抽风了，没选对索引。不过话说回来，要是优化器自己都选不对，那加索引还有什么意义呢？",
+      "expected_state": "partial",
+      "note": "诊断难点：学习者观察到索引可能降级的真实现象（部分正确），但归因于 '优化器抽风' 过于简化。实际原因包括索引选择性差、回表开销、优化器成本估算偏差等。结论为 partial 因为观察正确但归因不完整"
+    },
+    {
+      "id": "net-understood-1",
+      "domain": "network",
+      "kind": "core",
+      "user_text": "TCP 是面向连接的，三次握手建立连接，四次挥手断开连接。它保证数据按序到达，因为每个包都有序号，接收方收到后要回 ACK，超时没收到就重传。流量控制靠滑动窗口，拥塞控制有慢启动、拥塞避免、快重传和快恢复。",
+      "expected_state": "understood",
+      "note": "完整准确地描述了 TCP 的核心机制：面向连接、三次握手/四次挥手、序号与 ACK 保证有序可靠、滑动窗口流量控制、拥塞控制四大算法，无概念错误。"
+    },
+    {
+      "id": "net-understood-2",
+      "domain": "network",
+      "kind": "core",
+      "user_text": "DNS 就是把域名解析成 IP 地址。先查本地缓存，没有就去问递归 DNS 服务器，递归服务器会从根域名服务器开始，一级一级往下查，先查根，再查顶级域（比如 .com 的服务器），最后查到权威 DNS 服务器拿到 IP。",
+      "expected_state": "understood",
+      "note": "准确描述了 DNS 递归解析的完整链路：本地缓存→递归服务器→根→TLD→权威服务器，概念清晰无遗漏。"
+    },
+    {
+      "id": "net-partial-1",
+      "domain": "network",
+      "kind": "core",
+      "user_text": "HTTP 和 HTTPS 的区别就是 HTTPS 多了个 SSL 证书，所以更安全。具体怎么加密的我也不太清楚，反正就是多了个证书吧。",
+      "expected_state": "partial",
+      "note": "方向正确——知道 HTTPS 多了一层安全机制（SSL/TLS），但只提到证书，未涉及握手过程、对称/非对称加密、CA 信任链等，表述模糊不完整。"
+    },
+    {
+      "id": "net-partial-2",
+      "domain": "network",
+      "kind": "core",
+      "user_text": "路由器是连接不同网络的，它根据 IP 地址来转发数据包。交换机是连接同一个网络里的设备的，它根据 MAC 地址来转发。大概是这样，但具体路由表怎么维护的我记不太清了。",
+      "expected_state": "partial",
+      "note": "正确区分了路由器（三层/IP）和交换机（二层/MAC）的基本职责，但对自己不确定的部分诚实承认，未深入路由协议细节，属于半理解。"
+    },
+    {
+      "id": "net-misconceived-1",
+      "domain": "network",
+      "kind": "core",
+      "user_text": "TCP 和 UDP 的区别就是 TCP 更稳定，UDP 更快。所以下载文件用 TCP，看视频用 UDP。但 UDP 其实比 TCP 更安全，因为黑客抓不到你的包。",
+      "expected_state": "misconceived",
+      "note": "前半部分方向正确（TCP 可靠/UDP 快），但后半句「UDP 比 TCP 更安全」是明确的概念错误——UDP 无加密无校验，安全性更低。"
+    },
+    {
+      "id": "net-misconceived-2",
+      "domain": "network",
+      "kind": "core",
+      "user_text": "IP 地址分公网 IP 和内网 IP，公网 IP 是唯一的，内网 IP 可以重复。同一个内网里不能有两个一样的 IP，不然会冲突。但不同内网之间可以用一样的 IP，因为它们通过路由器隔开了，路由器会把内网 IP 翻译成公网 IP 发出去。",
+      "expected_state": "misconceived",
+      "note": "整体描述基本正确，但「路由器会把内网 IP 翻译成公网 IP」是概念错误——执行 NAT 的是网关/防火墙，不是路由器。路由器只做三层转发，不修改源 IP。"
+    },
+    {
+      "id": "net-insufficient-1",
+      "domain": "network",
+      "kind": "core",
+      "user_text": "子网掩码？嗯……好像是用来划分网络的吧？具体怎么算的我不太会，反正就是跟 IP 地址一起用的一个东西。",
+      "expected_state": "insufficient",
+      "note": "仅知道子网掩码与 IP 有关联、用于网络划分，但说不出与 IP 的按位与运算、网络号/主机号的划分逻辑，信息严重不足。"
+    },
+    {
+      "id": "net-insufficient-2",
+      "domain": "network",
+      "kind": "core",
+      "user_text": "ARP 协议？没听说过，是干嘛的？",
+      "expected_state": "insufficient",
+      "note": "直接承认不知道，无任何有效信息，属于信息不足。"
+    },
+    {
+      "id": "net-hard-1",
+      "domain": "network",
+      "kind": "hard",
+      "user_text": "我觉得 TCP 的三次握手其实两次就够了，因为客户端发 SYN，服务端回 SYN-ACK，这时候客户端就知道服务端能收到，服务端也知道客户端能发，那为什么还要客户端再回一个 ACK？多此一举嘛。不过好像三次才能防止什么历史连接的问题，具体我也说不清。",
+      "expected_state": "understood",
+      "note": "表面在质疑三次握手的必要性，但最后自己提到了「防止历史连接问题」——实际指向了 TCP 三次握手防止已失效的连接请求被误处理的核心原因。结论正确，看似质疑实则理解，属于 hard 样本。"
+    },
+    {
+      "id": "net-hard-2",
+      "domain": "network",
+      "kind": "hard",
+      "user_text": "HTTPS 握手的时候，客户端先发一个随机数，服务端也回一个随机数，然后两边用这两个随机数算出一个对称密钥。哦不对，好像还有证书验证那一步，但证书只是用来证明服务端身份的，跟加密没关系。反正最后通信是用对称加密的，非对称加密太慢了。",
+      "expected_state": "partial",
+      "note": "部分正确（随机数交换、对称加密用于通信、非对称加密慢），但「证书跟加密没关系」是错的——证书中的公钥用于非对称加密交换预主密钥；同时遗漏了预主密钥这一关键步骤。部分对部分错，属于 hard。"
+    },
+    {
+      "id": "net-hard-3",
+      "domain": "network",
+      "kind": "hard",
+      "user_text": "我在网上看到说 ping 用的是 ICMP 协议，但 ICMP 不是传输层的吧？它好像是网络层的，但网络层的协议怎么会有端口号呢？ping 也没有端口号啊。所以 ICMP 到底算哪一层的？我跟别人说 ICMP 是网络层的，他们还不信。",
+      "expected_state": "understood",
+      "note": "表述看似困惑和不确定，但实际判断完全正确——ICMP 是网络层协议、没有端口号、ping 不使用端口。自我否定式的表达掩盖了正确的结论，属于 hard。"
+    },
+    {
+      "id": "ml-understood-1",
+      "domain": "machine-learning",
+      "kind": "core",
+      "user_text": "过拟合就是模型把训练集里的随机噪声也当成规律学进去了，所以在训练集上表现特别好，一换到没见过的测试集就差很多。根子上是模型太复杂、参数太多，自由度太高，连样本里那些偶然的波动都拟合了。一般就是加数据、加正则化，或者把模型简化一点来缓解。",
+      "expected_state": "understood",
+      "note": "准确说清过拟合的成因（模型复杂度过高、把噪声当规律）与现象（训练集好、测试集差）以及缓解方向，机制因果完整，无概念错误。"
+    },
+    {
+      "id": "ml-understood-2",
+      "domain": "machine-learning",
+      "kind": "core",
+      "user_text": "交叉验证是为了让评估更靠谱。把数据切成几份，轮流拿一份当验证集、剩下几份当训练集，跑好几轮，最后把结果平均一下。这样比只切一次训练集测试集更不容易被某一次划分的运气带偏，数据少的时候尤其有用。",
+      "expected_state": "understood",
+      "note": "正确描述 K 折轮流验证与结果平均的做法，并说清目的（降低单次划分的偶然性），无概念错误。"
+    },
+    {
+      "id": "ml-partial-1",
+      "domain": "machine-learning",
+      "kind": "core",
+      "user_text": "梯度下降就是往梯度的反方向走，因为梯度指向上坡，反方向就是下降最快的地方，然后乘上学习率当步长去更新参数。不过为什么这么迭代最后一定能收敛到最优，还有动量、Adam 那些优化器具体改了什么，我就说不太清楚了。",
+      "expected_state": "partial",
+      "note": "对参数沿负梯度方向更新、学习率控制步长理解正确，但对收敛性条件与各类优化器的机制含糊、承认说不清，理解不完整，判 partial。"
+    },
+    {
+      "id": "ml-partial-2",
+      "domain": "machine-learning",
+      "kind": "core",
+      "user_text": "训练集是拿来学参数的，测试集是最后看效果的，验证集……好像是中间调参用的？我知道要先分好再训练，但为什么不能拿测试集来调参，还有验证集和测试集到底该怎么分，我一直没搞太明白。",
+      "expected_state": "partial",
+      "note": "能大致区分三个集合的用途，方向正确，但对不能用测试集调参的原因与划分方式说不清，属半理解。"
+    },
+    {
+      "id": "ml-misconceived-1",
+      "domain": "machine-learning",
+      "kind": "core",
+      "user_text": "模型好不好看训练集准确率就行了，我一般一直训练到训练集准确率接近 100% 才停，这时候模型肯定是最好的，上线效果也最好。",
+      "expected_state": "misconceived",
+      "note": "把训练集表现直接当成模型质量，训练到接近 100% 恰恰是过拟合的表现，训练集精度高并不等于泛化好，属明确概念错误。"
+    },
+    {
+      "id": "ml-misconceived-2",
+      "domain": "machine-learning",
+      "kind": "core",
+      "user_text": "L1 正则化是把所有特征权重都往 0 拉小但不会真的变成 0，L2 正则会直接把不重要的特征权重压成 0，所以想做特征选择应该用 L2。",
+      "expected_state": "misconceived",
+      "note": "把 L1 与 L2 的作用完全说反了：是 L1（Lasso）产生稀疏解、把权重压到 0 从而做特征选择，L2（Ridge）只是整体收缩，属明确概念错误。"
+    },
+    {
+      "id": "ml-insufficient-1",
+      "domain": "machine-learning",
+      "kind": "core",
+      "user_text": "机器学习啊，就是把数据丢给电脑，让它自己找出规律，然后就能做预测了。至于它到底是怎么学的，我说不上来，反正大概就是这么个东西。",
+      "expected_state": "insufficient",
+      "note": "停留在喂数据、找规律、做预测的口号式描述，没有任何可判断的机制说明，信息不足。"
+    },
+    {
+      "id": "ml-hard-1",
+      "domain": "machine-learning",
+      "kind": "hard",
+      "user_text": "这个我讲得估计不太专业啊……就那个吧，模型在训练时见的那些数据上特别准，一到新数据就不行那个？我也拿不准是不是这么叫。反正我理解就是它把训练集里那些个别的、碰巧出现的东西也搂进去了，没学到真正通用的规律，所以换个数据集就完蛋。嗯，应该是这个意思。",
+      "expected_state": "understood",
+      "note": "虽全程口语、措辞绕、反复自我否定且没点名过拟合，但核心机制表述正确（把训练集中的偶然模式一并记住、缺乏泛化），结论无误，判 understood。"
+    },
+    {
+      "id": "ml-hard-2",
+      "domain": "machine-learning",
+      "kind": "hard",
+      "user_text": "特征工程我懂一点，就是把原始数据弄成模型好用的样子，比如归一化、离散化、造新特征这些，这块能明显提升效果。不过有人说特征工程做好了就不用管模型了，我觉得差不多吧，特征弄好剩下模型随便选都行？好像也不至于……反正特征比模型重要就是了。",
+      "expected_state": "partial",
+      "note": "对特征工程的构成与作用是正确理解，但特征做好模型随便选都行属夸大绝对化的说法，随后又自我否认，整体部分对、结论摇摆，判 partial。"
+    },
+    {
+      "id": "ml-hard-3",
+      "domain": "machine-learning",
+      "kind": "hard",
+      "user_text": "偏差和方差……好像跟模型的过拟合、欠拟合有关系，但具体哪个对应哪个、怎么权衡，我脑子里挺乱的，讲不清。反正调模型的时候老师老提这俩，我一直没弄明白。",
+      "expected_state": "insufficient",
+      "note": "只意识到概念与过拟合欠拟合相关，无法给出任何实质内容并直接承认讲不清，虽有术语但无有效信息，判 insufficient。"
     }
   ]
 }

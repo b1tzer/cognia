@@ -964,6 +964,7 @@ body {
 .chat-input-bar {
   display: flex;
   gap: 10px;
+  align-items: center;
   padding: 14px 20px;
   border-top: 1px solid var(--border);
   background: var(--bg-soft);
@@ -988,7 +989,6 @@ body {
 }
 
 .send-btn {
-  align-self: flex-end;
   padding: 12px 22px;
 }
 

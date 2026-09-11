@@ -505,6 +505,58 @@ def update_message(sid: str, index: int, req: ChatRequest):
         raise HTTPException(status_code=404, detail="消息不存在")
     return {"ok": True, "messages": messages}
 
+
+@app.post("/api/sessions/{sid}/messages/{index}/regenerate")
+def regenerate_message(sid: str, index: int):
+    """重新生成某条 AI 回答：基于相同诊断与上下文重新采样回复文本。
+
+    只替换回复措辞，不改动诊断/决策/认知状态（BKT 不重复累计 evidence），
+    符合「重新生成 = 相同 prompt 重新采样」的行业语义（Cloudscape / Vercel AI SDK）。
+    """
+    s = db.get_session(sid)
+    if s is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if s["status"] == "completed":
+        raise HTTPException(status_code=400, detail="该学习目标已完成")
+
+    messages = s["messages"]
+    if index < 0 or index >= len(messages) or messages[index].get("role") != "assistant":
+        raise HTTPException(status_code=400, detail="只能重新生成 AI 回答")
+
+    target = messages[index]
+    diagnosis_data = target.get("diagnosis")
+    if not diagnosis_data:
+        raise HTTPException(status_code=400, detail="该回答不支持重新生成")
+    action = target.get("action") or "probe"
+
+    # 该回答对应的最近一条用户输入
+    user_text = ""
+    for m in reversed(messages[:index]):
+        if m.get("role") == "user":
+            user_text = m.get("content", "")
+            break
+
+    # 定位焦点概念（优先诊断命中的概念，回退到当前焦点 / 首个概念）
+    knowledge = s["knowledge"] or {"concepts": []}
+    by_id = {c["id"]: c for c in knowledge.get("concepts", [])}
+    focus = None
+    for cid in diagnosis_data.get("concept_ids", []):
+        if cid in by_id:
+            focus = Concept(**by_id[cid])
+            break
+    if focus is None and s.get("focus_concept"):
+        focus = Concept(**s["focus_concept"])
+    if focus is None and by_id:
+        focus = Concept(**next(iter(by_id.values())))
+
+    diagnosis = DiagnosticResult(**diagnosis_data)
+    reply = tutor.generate_tutor_reply(focus, diagnosis, action, user_text)
+
+    if db.update_message(sid, index, reply) is None:
+        raise HTTPException(status_code=404, detail="消息不存在")
+
+    return db.get_session(sid)
+
 # ---------------------------------------------------------------------------
 # 前端静态托管（构建产物）
 # ---------------------------------------------------------------------------

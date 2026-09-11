@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # 认知状态四分类（对应 Purpose.md）
 CognitiveState = Literal["understood", "partial", "misconceived", "insufficient"]
@@ -23,6 +23,19 @@ class Concept(BaseModel):
     why_matters: str = ""       # 真正理解它意味着什么 / 为什么重要
     prerequisites: list[str] = Field(default_factory=list)  # 前置概念 id 列表
     common_misconceptions: list[str] = Field(default_factory=list)
+
+    @field_validator("prerequisites", "common_misconceptions", mode="before")
+    @classmethod
+    def _coerce_to_list(cls, v):
+        """LLM 可能把列表字段返回成字符串，这里统一转成列表。"""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = v.strip()
+            return [v] if v else []
+        if isinstance(v, list):
+            return [str(x) for x in v if x]
+        return [str(v)] if v else []
 
 
 class KnowledgeModel(BaseModel):

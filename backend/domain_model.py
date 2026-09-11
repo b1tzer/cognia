@@ -14,23 +14,16 @@ from schemas import Concept, KnowledgeModel
 # ---------------------------------------------------------------------------
 # LLM 提示词
 # ---------------------------------------------------------------------------
-_BUILD_SYSTEM = """你是一名资深课程设计师与领域专家。给定一个学习目标，你要把它拆解成一张
-「概念依赖图」（DAG），用于支撑一个自适应学习系统。
+_BUILD_SYSTEM = """你是资深课程设计师。把学习目标拆成一张概念依赖图(DAG)。
 
-要求：
-1. concepts 中每个节点是一个需要真正理解的概念，节点数量控制在 6~12 个。
-2. 每个 concept 包含：
-   - id：英文短横线标识
-   - name：概念中文名
-   - summary：一句话说明这个概念是什么
-   - why_matters：说明"真正理解它意味着什么 / 为什么重要"
-   - prerequisites：前置概念 id 列表（体现依赖关系，形成 DAG，不能有环）
-   - common_misconceptions：该概念上常见的 1~3 个误解
-3. root_concepts 列出最顶层的目标概念 id（即最终要掌握的核心）。
-4. 只输出 JSON，不要输出任何解释文字。
+严格按以下 JSON 输出，不要任何解释或思考过程，尽量简短：
+{"root_concepts":["id"],"concepts":[{"id":"english-id","name":"中文名","summary":"一句话","why_matters":"一句话","prerequisites":["id"],"common_misconceptions":["一句话"]}]}
 
-输出 JSON 结构：
-{"root_concepts": ["..."], "concepts": [{"id":"...","name":"...","summary":"...","why_matters":"...","prerequisites":["..."],"common_misconceptions":["..."]}]}
+规则：
+1. concepts 共 4~7 个概念，覆盖从基础到目标。
+2. prerequisites 引用 concepts 中已出现的 id，构成 DAG，不能成环。
+3. root_concepts 是最终要掌握的核心概念 id。
+4. 每个字符串字段尽量一句话，不要展开。
 """
 
 
@@ -38,14 +31,18 @@ def _build_with_llm(goal: str) -> KnowledgeModel | None:
     data = chat_json(_BUILD_SYSTEM, f"学习目标：{goal}", temperature=0.3)
     if not data:
         return None
-    try:
-        concepts = [Concept(**c) for c in data.get("concepts", [])]
-        if not concepts:
-            return None
-        root = list(data.get("root_concepts", [])) or [concepts[-1].id]
-        return KnowledgeModel(goal=goal, root_concepts=root, concepts=concepts)
-    except Exception:
+    # 逐条校验，跳过缺失 id/name 等无效节点，提升对不稳定输出的容错
+    concepts: list[Concept] = []
+    for c in data.get("concepts", []):
+        try:
+            concepts.append(Concept(**c))
+        except Exception:
+            continue
+    if not concepts:
         return None
+    valid_ids = {c.id for c in concepts}
+    root = [r for r in data.get("root_concepts", []) if r in valid_ids] or [concepts[-1].id]
+    return KnowledgeModel(goal=goal, root_concepts=root, concepts=concepts)
 
 
 # ---------------------------------------------------------------------------

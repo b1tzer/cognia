@@ -1,52 +1,96 @@
 """LLM 客户端封装（OpenAI 兼容协议）。
 
-当未配置 API Key 时，AI_ENABLED 为 False，
-上层调用会回退到启发式 / 模板引擎（见 domain_model.py 与 tutor.py），
-保证产品在无外部模型的情况下依然可完整运行闭环。
+默认对接本机 TencentDB Agent Memory 使用的 adapter.py（127.0.0.1:8090）。
+该代理背后是带 reasoning 的推理模型：content 常被 ```json 包裹，且
+reasoning_content 会消耗大量 token。因此这里做了健壮的 JSON 提取、调大了
+max_tokens，并在 content 为空时回退到 reasoning_content。
+
+AI_ENABLED=False 时回退到启发式/模板引擎（见 domain_model.py 与 tutor.py），
+产品在无外部模型的情况下依然可完整运行闭环。
 """
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 import config
 
 
+def _extract_json(text: str) -> Any:
+    """从模型输出中稳健地提取 JSON 对象/数组。
+
+    兼容推理模型的 ```json ... ``` 包裹、前后缀说明文字等噪声。
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    # 1) 剥离 ```json / ``` 代码块围栏
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    # 2) 截取首个 { 或 [ 到最后一个 } 或 ]
+    start = min(
+        (i for i in (text.find("{"), text.find("[")) if i != -1),
+        default=-1,
+    )
+    if start == -1:
+        return None
+    end = max(text.rfind("}"), text.rfind("]"))
+    if end <= start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
+    except Exception:
+        return None
+
+
+def _model_candidates() -> list[str]:
+    """按顺序返回要尝试的模型：主模型 + 备选模型（去重）。"""
+    models = [config.OPENAI_MODEL]
+    fallback = getattr(config, "OPENAI_MODEL_FALLBACK", "")
+    if fallback and fallback != config.OPENAI_MODEL:
+        models.append(fallback)
+    return models
+
+
 def chat_json(
     system: str,
     user: str,
-    temperature: float = 0.4,
-    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    max_tokens: int = 4000,
 ) -> Optional[dict]:
-    """调用 LLM 并强制返回 JSON 对象。
-
-    失败或未启用时返回 None，由调用方降级。
-    """
+    """调用 LLM 并返回 JSON 对象。失败或未启用时返回 None，由调用方降级。"""
     if not config.AI_ENABLED:
         return None
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_BASE_URL)
-        resp = client.chat.completions.create(
-            model=config.OPENAI_MODEL,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+        # 直通 fast 模型（deepseek-v4-flash 等）响应很快，300s 超时足够；
+        # 失败（429/5xx/网络）则自动切换到备选 fast 模型。
+        client = OpenAI(
+            api_key=config.OPENAI_API_KEY,
+            base_url=config.OPENAI_BASE_URL,
+            timeout=300.0,
         )
-        text = resp.choices[0].message.content or ""
-        text = text.strip()
-        # 去除可能的代码块包裹
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
-        return json.loads(text)
+        for model in _model_candidates():
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                )
+                data = _extract_json(resp.choices[0].message.content)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+        return None
     except Exception:
         return None
 
@@ -55,7 +99,7 @@ def chat_text(
     system: str,
     user: str,
     temperature: float = 0.7,
-    max_tokens: int = 2048,
+    max_tokens: int = 2000,
 ) -> Optional[str]:
     """调用 LLM 返回纯文本。失败时返回 None。"""
     if not config.AI_ENABLED:
@@ -63,16 +107,32 @@ def chat_text(
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_BASE_URL)
-        resp = client.chat.completions.create(
-            model=config.OPENAI_MODEL,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+        client = OpenAI(
+            api_key=config.OPENAI_API_KEY,
+            base_url=config.OPENAI_BASE_URL,
+            timeout=300.0,
         )
-        return resp.choices[0].message.content
+        for model in _model_candidates():
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                )
+                content = (resp.choices[0].message.content or "").strip()
+                # content 为空时回退到 reasoning_content（兼容极少数推理模型）
+                if not content:
+                    rc = getattr(resp.choices[0].message, "reasoning_content", None)
+                    if rc:
+                        content = rc.strip()
+                if content:
+                    return content
+            except Exception:
+                continue
+        return None
     except Exception:
         return None

@@ -52,6 +52,12 @@ dist-ssr/
 frontend/vite.config.js
 frontend/vite.config.d.ts
 
+# 运行时数据
+backend/cognia.db
+backend/cognia.db-wal
+backend/cognia.db-shm
+backend/.env
+
 # 日志
 logs/
 *.log

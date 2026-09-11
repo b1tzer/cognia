@@ -70,7 +70,7 @@ def _tutor_with_llm(
     user = f"学习者表达：{diagnosis.evidence or ''}"
     if diagnosis.misconception:
         user += f"\n已识别的误解：{diagnosis.misconception}"
-    return chat_text(system, user, temperature=0.6, max_tokens=600)
+    return chat_text(system, user, temperature=0.6, max_tokens=1500)
 
 
 # ---------------------------------------------------------------------------

@@ -15,11 +15,20 @@ load_dotenv(BASE_DIR / ".env")
 
 # --------------------------------------------------------------------------
 # AI 模型（OpenAI 兼容协议）
-# --------------------------------------------------------------------------
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-AI_ENABLED = bool(OPENAI_API_KEY)
+#
+# 默认对齐本机 TencentDB Agent Memory 的接入方式：走宿主机 8090 端口的
+# adapter.py（OpenAI 兼容代理），由它转发到工蜂 Copilot Gateway。
+#   - OPENAI_BASE_URL 指向本机 adapter
+#   - OPENAI_API_KEY  只要求非空（adapter 不校验 Bearer，真实鉴权在代理层注入）
+#   - OPENAI_MODEL    默认用 fast 模型（adapter 白名单直通，不会被轮换覆盖）
+#   - OPENAI_MODEL_FALLBACK 主模型失败时回退的备选 fast 模型
+# 若需临时关闭 AI 引擎（强制离线诊断模式），设 COGNIA_AI_ENABLED=0。
+# ---------------------------------------------------------------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "tdai-key")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:8090/v1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-v4-flash")
+OPENAI_MODEL_FALLBACK = os.getenv("OPENAI_MODEL_FALLBACK", "glm-5-3-flash-internal")
+AI_ENABLED = os.getenv("COGNIA_AI_ENABLED", "1") != "0"
 
 # --------------------------------------------------------------------------
 # 认知诊断参数（BKT 贝叶斯知识追踪）

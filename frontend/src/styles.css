@@ -448,7 +448,6 @@ body {
   border-radius: 14px;
   line-height: 1.65;
   font-size: 14.5px;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 
@@ -462,6 +461,72 @@ body {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   border-top-right-radius: 4px;
   color: #fff;
+}
+
+/* ---------- 消息内 Markdown 渲染样式 ---------- */
+.bubble-text > :first-child { margin-top: 0; }
+.bubble-text > :last-child { margin-bottom: 0; }
+
+.bubble-text p { margin: 0 0 0.5em; }
+.bubble-text p:last-child { margin-bottom: 0; }
+
+.bubble-text ul,
+.bubble-text ol {
+  margin: 0.3em 0 0.6em;
+  padding-left: 1.4em;
+}
+.bubble-text li { margin: 0.2em 0; }
+
+.bubble-text code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 0.15em 0.4em;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.bubble-text pre {
+  margin: 0.6em 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+  overflow-x: auto;
+}
+.bubble-text pre code {
+  padding: 0;
+  background: transparent;
+  font-size: 0.88em;
+  line-height: 1.5;
+}
+
+.bubble-text blockquote {
+  margin: 0.6em 0;
+  padding: 0.2em 0 0.2em 0.9em;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+
+.bubble-text table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+}
+.bubble-text th,
+.bubble-text td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+
+/* 用户气泡（深色背景白字）内代码 / 引用配色覆盖 */
+.bubble.user .bubble-text code {
+  background: rgba(255, 255, 255, 0.2);
+}
+.bubble.user .bubble-text pre {
+  background: rgba(0, 0, 0, 0.25);
+}
+.bubble.user .bubble-text blockquote {
+  border-left-color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .bubble-tools {

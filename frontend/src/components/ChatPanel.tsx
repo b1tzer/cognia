@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkBreaks from 'remark-breaks'
 import type { Message, Session, CognitiveState, TutorAction } from '../types'
 
 interface Props {
@@ -179,7 +182,11 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
           </div>
         ) : (
           <div className={`bubble ${isUser ? 'user' : 'assistant'}`}>
-            <div className="bubble-text">{msg.content}</div>
+            <div className="bubble-text">
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                {msg.content}
+              </ReactMarkdown>
+            </div>
           </div>
         )}
         {diag && (

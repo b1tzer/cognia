@@ -81,7 +81,7 @@ class TestTutorUsesUserText(unittest.TestCase):
     def test_llm_uses_user_text_not_evidence(self):
         captured = {}
 
-        def fake_chat_text(system, user, temperature=0.7, max_tokens=2000):
+        def fake_chat_text(system, user, temperature=0.7, max_tokens=2000, **kwargs):
             captured["user"] = user
             return "一条回复"
 

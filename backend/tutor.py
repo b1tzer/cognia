@@ -79,10 +79,11 @@ def _tutor_with_llm(
     diagnosis: DiagnosticResult,
     action: str,
     user_text: str = "",
+    trace: list | None = None,
 ) -> Optional[str]:
     system = _tutor_system(concept, diagnosis, action)
     user = _tutor_user(diagnosis, user_text)
-    return chat_text(system, user, temperature=0.6, max_tokens=1500)
+    return chat_text(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成")
 
 
 def stream_tutor_reply(
@@ -90,6 +91,7 @@ def stream_tutor_reply(
     diagnosis: DiagnosticResult,
     action: str,
     user_text: str = "",
+    trace: list | None = None,
 ):
     """流式生成教学回复：LLM 流式时逐段 yield 文本增量，降级模板时一次性 yield。
 
@@ -98,7 +100,7 @@ def stream_tutor_reply(
     system = _tutor_system(concept, diagnosis, action)
     user = _tutor_user(diagnosis, user_text)
     emitted = False
-    for delta in chat_text_stream(system, user, temperature=0.6, max_tokens=1500):
+    for delta in chat_text_stream(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成"):
         emitted = True
         yield delta
     if not emitted:
@@ -154,9 +156,10 @@ def generate_tutor_reply(
     diagnosis: DiagnosticResult,
     action: str,
     user_text: str = "",
+    trace: list | None = None,
 ) -> str:
     """生成教学回复，LLM 优先，降级到模板。user_text 为学习者本轮真实输入。"""
-    text = _tutor_with_llm(concept, diagnosis, action, user_text)
+    text = _tutor_with_llm(concept, diagnosis, action, user_text, trace)
     if text:
         return text.strip()
     return _tutor_template(concept, diagnosis, action)

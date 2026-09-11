@@ -142,6 +142,7 @@ def decide_action_llm(
     mastery: float,
     evidence_count: int,
     consecutive_failures: int,
+    trace: list | None = None,
 ) -> Optional[ActionDecision]:
     """LLM 在候选集内做语义选择，输出结构化理由。失败返回 None。"""
     cand_text = "\n".join(f'- {c["action"]}：{c["why_eligible"]}' for c in candidates)
@@ -157,7 +158,7 @@ def decide_action_llm(
         consecutive_failures=consecutive_failures,
         candidates=cand_text,
     ) + prompt_rules.rules_suffix("decision_action")
-    data = chat_json(system, "", temperature=0.2, max_tokens=400)
+    data = chat_json(system, "", temperature=0.2, max_tokens=400, trace=trace, trace_label="教学决策")
     if not data:
         return None
     try:
@@ -185,6 +186,7 @@ def decide_action(
     concept_name: str = "",
     diagnosis: Optional[DiagnosticResult] = None,
     mastery: float = 0.0,
+    trace: list | None = None,
 ) -> ActionDecision:
     """教学动作决策主入口：骨架安全网 → LLM 语义决策 → 规则回退。"""
     # 安全网 1（不可被 LLM 覆盖）：单概念步数超限 → 强制回溯，防死循环
@@ -204,7 +206,7 @@ def decide_action(
     # LLM 语义决策：候选集内选择
     if config.AI_ENABLED and diagnosis is not None:
         decision = decide_action_llm(
-            concept_name, diagnosis, candidates, mastery, evidence_count, consecutive_failures
+            concept_name, diagnosis, candidates, mastery, evidence_count, consecutive_failures, trace
         )
         # 校验：LLM 输出必须落在候选集内，否则视为非法
         if decision is not None and decision.chosen_action in {c["action"] for c in candidates}:
@@ -367,7 +369,7 @@ _FOCUS_SELECT_SYSTEM = """你是 Cognia 的学习路径规划裁判。给定认�
 
 
 def select_focus_llm(
-    knowledge: dict, cognitive: dict, candidates: list[dict]
+    knowledge: dict, cognitive: dict, candidates: list[dict], trace: list | None = None
 ) -> Optional[str]:
     """LLM 在候选集内语义选择焦点概念。失败返回 None。"""
     cand_desc = "\n".join(
@@ -378,7 +380,7 @@ def select_focus_llm(
     system = _FOCUS_SELECT_SYSTEM.format(
         goal=knowledge.get("goal", ""), candidates=cand_desc
     ) + prompt_rules.rules_suffix("decision_action")
-    data = chat_json(system, "", temperature=0.2, max_tokens=400)
+    data = chat_json(system, "", temperature=0.2, max_tokens=400, trace=trace, trace_label="焦点选择")
     if not data:
         return None
     cid = data.get("selected_concept_id", "")
@@ -386,7 +388,7 @@ def select_focus_llm(
     return cid if cid in valid else None
 
 
-def next_focus_concept(knowledge: dict, cognitive: dict) -> Optional[dict]:
+def next_focus_concept(knowledge: dict, cognitive: dict, trace: list | None = None) -> Optional[dict]:
     """焦点概念选择主入口：回溯优先 → LLM 语义选择 → 规则回退（ZPD 排序）。"""
     candidates = build_focus_candidates(knowledge, cognitive)
     if not candidates:
@@ -401,7 +403,7 @@ def next_focus_concept(knowledge: dict, cognitive: dict) -> Optional[dict]:
 
     # LLM 语义选择：候选集内选择
     if config.AI_ENABLED:
-        chosen = select_focus_llm(knowledge, cognitive, candidates)
+        chosen = select_focus_llm(knowledge, cognitive, candidates, trace)
         if chosen is not None and chosen in concepts:
             return concepts[chosen]
 

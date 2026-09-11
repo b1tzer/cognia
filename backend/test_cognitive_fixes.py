@@ -78,7 +78,7 @@ class TestDiagnoseLlmmFocus(unittest.TestCase):
     def test_llm_receives_focus_concept(self):
         captured = {}
 
-        def fake_chat_json(system, user, temperature=0.3, max_tokens=4000):
+        def fake_chat_json(system, user, temperature=0.3, max_tokens=4000, **kwargs):
             captured["user"] = user
             return {
                 "state": "partial", "confidence": 0.5,

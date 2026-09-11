@@ -81,6 +81,7 @@ def _diagnose_with_llm(
     concepts: list[Concept],
     user_text: str,
     focus_concept_id: str | None = None,
+    trace: list | None = None,
 ) -> DiagnosticResult | None:
     concept_desc = "\n".join(
         f"- {c.id}：{c.name}（{c.summary}）" for c in concepts
@@ -97,6 +98,8 @@ def _diagnose_with_llm(
         f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}{focus_line}",
         temperature=0.2,
         max_tokens=800,
+        trace=trace,
+        trace_label="认知诊断",
     )
     if not data:
         return None
@@ -215,9 +218,10 @@ def diagnose(
     concepts: list[Concept],
     user_text: str,
     focus_concept_id: str | None = None,
+    trace: list | None = None,
 ) -> DiagnosticResult:
-    """诊断用户表达，LLM 优先，降级到启发式。"""
-    result = _diagnose_with_llm(goal, concepts, user_text, focus_concept_id)
+    """诊断用户表达，LLM 优先，降级到启发式。trace 用于记录 LLM 调用过程。"""
+    result = _diagnose_with_llm(goal, concepts, user_text, focus_concept_id, trace)
     if result is not None:
         return result
     return _heuristic_diagnose(concepts, user_text, focus_concept_id)

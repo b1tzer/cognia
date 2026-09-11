@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
-import type { Message, Session, CognitiveState, TutorAction } from '../types'
+import type { Message, Session, CognitiveState, TutorAction, LLMTrace } from '../types'
 
 interface Props {
   session: Session
@@ -207,6 +207,9 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
           !msg.decision.reasons.pedagogical_intent.includes('回退') && (
             <div className="decision-tag">🎯 {msg.decision.reasons.pedagogical_intent}</div>
           )}
+        {!isUser && msg.trace && msg.trace.length > 0 && (
+          <TracePanel trace={msg.trace} />
+        )}
       </div>
       {!editing && (
         <div className="bubble-tools">
@@ -223,5 +226,61 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
         </div>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 「思考过程」折叠面板：展示每层 LLM 调用的 prompt 与原始输出
+// 参考 Cursor/Claude 的「可折叠过程记录」模式：默认收起，点开逐层查看
+// ---------------------------------------------------------------------------
+function TracePanel({ trace }: { trace: LLMTrace[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="trace-panel">
+      <button className="trace-toggle" onClick={() => setOpen(!open)}>
+        <span className="trace-toggle-icon">🧠</span>
+        <span className="trace-toggle-label">思考过程</span>
+        <span className="trace-toggle-count">{trace.length} 步</span>
+        <span className="trace-chevron">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="trace-list">
+          {trace.map((t, i) => (
+            <TraceStep key={i} trace={t} index={i} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TraceStep({ trace, index }: { trace: LLMTrace; index: number }) {
+  return (
+    <details className="trace-step">
+      <summary>
+        <span className="trace-step-index">{index + 1}</span>
+        <span className="trace-step-label">{trace.label}</span>
+        <span className="trace-step-model">{trace.model}</span>
+      </summary>
+      <div className="trace-body">
+        <div className="trace-section">
+          <div className="trace-section-title">System Prompt</div>
+          <pre className="trace-pre">{trace.system}</pre>
+        </div>
+        <div className="trace-section">
+          <div className="trace-section-title">User Prompt</div>
+          <pre className="trace-pre">{trace.user}</pre>
+        </div>
+        <div className="trace-section">
+          <div className="trace-section-title">AI 输出</div>
+          <pre className="trace-pre">{trace.output}</pre>
+        </div>
+        {trace.usage && (
+          <div className="trace-usage">
+            tokens：{trace.usage.prompt_tokens} 输入 + {trace.usage.completion_tokens} 输出 = {trace.usage.total_tokens}
+          </div>
+        )}
+      </div>
+    </details>
   )
 }

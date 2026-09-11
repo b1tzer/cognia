@@ -40,6 +40,21 @@ export interface Message {
   action?: TutorAction | null
   diagnosis?: DiagnosticResult | null
   decision?: ActionDecision | null
+  trace?: LLMTrace[] | null
+}
+
+// 一次 LLM 调用的思考轨迹（用于「思考过程」折叠面板展示）
+export interface LLMTrace {
+  label: string           // 层中文标签，如「认知诊断」
+  model: string           // 实际使用的模型
+  system: string          // 发给 LLM 的 system prompt
+  user: string            // 发给 LLM 的 user prompt
+  output: string          // LLM 原始输出
+  usage?: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+  }
 }
 
 export interface DiagnosticResult {
@@ -84,4 +99,5 @@ export interface ChatResponse {
   cognitive: CognitiveModel
   status: 'active' | 'completed'
   focus_concept: Concept | null
+  trace?: LLMTrace[]
 }

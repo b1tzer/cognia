@@ -57,6 +57,7 @@ backend/cognia.db
 backend/cognia.db-wal
 backend/cognia.db-shm
 backend/.env
+backend/optimizer_state.json
 
 # 日志
 logs/

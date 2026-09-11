@@ -174,14 +174,15 @@ def _process_turn(s: dict, content: str) -> dict:
     knowledge = s["knowledge"]
     cognitive = s["cognitive"]
     concepts = [Concept(**c) for c in knowledge["concepts"]]
+    trace: list[dict] = []  # 本轮「思考过程」轨迹（各层 LLM 调用的 prompt 与原始输出）
 
     # 1. 确定当前焦点概念
-    focus = decision.next_focus_concept(knowledge, cognitive)
+    focus = decision.next_focus_concept(knowledge, cognitive, trace=trace)
     focus_id = focus["id"] if focus else None
 
     # 2. 认知诊断（只传焦点概念子集，减少 token）
     focus_concepts = _focus_concept_subset(focus_id, concepts)
-    diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, content, focus_id)
+    diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, content, focus_id, trace=trace)
 
     # 2.5 推进意图路由（确定性规则，零 token）：用户明确要求「继续/下一个」时，
     #     预标记当前焦点概念为已掌握并覆盖诊断为 understood，让后续焦点选择
@@ -249,6 +250,7 @@ def _process_turn(s: dict, content: str) -> dict:
         concept_name=focus["name"] if focus else "",
         diagnosis=diagnosis,
         mastery=focus_mastery.get("mastery", 0.0),
+        trace=trace,
     )
 
     return {
@@ -262,6 +264,7 @@ def _process_turn(s: dict, content: str) -> dict:
         "action": decision_result.chosen_action,
         "completed": _all_root_mastered(knowledge, cognitive),
         "advance_intent": advance_intent,
+        "trace": trace,
     }
 
 
@@ -276,7 +279,7 @@ def _resolve_reply(ctx: dict) -> tuple[str | None, str, str, bool]:
         return _complete_reply(), "advance", "completed", False
 
     if ctx["advance_intent"]:
-        next_focus = decision.next_focus_concept(ctx["knowledge"], ctx["cognitive"])
+        next_focus = decision.next_focus_concept(ctx["knowledge"], ctx["cognitive"], trace=ctx["trace"])
         if next_focus is not None:
             ctx["focus"] = next_focus
             reply = (
@@ -306,7 +309,7 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
         action = "advance"
 
     user_msg = {"role": "user", "content": ctx["content"], "action": None, "diagnosis": ctx["diagnosis"].model_dump()}
-    ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": ctx["diagnosis"].model_dump(), "decision": decision_result.model_dump()}
+    ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": ctx["diagnosis"].model_dump(), "decision": decision_result.model_dump(), "trace": ctx["trace"]}
     db.append_messages(sid, [user_msg, ai_msg])
     db.update_session(sid, ctx["cognitive"], ctx["knowledge"], status=status)
 
@@ -319,6 +322,7 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
         "cognitive": ctx["cognitive"],
         "status": status,
         "focus_concept": ctx["focus"],
+        "trace": ctx["trace"],
     }
 
 
@@ -330,7 +334,7 @@ def chat(sid: str, req: ChatRequest):
     reply, action, status, is_stream = _resolve_reply(ctx)
     if is_stream:
         reply = tutor.generate_tutor_reply(
-            Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content
+            Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content, trace=ctx["trace"]
         )
 
     return _persist(sid, ctx, reply, action, status)
@@ -346,7 +350,7 @@ def chat_stream(sid: str, req: ChatRequest):
         if is_stream:
             parts: list[str] = []
             for delta in tutor.stream_tutor_reply(
-                Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content
+                Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content, trace=ctx["trace"]
             ):
                 parts.append(delta)
                 yield f"data: {json.dumps({'type': 'token', 'content': delta}, ensure_ascii=False)}\n\n"

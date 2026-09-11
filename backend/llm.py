@@ -40,6 +40,43 @@ def _record_usage(resp: Any) -> None:
     _usage["total_tokens"] += int(getattr(usage, "total_tokens", 0) or 0)
     _usage["calls"] += 1
 
+
+def _record_trace(
+    trace: Optional[list],
+    label: str,
+    model: str,
+    system: str,
+    user: str,
+    output: str,
+    usage: Any,
+) -> None:
+    """把一次 LLM 调用记录进思考轨迹（trace）。
+
+    trace 为调用方传入的 list（可跨多层累积），每条记录保存：
+    - label：层中文标签（如「认知诊断」）
+    - model：实际使用的模型
+    - system / user：发给 LLM 的完整 prompt
+    - output：LLM 原始输出（未解析）
+    - usage：本次 token 用量
+
+    trace 为 None 时跳过（不采集），保证不影响正常流程。
+    """
+    if trace is None:
+        return
+    u = usage or {}
+    trace.append({
+        "label": label,
+        "model": model,
+        "system": system,
+        "user": user,
+        "output": output or "",
+        "usage": {
+            "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+            "total_tokens": int(getattr(u, "total_tokens", 0) or 0),
+        },
+    })
+
 def _extract_json(text: str) -> Any:
     """从模型输出中稳健地提取 JSON 对象/数组。
 
@@ -82,8 +119,13 @@ def chat_json(
     user: str,
     temperature: float = 0.3,
     max_tokens: int = 4000,
+    trace: Optional[list] = None,
+    trace_label: str = "LLM 调用",
 ) -> Optional[dict]:
-    """调用 LLM 并返回 JSON 对象。失败或未启用时返回 None，由调用方降级。"""
+    """调用 LLM 并返回 JSON 对象。失败或未启用时返回 None，由调用方降级。
+
+    trace 传入时，会把本次调用的 prompt 与原始输出记录进去（用于「思考过程」展示）。
+    """
     if not config.AI_ENABLED:
         return None
     try:
@@ -109,7 +151,9 @@ def chat_json(
                     ],
                 )
                 _record_usage(resp)
-                data = _extract_json(resp.choices[0].message.content)
+                raw = resp.choices[0].message.content or ""
+                _record_trace(trace, trace_label, model, system, user, raw, getattr(resp, "usage", None))
+                data = _extract_json(raw)
                 if isinstance(data, dict):
                     return data
             except Exception:
@@ -124,6 +168,8 @@ def chat_text(
     user: str,
     temperature: float = 0.7,
     max_tokens: int = 2000,
+    trace: Optional[list] = None,
+    trace_label: str = "LLM 调用",
 ) -> Optional[str]:
     """调用 LLM 返回纯文本。失败时返回 None。"""
     if not config.AI_ENABLED:
@@ -148,7 +194,9 @@ def chat_text(
                     ],
                 )
                 _record_usage(resp)
-                content = (resp.choices[0].message.content or "").strip()
+                raw = resp.choices[0].message.content or ""
+                _record_trace(trace, trace_label, model, system, user, raw, getattr(resp, "usage", None))
+                content = raw.strip()
                 # content 为空时回退到 reasoning_content（兼容极少数推理模型）
                 if not content:
                     rc = getattr(resp.choices[0].message, "reasoning_content", None)
@@ -168,6 +216,8 @@ def chat_text_stream(
     user: str,
     temperature: float = 0.7,
     max_tokens: int = 2000,
+    trace: Optional[list] = None,
+    trace_label: str = "LLM 调用",
 ):
     """流式调用 LLM，逐个 yield 文本增量（delta）。失败时 yield 空（无输出）。
 
@@ -199,10 +249,13 @@ def chat_text_stream(
                     ],
                 )
                 emitted = False
+                parts: list[str] = []
+                usage = None
                 for chunk in stream:
                     # 流式响应最后一个 chunk 携带 usage（配合 include_usage）
                     if getattr(chunk, "usage", None):
                         _record_usage(chunk)
+                        usage = getattr(chunk, "usage", None)
                     choices = getattr(chunk, "choices", None)
                     if (
                         choices
@@ -210,8 +263,11 @@ def chat_text_stream(
                         and getattr(choices[0].delta, "content", None)
                     ):
                         emitted = True
-                        yield choices[0].delta.content
+                        part = choices[0].delta.content
+                        parts.append(part)
+                        yield part
                 if emitted:
+                    _record_trace(trace, trace_label, model, system, user, "".join(parts), usage)
                     return
             except Exception:
                 continue

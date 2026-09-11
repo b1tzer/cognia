@@ -69,7 +69,7 @@ export default function App() {
             messages: [
               ...prev.messages,
               { role: 'user', content },
-              { role: 'assistant', content: '', action: null, diagnosis: null, decision: null },
+              { role: 'assistant', content: '', action: null, diagnosis: null, decision: null, trace: [] },
             ],
           }
         : prev,
@@ -100,6 +100,7 @@ export default function App() {
                 action: r.action,
                 diagnosis: r.diagnosis,
                 decision: r.decision,
+                trace: r.trace,
               }
             }
             return {

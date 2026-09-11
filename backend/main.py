@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 import db
 import cognitive as cog
+import decision
 import domain_model
 import tutor
 from schemas import (
@@ -59,6 +60,7 @@ def _build_cognitive(goal: str, concepts: list[Concept]) -> dict:
                 "mastery": params["P_L0"],
                 "state": "insufficient",
                 "evidence_count": 0,
+                "consecutive_failures": 0,
                 "last_evidence": "",
             }
             for c in concepts
@@ -128,7 +130,7 @@ def start_session(req: StartSessionRequest):
     knowledge_dict = knowledge.model_dump()
 
     session = db.create_session(goal, knowledge_dict, cognitive)
-    focus = tutor.next_focus_concept(knowledge_dict, cognitive)
+    focus = decision.next_focus_concept(knowledge_dict, cognitive)
     intro = tutor.build_intro(knowledge_dict, focus)
 
     msg = {"role": "assistant", "content": intro, "action": "probe", "diagnosis": None}
@@ -163,7 +165,7 @@ def chat(sid: str, req: ChatRequest):
     concepts = [Concept(**c) for c in knowledge["concepts"]]
 
     # 1. 确定当前焦点概念
-    focus = tutor.next_focus_concept(knowledge, cognitive)
+    focus = decision.next_focus_concept(knowledge, cognitive)
     focus_id = focus["id"] if focus else None
 
     # 2. 认知诊断（只传焦点概念子集，减少 token）
@@ -178,6 +180,8 @@ def chat(sid: str, req: ChatRequest):
         target_ids = [c.id for c in concepts]
 
     profile_params = (cognitive.get("profile") or {}).get("params") or {}
+    # 失败信号（误解/信息不足）用于连续失败计数与回溯触发
+    is_failure = diagnosis.state in ("misconceived", "insufficient")
     for cid in target_ids:
         m = mastery_map.get(cid)
         if m is None:
@@ -194,6 +198,11 @@ def chat(sid: str, req: ChatRequest):
         m["evidence_count"] += 1
         m["last_evidence"] = diagnosis.evidence or req.content[:60]
         m["state"] = cog.state_from_mastery(new_mastery)
+        # 连续失败计数：失败信号累加，否则重置（用于回溯触发）
+        if is_failure:
+            m["consecutive_failures"] = m.get("consecutive_failures", 0) + 1
+        else:
+            m["consecutive_failures"] = 0
 
     # 若诊断为错误，即使掌握概率不低也要显式标注，便于前端区分
     if diagnosis.state == "misconceived":
@@ -204,8 +213,17 @@ def chat(sid: str, req: ChatRequest):
 
     cognitive["updated_at"] = _now()
 
-    # 4. 教学决策 + 生成回复
-    action = tutor.decide_action(diagnosis.state, mastery_map.get(focus_id, {}).get("evidence_count", 0) if focus_id else 0)
+    # 4. 教学决策 + 生成回复（分层流程控制：候选集内 LLM 决策 + 规则回退）
+    focus_mastery = mastery_map.get(focus_id, {}) if focus_id else {}
+    decision_result = decision.decide_action(
+        diagnosis.state,
+        focus_mastery.get("evidence_count", 0),
+        consecutive_failures=focus_mastery.get("consecutive_failures", 0),
+        concept_name=focus["name"] if focus else "",
+        diagnosis=diagnosis,
+        mastery=focus_mastery.get("mastery", 0.0),
+    )
+    action = decision_result.chosen_action
     completed = _all_root_mastered(knowledge, cognitive)
 
     if completed:

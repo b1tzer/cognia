@@ -54,6 +54,7 @@ class ConceptMastery(BaseModel):
     mastery: float = 0.0          # 掌握概率 [0,1]
     state: CognitiveState = "insufficient"
     evidence_count: int = 0       # 已收集的证据条数
+    consecutive_failures: int = 0 # 连续失败次数（用于回溯触发）
     last_evidence: str = ""       # 最近一次证据简述
 
 
@@ -103,3 +104,23 @@ class DiagnosticResult(BaseModel):
     evidence: str = ""
     misconception: str = ""
     missing: list[str] = Field(default_factory=list)
+
+class ActionReason(BaseModel):
+    """教学动作选择的结构化理由（用于可解释性与程序化校验）。"""
+    evidence_cited: str = ""      # 引用的诊断证据字段
+    criterion_used: str = ""      # 采用的判别准则
+    pedagogical_intent: str = ""  # 教学意图
+    confidence: float = 0.0       # 决策置信度 [0,1]
+
+class ActionDecision(BaseModel):
+    """教学决策层输出：从候选集内选定的动作 + 理由。"""
+    chosen_action: TutorAction = "probe"
+    reasons: ActionReason = Field(default_factory=ActionReason)
+
+class FocusDecision(BaseModel):
+    """焦点概念决策层输出：选定的下一个焦点概念。"""
+    selected_concept_id: str = ""
+    is_backtrack: bool = False
+    backtrack_target_id: Optional[str] = None
+    reason: str = ""
+    confidence: float = 0.0

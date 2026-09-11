@@ -1,8 +1,9 @@
-"""教学决策引擎 + 苏格拉底式对话生成。
+"""苏格拉底式对话生成 + 开场白。
 
-实现 Purpose.md 中的闭环决策：
-根据诊断结果（理解/半理解/错误/信息不足），决定下一步动作
-（追问 / 解释 / 纠错 / 回溯 / 继续），并用苏格拉底提问引导而非直接给答案。
+教学决策（decide_action）与焦点概念选择（next_focus_concept）已迁移至
+decision.py 分层流程控制引擎，本模块只负责「措辞层」：
+1. generate_tutor_reply：把选定动作渲染成苏格拉底式回复
+2. build_intro：开场白
 """
 from __future__ import annotations
 
@@ -10,27 +11,6 @@ from typing import Any, Optional
 
 from llm import chat_text
 from schemas import Concept, DiagnosticResult
-
-# ---------------------------------------------------------------------------
-# 教学动作决策
-# ---------------------------------------------------------------------------
-def decide_action(state: str, evidence_count: int) -> str:
-    """根据认知状态与证据数量决定教学动作。"""
-    if state == "misconceived":
-        # 连续误解（纠错无效）→ 回溯到前置概念重新巩固
-        if evidence_count >= 2:
-            return "backtrack"
-        return "correct"
-    if state == "insufficient":
-        if evidence_count >= 2:
-            return "explain"  # 连续信息不足，改为直接解释降低挫败感
-        return "probe"
-    if state == "partial":
-        return "probe"
-    if state == "understood":
-        return "advance"
-    return "probe"
-
 
 # ---------------------------------------------------------------------------
 # LLM 苏格拉底回复
@@ -139,51 +119,8 @@ def generate_tutor_reply(concept: Concept, diagnosis: DiagnosticResult, action: 
 
 
 # ---------------------------------------------------------------------------
-# 开场白 / 学习路径调度
+# 开场白
 # ---------------------------------------------------------------------------
-def topo_order(knowledge: dict) -> list[str]:
-    """对概念做拓扑排序，返回按学习顺序排列的概念 id 列表。"""
-    concepts = {c["id"]: c for c in knowledge["concepts"]}
-    visited: set[str] = set()
-    order: list[str] = []
-
-    def visit(cid: str, stack: set[str]):
-        if cid in visited:
-            return
-        if cid in stack:
-            return  # 环保护
-        stack.add(cid)
-        for pre in concepts.get(cid, {}).get("prerequisites", []):
-            if pre in concepts:
-                visit(pre, stack)
-        stack.discard(cid)
-        visited.add(cid)
-        order.append(cid)
-
-    for c in concepts:
-        visit(c, set())
-    return order
-
-
-def next_focus_concept(knowledge: dict, cognitive: dict) -> Optional[dict]:
-    """选择下一个焦点概念：按拓扑序找第一个未掌握、且前置已掌握的概念。"""
-    mastery_map = {m["concept_id"]: m["mastery"] for m in cognitive["concepts"]}
-    concepts = {c["id"]: c for c in knowledge["concepts"]}
-    order = topo_order(knowledge)
-
-    for cid in order:
-        c = concepts.get(cid)
-        if not c:
-            continue
-        if mastery_map.get(cid, 0.0) >= 0.8:
-            continue
-        # 前置概念是否都已基本掌握
-        prereq_ok = all(mastery_map.get(p, 0.0) >= 0.8 for p in c.get("prerequisites", []))
-        if prereq_ok:
-            return c
-    return None
-
-
 def build_intro(knowledge: dict, focus: Optional[dict]) -> str:
     """开场白：说明已建立的知识模型，并抛出第一个诊断问题。"""
     concepts = knowledge["concepts"]

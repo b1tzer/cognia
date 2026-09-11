@@ -111,6 +111,32 @@ def append_messages(sid: str, messages: list[dict]) -> None:
     conn.close()
 
 
+def append_user_message(sid: str, content: str) -> None:
+    """立即追加用户消息（diagnosis 暂空），避免流式回复期间用户刷新导致消息丢失。"""
+    append_messages(sid, [{"role": "user", "content": content, "action": None, "diagnosis": None}])
+
+
+def update_last_user_diagnosis(sid: str, diagnosis: dict) -> None:
+    """回填最后一条用户消息的 diagnosis（流程走完后补全诊断结果）。"""
+    conn = _connect()
+    cur = conn.execute("SELECT messages_json FROM sessions WHERE id = ?", (sid,))
+    r = cur.fetchone()
+    if r is None:
+        conn.close()
+        return
+    messages = json.loads(r["messages_json"])
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i]["role"] == "user":
+            messages[i]["diagnosis"] = diagnosis
+            break
+    conn.execute(
+        "UPDATE sessions SET messages_json = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(messages, ensure_ascii=False), _now(), sid),
+    )
+    conn.commit()
+    conn.close()
+
+
 def update_session(sid: str, cognitive: dict, knowledge: dict, status: str = "active") -> None:
     conn = _connect()
     conn.execute(

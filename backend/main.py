@@ -293,8 +293,13 @@ def _resolve_reply(ctx: dict) -> tuple[str | None, str, str, bool]:
     return None, ctx["action"], "active", True
 
 
+def _persist_user_message(sid: str, content: str) -> None:
+    """流程开始即落库用户消息（诊断稍后回填），避免流式回复期间刷新丢消息。"""
+    db.append_user_message(sid, content)
+
+
 def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
-    """完成决策统一、构造消息并持久化，返回响应 payload（含完整 reply）。"""
+    """完成决策统一、回填用户诊断、追加 AI 回复并持久化，返回响应 payload。"""
     decision_result = ctx["decision_result"]
     # 完成时统一决策语义为「完成推进」，保证 decision 与 action 一致
     if status == "completed":
@@ -308,9 +313,10 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
         )
         action = "advance"
 
-    user_msg = {"role": "user", "content": ctx["content"], "action": None, "diagnosis": ctx["diagnosis"].model_dump()}
+    # 用户消息已在流程开始时立即落库（diagnosis 暂空），此处回填诊断结果
+    db.update_last_user_diagnosis(sid, ctx["diagnosis"].model_dump())
     ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": ctx["diagnosis"].model_dump(), "decision": decision_result.model_dump(), "trace": ctx["trace"]}
-    db.append_messages(sid, [user_msg, ai_msg])
+    db.append_messages(sid, [ai_msg])
     db.update_session(sid, ctx["cognitive"], ctx["knowledge"], status=status)
 
     return {
@@ -329,6 +335,7 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
 @app.post("/api/sessions/{sid}/chat")
 def chat(sid: str, req: ChatRequest):
     s = _get_active_session(sid)
+    _persist_user_message(sid, req.content)  # 立即落库用户消息，防刷新丢失
     ctx = _process_turn(s, req.content)
 
     reply, action, status, is_stream = _resolve_reply(ctx)
@@ -343,6 +350,7 @@ def chat(sid: str, req: ChatRequest):
 @app.post("/api/sessions/{sid}/chat/stream")
 def chat_stream(sid: str, req: ChatRequest):
     s = _get_active_session(sid)
+    _persist_user_message(sid, req.content)  # 立即落库用户消息，防刷新丢失
     ctx = _process_turn(s, req.content)
     reply, action, status, is_stream = _resolve_reply(ctx)
 

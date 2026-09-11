@@ -5,10 +5,10 @@ interface Props {
 }
 
 const STATE_COLOR: Record<CognitiveState, string> = {
-  understood: '#22c55e',
-  partial: '#f59e0b',
-  misconceived: '#ef4444',
-  insufficient: '#94a3b8',
+  understood: '#4a6b5d',
+  partial: '#c08a3e',
+  misconceived: '#b0553f',
+  insufficient: '#9a938a',
 }
 
 const STATE_LABEL: Record<CognitiveState, string> = {

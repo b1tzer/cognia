@@ -67,6 +67,30 @@ def _build_cognitive(goal: str, concepts: list[Concept]) -> dict:
     }
 
 
+def _focus_concept_subset(
+    focus_id: str | None, concepts: list[Concept]
+) -> list[Concept]:
+    """只保留焦点概念及其前置概念（含传递闭包），减少诊断 token。
+
+    诊断「用户对当前焦点概念的理解」只需焦点概念及其依赖，无需整张概念图。
+    这是「节约」约束的直接落地：砍掉无关概念的冗余信息。
+    """
+    if focus_id is None:
+        return concepts
+    by_id = {c.id: c for c in concepts}
+    if focus_id not in by_id:
+        return concepts
+    subset_ids = {focus_id}
+    stack = list(by_id[focus_id].prerequisites)
+    while stack:
+        pid = stack.pop()
+        if pid in subset_ids or pid not in by_id:
+            continue
+        subset_ids.add(pid)
+        stack.extend(by_id[pid].prerequisites)
+    return [by_id[cid] for cid in subset_ids]
+
+
 def _all_root_mastered(knowledge: dict, cognitive: dict) -> bool:
     mastery = {m["concept_id"]: m["mastery"] for m in cognitive["concepts"]}
     roots = knowledge.get("root_concepts", [])
@@ -142,8 +166,9 @@ def chat(sid: str, req: ChatRequest):
     focus = tutor.next_focus_concept(knowledge, cognitive)
     focus_id = focus["id"] if focus else None
 
-    # 2. 认知诊断
-    diagnosis = cog.diagnose(knowledge["goal"], concepts, req.content, focus_id)
+    # 2. 认知诊断（只传焦点概念子集，减少 token）
+    focus_concepts = _focus_concept_subset(focus_id, concepts)
+    diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, req.content, focus_id)
 
     # 3. 更新认知模型
     mastery_map = {m["concept_id"]: m for m in cognitive["concepts"]}

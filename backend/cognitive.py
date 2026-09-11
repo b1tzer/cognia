@@ -81,6 +81,7 @@ def _diagnose_with_llm(goal: str, concepts: list[Concept], user_text: str) -> Di
         _DIAG_SYSTEM + _rules_suffix(),
         f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}",
         temperature=0.2,
+        max_tokens=800,
     )
     if not data:
         return None

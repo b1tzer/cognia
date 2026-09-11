@@ -8,10 +8,10 @@ interface Props {
 }
 
 const STATE_COLOR: Record<CognitiveState, string> = {
-  understood: '#22c55e',
-  partial: '#f59e0b',
-  misconceived: '#ef4444',
-  insufficient: '#64748b',
+  understood: '#4a6b5d',   // 墨绿：掌握/点亮
+  partial: '#c08a3e',      // 琥珀：半理解
+  misconceived: '#b0553f', // 陶土红：误解
+  insufficient: '#9a938a', // 暖灰：信息不足
 }
 
 const NODE_W = 196
@@ -108,7 +108,7 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
         >
           <defs>
             <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-              <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8" />
+              <path d="M0,0 L10,5 L0,10 z" fill="#b8b0a6" />
             </marker>
           </defs>
 
@@ -125,7 +125,7 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
                 key={i}
                 d={`M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`}
                 fill="none"
-                stroke="#94a3b8"
+                stroke="#b8b0a6"
                 strokeWidth={1.5}
                 markerEnd="url(#arrow)"
                 opacity={0.55}
@@ -133,35 +133,39 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
             )
           })}
 
-          {/* 概念节点 */}
+          {/* 概念节点：圆点星图，随理解点亮 */}
           {knowledge.concepts.map((c) => {
             const pos = layout.positions.get(c.id)!
+            const cx = pos.x + NODE_W / 2
+            const cy = pos.y + NODE_H / 2
             const m = masteryMap.get(c.id)
-            const color = m ? STATE_COLOR[m.state] : '#64748b'
-            const pct = m ? Math.round(m.mastery * 100) : 0
+            const color = m ? STATE_COLOR[m.state] : STATE_COLOR.insufficient
+            const mastery = m ? m.mastery : 0
             const isFocus = focusId === c.id
+            const r = isFocus ? 22 : 17
+            // 内圈填充半径随掌握度增长（未探索 ~ 空心，掌握 ~ 实心点亮）
+            const fillR = r * (0.22 + 0.78 * mastery)
             return (
-              <g key={c.id} transform={`translate(${pos.x}, ${pos.y})`}>
-                <rect
-                  x={0}
-                  y={0}
-                  width={NODE_W}
-                  height={NODE_H}
-                  rx={12}
-                  fill="#1e293b"
-                  stroke={isFocus ? '#38bdf8' : color}
-                  strokeWidth={isFocus ? 2.5 : 1.5}
+              <g key={c.id} className="gnode">
+                {/* 掌握时的光晕 */}
+                {m && m.state === 'understood' && (
+                  <circle cx={cx} cy={cy} r={r + 9} fill={color} opacity={0.14} className="gnode-glow" />
+                )}
+                {/* 外环 */}
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={r}
+                  fill="var(--panel, #fbfaf8)"
+                  stroke={color}
+                  strokeWidth={isFocus ? 2 : 1.2}
+                  opacity={0.5}
                 />
-                <text x={14} y={26} className="gnode-name" fill="#f1f5f9">
-                  {c.name.length > 12 ? c.name.slice(0, 12) + '…' : c.name}
-                </text>
-                <text x={14} y={44} className="gnode-summary" fill="#94a3b8">
-                  {(c.summary || '').length > 16 ? c.summary.slice(0, 16) + '…' : c.summary}
-                </text>
-                <rect x={14} y={54} width={NODE_W - 28} height={6} rx={3} fill="#334155" />
-                <rect x={14} y={54} width={(NODE_W - 28) * (pct / 100)} height={6} rx={3} fill={color} />
-                <text x={NODE_W - 14} y={50} textAnchor="end" className="gnode-pct" fill={color}>
-                  {pct}%
+                {/* 内圈填充：随 mastery 点亮 */}
+                <circle cx={cx} cy={cy} r={fillR} fill={color} className="gnode-fill" />
+                {/* 概念名标签 */}
+                <text x={cx} y={cy + r + 18} textAnchor="middle" className="gnode-name">
+                  {c.name.length > 10 ? c.name.slice(0, 10) + '…' : c.name}
                 </text>
               </g>
             )

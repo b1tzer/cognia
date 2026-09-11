@@ -287,6 +287,7 @@ body {
   border-right: 1px solid var(--border);
   padding: 16px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bg-soft);
 }
 
@@ -301,6 +302,7 @@ body {
   border-left: 1px solid var(--border);
   padding: 16px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bg-soft);
 }
 
@@ -517,6 +519,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -1109,6 +1112,7 @@ body {
 .graph-scroll {
   flex: 1;
   overflow: auto;
+  overscroll-behavior: contain;
   margin-top: 8px;
 }
 

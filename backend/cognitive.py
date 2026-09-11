@@ -28,6 +28,7 @@ _DIAG_SYSTEM = """你是一名严谨的认知诊断专家。给你一个学习�
 - insufficient：信息不足，表达太空泛或干脆承认不知道，无法判断
 
 判别原则（务必遵守，优先级最高）：
+- 只诊断焦点概念：你只判断学习者对「当前诊断焦点」概念的理解；不要因为学习者没有提到学习目标下的其他概念，就判为 insufficient 或把其他概念填入 missing。missing 只能填「焦点概念自身」还缺的理解。
 - 否定性证据优先：若表达中出现"不知道/不清楚/不会/没学过/忘了/不确定"等明确否定或承认不知道的信号，一律判为 insufficient，即使其他部分看似在谈相关概念。
 - 判断「misconceived」必须基于「概念本身的语义错误」，不能仅因为表述口语化、不精确、或出现"其实/本质上"等措辞就误判为误解；若语义本质正确、只是措辞不够严谨，应归入 partial 或 understood。
 - 判断「understood」应聚焦「最终结论的语义正确性」，不被表达过程中的犹豫、自我否定、或"说不清楚"等语气信号误导；只要最终结论正确且能说出关键机制，就应判为 understood。
@@ -75,13 +76,25 @@ def _rules_suffix() -> str:
 # ---------------------------------------------------------------------------
 # 诊断
 # ---------------------------------------------------------------------------
-def _diagnose_with_llm(goal: str, concepts: list[Concept], user_text: str) -> DiagnosticResult | None:
+def _diagnose_with_llm(
+    goal: str,
+    concepts: list[Concept],
+    user_text: str,
+    focus_concept_id: str | None = None,
+) -> DiagnosticResult | None:
     concept_desc = "\n".join(
         f"- {c.id}：{c.name}（{c.summary}）" for c in concepts
     )
+    # 标注当前诊断焦点，避免把「没提学习目标其他概念」当成「焦点概念没答好」
+    focus_name = ""
+    for c in concepts:
+        if c.id == focus_concept_id:
+            focus_name = c.name
+            break
+    focus_line = f"\n\n当前诊断焦点：{focus_name}（{focus_concept_id}）" if focus_name else ""
     data = chat_json(
         _DIAG_SYSTEM + _rules_suffix(),
-        f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}",
+        f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}{focus_line}",
         temperature=0.2,
         max_tokens=800,
     )
@@ -103,12 +116,43 @@ def _diagnose_with_llm(goal: str, concepts: list[Concept], user_text: str) -> Di
         return None
 
 
-# 表示"不知道/不会/不清楚"的信号词
+# 表示"不知道/不清楚/不会"的信号词。
+# 注意：不收录「不会」「太清楚」这类高误伤词——
+#   「不会」会误伤「其他线程不会立马知道」这种正常否定表述；
+#   「太清楚」会误伤「我太清楚了」这种自信表达（且「不太清楚」已覆盖）。
 _UNKNOWN_HINTS = (
-    "不知道", "不清楚", "不了解", "不会", "没学过", "没听过", "不确定", "忘了", "忘记了", "不懂",
-    "不太清楚", "不太懂", "没太懂", "太清楚", "只是听说", "听说过", "只知道", "了解不多", "了解一点",
+    "不知道", "不清楚", "不了解", "没学过", "没听过", "不确定", "忘了", "忘记了", "不懂",
+    "不太清楚", "不太懂", "没太懂", "只是听说", "听说过", "只知道", "了解不多", "了解一点",
     "一知半解", "说不出", "说不上来", "没概念",
 )
+
+
+# 概念名里的常见泛化后缀：去掉后得到「核心词」，用于子词匹配。
+# 例如「并发基础」→「并发」，「AQS 核心机制」→「AQS」。
+_CONCEPT_SUFFIXES = ("基础", "机制", "原理", "概念", "核心", "状态", "队列", "模型")
+
+
+def _concept_hits(concepts: list[Concept], text: str) -> int:
+    """统计文本命中的概念数：完整概念名命中，或去掉泛化后缀后的核心词命中。
+
+    解决「并发基础」这类复合概念名无法被「并发」命中的问题。
+    """
+    hits = 0
+    for c in concepts:
+        name = c.name or ""
+        if not name:
+            continue
+        if name in text:
+            hits += 1
+            continue
+        core = name
+        for suf in _CONCEPT_SUFFIXES:
+            if core.endswith(suf) and len(core) > len(suf):
+                core = core[: -len(suf)]
+                break
+        if core and core != name and core in text:
+            hits += 1
+    return hits
 
 
 def _heuristic_diagnose(concepts: list[Concept], user_text: str, focus_concept_id: str | None) -> DiagnosticResult:
@@ -143,8 +187,8 @@ def _heuristic_diagnose(concepts: list[Concept], user_text: str, focus_concept_i
             missing=[],
         )
 
-    # 命中概念关键词，信息量足够 → 半理解（降级模式无法验证语义对错，保守判定）
-    name_hits = sum(1 for c in concepts if c.name and c.name in t)
+    # 命中概念关键词（完整名或核心词），信息量足够 → 半理解（降级模式无法验证语义对错，保守判定）
+    name_hits = _concept_hits(concepts, t)
     if name_hits >= 1 and len(t) >= 12:
         return DiagnosticResult(
             state="partial",
@@ -173,7 +217,7 @@ def diagnose(
     focus_concept_id: str | None = None,
 ) -> DiagnosticResult:
     """诊断用户表达，LLM 优先，降级到启发式。"""
-    result = _diagnose_with_llm(goal, concepts, user_text)
+    result = _diagnose_with_llm(goal, concepts, user_text, focus_concept_id)
     if result is not None:
         return result
     return _heuristic_diagnose(concepts, user_text, focus_concept_id)

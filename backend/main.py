@@ -24,6 +24,7 @@ import tutor
 from schemas import (
     ChatRequest,
     Concept,
+    DiagnosticResult,
     StartSessionRequest,
 )
 
@@ -175,6 +176,25 @@ def chat(sid: str, req: ChatRequest):
     focus_concepts = _focus_concept_subset(focus_id, concepts)
     diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, req.content, focus_id)
 
+    # 2.5 推进意图路由（确定性规则，零 token）：用户明确要求「继续/下一个」时，
+    #     预标记当前焦点概念为已掌握并覆盖诊断为 understood，让后续焦点选择
+    #     自然推进到下一个概念，避免被误判 insufficient 而陷入反复解释的死循环。
+    advance_intent = decision.detect_advance_intent(req.content)
+    if advance_intent and focus_id:
+        for m in cognitive["concepts"]:
+            if m["concept_id"] == focus_id:
+                m["mastery"] = config.MASTERY_THRESHOLD + 0.05
+                m["state"] = "understood"
+                break
+        diagnosis = DiagnosticResult(
+            state="understood",
+            confidence=0.85,
+            concept_ids=[focus_id],
+            evidence=req.content[:60],
+            misconception="",
+            missing=[],
+        )
+
     # 3. 更新认知模型
     mastery_map = {m["concept_id"]: m for m in cognitive["concepts"]}
     # 无焦点或未识别到概念时，将证据归到焦点概念（或全部相关概念）
@@ -238,6 +258,21 @@ def chat(sid: str, req: ChatRequest):
             reply = _complete_reply()
             status = "completed"
             action = "advance"
+        elif advance_intent:
+            # 推进意图：进入下一个概念（而非抛迁移性问题反复纠缠当前概念）
+            next_focus = decision.next_focus_concept(knowledge, cognitive)
+            if next_focus is not None:
+                reply = (
+                    f"好的，这个点你已经掌握了。我们接着看下一个概念：**{next_focus['name']}**。"
+                    f"\n\n在讲解之前，先听听你的理解——你能用自己的话说说，"
+                    f"「{next_focus['name']}」是什么、解决什么问题吗？"
+                )
+                focus = next_focus
+                status = "active"
+            else:
+                reply = _complete_reply()
+                status = "completed"
+                action = "advance"
         else:
             reply = tutor.generate_tutor_reply(Concept(**focus), diagnosis, action, req.content)
             status = "active"

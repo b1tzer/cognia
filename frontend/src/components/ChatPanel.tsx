@@ -45,6 +45,7 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
   const [editingGoal, setEditingGoal] = useState(false)
   const [goalText, setGoalText] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // 澄清信息：取最后一条携带 clarify 的 assistant 消息
   const clarifyInfo: ClarifyInfo | null =
@@ -53,6 +54,14 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [session.messages.length, busy])
+
+  // 输入框按内容自动增高（上限 160px，超出后内部滚动）
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [input])
 
   const submit = () => {
     const t = input.trim()
@@ -163,6 +172,7 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
           <div className="chat-input-bar">
             <textarea
               className="chat-input"
+              ref={inputRef}
               placeholder={
                 session.status === 'completed'
                   ? '本目标已完成，点击右上角「新目标」继续'

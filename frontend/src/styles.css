@@ -985,6 +985,8 @@ body {
   outline: none;
   font-family: inherit;
   line-height: 1.5;
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 .chat-input:focus {

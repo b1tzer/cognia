@@ -34,6 +34,70 @@ export function sendChat(sessionId: string, content: string): Promise<ChatRespon
   })
 }
 
+export interface StreamCallbacks {
+  onToken: (content: string) => void
+  onDone: (data: ChatResponse) => void
+  onError: (err: Error) => void
+}
+
+/**
+ * 流式发送消息：消费后端 SSE 接口 /api/sessions/{sid}/chat/stream。
+ * SSE 协议：逐行 "data: {json}"，事件类型 type=token（文本增量）/ done（完整 payload）。
+ * 用 ReadableStream + TextDecoder 逐块读取，按行累积解析（兼容 chunk 含多行或不完整行）。
+ */
+export async function sendChatStream(
+  sessionId: string,
+  content: string,
+  cb: StreamCallbacks,
+): Promise<void> {
+  const res = await fetch(`/api/sessions/${sessionId}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(body.detail || `请求失败 (${res.status})`)
+  }
+  if (!res.body) {
+    throw new Error('当前浏览器不支持流式读取')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx).trim()
+        buffer = buffer.slice(idx + 1)
+        if (!line.startsWith('data:')) continue
+        const payload = line.slice(5).trim()
+        if (!payload) continue
+        try {
+          const evt = JSON.parse(payload)
+          if (evt.type === 'token' && typeof evt.content === 'string') {
+            cb.onToken(evt.content)
+          } else if (evt.type === 'done' && evt.data) {
+            cb.onDone(evt.data as ChatResponse)
+          }
+        } catch {
+          // 忽略无法解析的行，避免单行坏数据中断整个流
+        }
+      }
+    }
+  } catch (e) {
+    cb.onError(e as Error)
+    throw e
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 export function deleteSession(sessionId: string): Promise<{ ok: boolean }> {
   return request(`/api/sessions/${sessionId}`, { method: 'DELETE' })
 }

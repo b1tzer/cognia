@@ -61,28 +61,60 @@ export default function App() {
     if (!session) return
     setBusy(true)
     setError(null)
-    // 乐观追加用户消息
+    // 乐观追加用户消息 + 一个空内容的 assistant 占位消息（流式打字机填充）
     setSession((prev) =>
       prev
-        ? { ...prev, messages: [...prev.messages, { role: 'user', content }] }
+        ? {
+            ...prev,
+            messages: [
+              ...prev.messages,
+              { role: 'user', content },
+              { role: 'assistant', content: '', action: null, diagnosis: null, decision: null },
+            ],
+          }
         : prev,
     )
     try {
-      const r: ChatResponse = await api.sendChat(session.id, content)
-      setFocusId(r.focus_concept?.id ?? null)
-      setSession((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          status: r.status,
-          cognitive: r.cognitive,
-          messages: [
-            ...prev.messages,
-            { role: 'assistant', content: r.reply, action: r.action, diagnosis: r.diagnosis, decision: r.decision },
-          ],
-        }
+      await api.sendChatStream(session.id, content, {
+        onToken: (token) => {
+          setSession((prev) => {
+            if (!prev) return prev
+            const msgs = [...prev.messages]
+            const last = msgs[msgs.length - 1]
+            if (last && last.role === 'assistant') {
+              msgs[msgs.length - 1] = { ...last, content: last.content + token }
+            }
+            return { ...prev, messages: msgs }
+          })
+        },
+        onDone: (r: ChatResponse) => {
+          setFocusId(r.focus_concept?.id ?? null)
+          setSession((prev) => {
+            if (!prev) return prev
+            const msgs = [...prev.messages]
+            const last = msgs[msgs.length - 1]
+            if (last && last.role === 'assistant') {
+              msgs[msgs.length - 1] = {
+                ...last,
+                content: r.reply,
+                action: r.action,
+                diagnosis: r.diagnosis,
+                decision: r.decision,
+              }
+            }
+            return {
+              ...prev,
+              status: r.status,
+              cognitive: r.cognitive,
+              messages: msgs,
+            }
+          })
+          refreshSessions()
+        },
+        onError: (e) => {
+          setError(e.message || '发送失败')
+        },
       })
-      refreshSessions()
     } catch (e: any) {
       setError(e.message || '发送失败')
     } finally {

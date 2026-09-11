@@ -144,6 +144,25 @@ body {
   transform: translateY(-1px);
 }
 
+/* 按钮内联加载 spinner（新目标创建等待动画） */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -2px;
+  margin-right: 8px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--text-dim);

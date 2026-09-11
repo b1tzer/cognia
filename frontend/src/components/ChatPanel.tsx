@@ -89,7 +89,7 @@ export default function ChatPanel({ session, onSend, onDeleteMessage, onUpdateMe
             onDelete={onDeleteMessage}
           />
         ))}
-        {busy && (
+        {busy && session.messages[session.messages.length - 1]?.role !== 'assistant' && (
           <div className="bubble assistant typing">
             <span className="dot" />
             <span className="dot" />
@@ -183,9 +183,17 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
         ) : (
           <div className={`bubble ${isUser ? 'user' : 'assistant'}`}>
             <div className="bubble-text">
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-                {msg.content}
-              </ReactMarkdown>
+              {!isUser && !msg.content ? (
+                <span className="typing">
+                  <span className="dot" />
+                  <span className="dot" />
+                  <span className="dot" />
+                </span>
+              ) : (
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                  {msg.content}
+                </ReactMarkdown>
+              )}
             </div>
           </div>
         )}

@@ -36,7 +36,14 @@ export default function GoalInput({ onStart, busy, error }: Props) {
             disabled={busy}
           />
           <button className="btn btn-primary" onClick={submit} disabled={busy || !goal.trim()}>
-            {busy ? '构建知识模型中…' : '开始学习 →'}
+            {busy ? (
+              <>
+                <span className="spinner" />
+                构建知识模型中…
+              </>
+            ) : (
+              '开始学习 →'
+            )}
           </button>
         </div>
         {error && <div className="error-tip">{error}</div>}

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from llm import chat_text
+from llm import chat_text, chat_text_stream
 import prompt_rules
 from schemas import Concept, DiagnosticResult
 
@@ -49,13 +49,9 @@ _ACTION_LABEL = {
 }
 
 
-def _tutor_with_llm(
-    concept: Concept,
-    diagnosis: DiagnosticResult,
-    action: str,
-    user_text: str = "",
-) -> Optional[str]:
-    system = _TUTOR_SYSTEM.format(
+def _tutor_system(concept: Concept, diagnosis: DiagnosticResult, action: str) -> str:
+    """构建 tutor 的 system prompt（含动态规则注入）。"""
+    return _TUTOR_SYSTEM.format(
         concept=concept.name,
         summary=concept.summary or concept.name,
         why_matters=concept.why_matters or "建立准确的心智模型",
@@ -63,13 +59,51 @@ def _tutor_with_llm(
         state_label=_STATE_LABEL.get(diagnosis.state, "半理解"),
         action_label=_ACTION_LABEL.get(action, "追问"),
     ) + prompt_rules.rules_suffix("tutor")
-    # 学习者表达应直接来自真实用户输入；evidence 仅作诊断依据参考，
-    # 不作为学习者原话反推（避免内部状态串台到回复层）
+
+
+def _tutor_user(diagnosis: DiagnosticResult, user_text: str) -> str:
+    """构建 tutor 的 user prompt。
+
+    学习者表达应直接来自真实用户输入；evidence 仅作诊断依据参考，
+    不作为学习者原话反推（避免内部状态串台到回复层）。
+    """
     learner_text = user_text or diagnosis.evidence or ""
     user = f"学习者表达：{learner_text}"
     if diagnosis.misconception:
         user += f"\n已识别的误解：{diagnosis.misconception}"
+    return user
+
+
+def _tutor_with_llm(
+    concept: Concept,
+    diagnosis: DiagnosticResult,
+    action: str,
+    user_text: str = "",
+) -> Optional[str]:
+    system = _tutor_system(concept, diagnosis, action)
+    user = _tutor_user(diagnosis, user_text)
     return chat_text(system, user, temperature=0.6, max_tokens=1500)
+
+
+def stream_tutor_reply(
+    concept: Concept,
+    diagnosis: DiagnosticResult,
+    action: str,
+    user_text: str = "",
+):
+    """流式生成教学回复：LLM 流式时逐段 yield 文本增量，降级模板时一次性 yield。
+
+    返回生成器，调用方用 `for delta in stream_tutor_reply(...)` 消费。
+    """
+    system = _tutor_system(concept, diagnosis, action)
+    user = _tutor_user(diagnosis, user_text)
+    emitted = False
+    for delta in chat_text_stream(system, user, temperature=0.6, max_tokens=1500):
+        emitted = True
+        yield delta
+    if not emitted:
+        # LLM 不可用或无流式输出 → 降级模板（一次性输出完整文本）
+        yield _tutor_template(concept, diagnosis, action)
 
 
 # ---------------------------------------------------------------------------

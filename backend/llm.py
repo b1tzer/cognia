@@ -161,3 +161,59 @@ def chat_text(
         return None
     except Exception:
         return None
+
+
+def chat_text_stream(
+    system: str,
+    user: str,
+    temperature: float = 0.7,
+    max_tokens: int = 2000,
+):
+    """流式调用 LLM，逐个 yield 文本增量（delta）。失败时 yield 空（无输出）。
+
+    返回生成器，调用方用 `for delta in chat_text_stream(...)` 消费。
+    流式响应最后一个 chunk 携带 usage，会自动累加到 token 用量观测。
+    未启用 AI 或全程无有效输出时，该生成器不会 yield 任何内容（由调用方降级）。
+    """
+    if not config.AI_ENABLED:
+        return
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=config.OPENAI_API_KEY,
+            base_url=config.OPENAI_BASE_URL,
+            timeout=300.0,
+        )
+        for model in _model_candidates():
+            try:
+                stream = client.chat.completions.create(
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                )
+                emitted = False
+                for chunk in stream:
+                    # 流式响应最后一个 chunk 携带 usage（配合 include_usage）
+                    if getattr(chunk, "usage", None):
+                        _record_usage(chunk)
+                    choices = getattr(chunk, "choices", None)
+                    if (
+                        choices
+                        and choices[0].delta
+                        and getattr(choices[0].delta, "content", None)
+                    ):
+                        emitted = True
+                        yield choices[0].delta.content
+                if emitted:
+                    return
+            except Exception:
+                continue
+    except Exception:
+        return

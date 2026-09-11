@@ -6,12 +6,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -156,14 +157,20 @@ def get_session(sid: str):
     return s
 
 
-@app.post("/api/sessions/{sid}/chat")
-def chat(sid: str, req: ChatRequest):
+def _get_active_session(sid: str) -> dict:
     s = db.get_session(sid)
     if s is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     if s["status"] == "completed":
         raise HTTPException(status_code=400, detail="该学习目标已完成")
+    return s
 
+
+def _process_turn(s: dict, content: str) -> dict:
+    """执行「诊断 → 推进意图路由 → 认知更新 → 教学决策」，返回中间结果 ctx。
+
+    不含回复生成与持久化，供非流式 chat 与流式 chat_stream 共用。
+    """
     knowledge = s["knowledge"]
     cognitive = s["cognitive"]
     concepts = [Concept(**c) for c in knowledge["concepts"]]
@@ -174,12 +181,12 @@ def chat(sid: str, req: ChatRequest):
 
     # 2. 认知诊断（只传焦点概念子集，减少 token）
     focus_concepts = _focus_concept_subset(focus_id, concepts)
-    diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, req.content, focus_id)
+    diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, content, focus_id)
 
     # 2.5 推进意图路由（确定性规则，零 token）：用户明确要求「继续/下一个」时，
     #     预标记当前焦点概念为已掌握并覆盖诊断为 understood，让后续焦点选择
     #     自然推进到下一个概念，避免被误判 insufficient 而陷入反复解释的死循环。
-    advance_intent = decision.detect_advance_intent(req.content)
+    advance_intent = decision.detect_advance_intent(content)
     if advance_intent and focus_id:
         for m in cognitive["concepts"]:
             if m["concept_id"] == focus_id:
@@ -190,20 +197,18 @@ def chat(sid: str, req: ChatRequest):
             state="understood",
             confidence=0.85,
             concept_ids=[focus_id],
-            evidence=req.content[:60],
+            evidence=content[:60],
             misconception="",
             missing=[],
         )
 
     # 3. 更新认知模型
     mastery_map = {m["concept_id"]: m for m in cognitive["concepts"]}
-    # 无焦点或未识别到概念时，将证据归到焦点概念（或全部相关概念）
     target_ids = diagnosis.concept_ids or ([focus_id] if focus_id else [])
     if not target_ids:
         target_ids = [c.id for c in concepts]
 
     profile_params = (cognitive.get("profile") or {}).get("params") or {}
-    # 失败信号（误解/信息不足）用于连续失败计数与回溯触发
     is_failure = diagnosis.state in ("misconceived", "insufficient")
     for cid in target_ids:
         m = mastery_map.get(cid)
@@ -219,9 +224,8 @@ def chat(sid: str, req: ChatRequest):
         )
         m["mastery"] = round(new_mastery, 4)
         m["evidence_count"] += 1
-        m["last_evidence"] = diagnosis.evidence or req.content[:60]
+        m["last_evidence"] = diagnosis.evidence or content[:60]
         m["state"] = cog.state_from_mastery(new_mastery)
-        # 连续失败计数：失败信号累加，否则重置（用于回溯触发）
         if is_failure:
             m["consecutive_failures"] = m.get("consecutive_failures", 0) + 1
         else:
@@ -236,7 +240,7 @@ def chat(sid: str, req: ChatRequest):
 
     cognitive["updated_at"] = _now()
 
-    # 4. 教学决策 + 生成回复（分层流程控制：候选集内 LLM 决策 + 规则回退）
+    # 4. 教学决策（分层流程控制：候选集内 LLM 决策 + 规则回退）
     focus_mastery = mastery_map.get(focus_id, {}) if focus_id else {}
     decision_result = decision.decide_action(
         diagnosis.state,
@@ -246,37 +250,49 @@ def chat(sid: str, req: ChatRequest):
         diagnosis=diagnosis,
         mastery=focus_mastery.get("mastery", 0.0),
     )
-    action = decision_result.chosen_action
-    completed = _all_root_mastered(knowledge, cognitive)
 
-    if completed:
-        reply = _complete_reply()
-        status = "completed"
-        action = "advance"
-    else:
-        if focus is None:
-            reply = _complete_reply()
-            status = "completed"
-            action = "advance"
-        elif advance_intent:
-            # 推进意图：进入下一个概念（而非抛迁移性问题反复纠缠当前概念）
-            next_focus = decision.next_focus_concept(knowledge, cognitive)
-            if next_focus is not None:
-                reply = (
-                    f"好的，这个点你已经掌握了。我们接着看下一个概念：**{next_focus['name']}**。"
-                    f"\n\n在讲解之前，先听听你的理解——你能用自己的话说说，"
-                    f"「{next_focus['name']}」是什么、解决什么问题吗？"
-                )
-                focus = next_focus
-                status = "active"
-            else:
-                reply = _complete_reply()
-                status = "completed"
-                action = "advance"
-        else:
-            reply = tutor.generate_tutor_reply(Concept(**focus), diagnosis, action, req.content)
-            status = "active"
+    return {
+        "content": content,
+        "knowledge": knowledge,
+        "cognitive": cognitive,
+        "focus": focus,
+        "focus_id": focus_id,
+        "diagnosis": diagnosis,
+        "decision_result": decision_result,
+        "action": decision_result.chosen_action,
+        "completed": _all_root_mastered(knowledge, cognitive),
+        "advance_intent": advance_intent,
+    }
 
+
+def _resolve_reply(ctx: dict) -> tuple[str | None, str, str, bool]:
+    """根据 ctx 决定回复文本、action、status、是否需要流式生成。
+
+    返回 (reply, action, status, is_stream)：
+    - completed / 无焦点 / 推进意图：确定性文本，is_stream=False
+    - 正常 tutor 回复：reply=None，is_stream=True（由调用方流式生成）
+    """
+    if ctx["completed"] or ctx["focus"] is None:
+        return _complete_reply(), "advance", "completed", False
+
+    if ctx["advance_intent"]:
+        next_focus = decision.next_focus_concept(ctx["knowledge"], ctx["cognitive"])
+        if next_focus is not None:
+            ctx["focus"] = next_focus
+            reply = (
+                f"好的，这个点你已经掌握了。我们接着看下一个概念：**{next_focus['name']}**。"
+                f"\n\n在讲解之前，先听听你的理解——你能用自己的话说说，"
+                f"「{next_focus['name']}」是什么、解决什么问题吗？"
+            )
+            return reply, "advance", "active", False
+        return _complete_reply(), "advance", "completed", False
+
+    return None, ctx["action"], "active", True
+
+
+def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
+    """完成决策统一、构造消息并持久化，返回响应 payload（含完整 reply）。"""
+    decision_result = ctx["decision_result"]
     # 完成时统一决策语义为「完成推进」，保证 decision 与 action 一致
     if status == "completed":
         decision_result = decision.ActionDecision(
@@ -287,23 +303,61 @@ def chat(sid: str, req: ChatRequest):
                 confidence=1.0,
             ),
         )
+        action = "advance"
 
-    # 5. 持久化
-    user_msg = {"role": "user", "content": req.content, "action": None, "diagnosis": diagnosis.model_dump()}
-    ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": diagnosis.model_dump(), "decision": decision_result.model_dump()}
+    user_msg = {"role": "user", "content": ctx["content"], "action": None, "diagnosis": ctx["diagnosis"].model_dump()}
+    ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": ctx["diagnosis"].model_dump(), "decision": decision_result.model_dump()}
     db.append_messages(sid, [user_msg, ai_msg])
-    db.update_session(sid, cognitive, knowledge, status=status)
+    db.update_session(sid, ctx["cognitive"], ctx["knowledge"], status=status)
 
     return {
         "session_id": sid,
         "action": action,
         "reply": reply,
-        "diagnosis": diagnosis.model_dump(),
+        "diagnosis": ctx["diagnosis"].model_dump(),
         "decision": decision_result.model_dump(),
-        "cognitive": cognitive,
+        "cognitive": ctx["cognitive"],
         "status": status,
-        "focus_concept": focus,
+        "focus_concept": ctx["focus"],
     }
+
+
+@app.post("/api/sessions/{sid}/chat")
+def chat(sid: str, req: ChatRequest):
+    s = _get_active_session(sid)
+    ctx = _process_turn(s, req.content)
+
+    reply, action, status, is_stream = _resolve_reply(ctx)
+    if is_stream:
+        reply = tutor.generate_tutor_reply(
+            Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content
+        )
+
+    return _persist(sid, ctx, reply, action, status)
+
+
+@app.post("/api/sessions/{sid}/chat/stream")
+def chat_stream(sid: str, req: ChatRequest):
+    s = _get_active_session(sid)
+    ctx = _process_turn(s, req.content)
+    reply, action, status, is_stream = _resolve_reply(ctx)
+
+    def event_stream():
+        if is_stream:
+            parts: list[str] = []
+            for delta in tutor.stream_tutor_reply(
+                Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content
+            ):
+                parts.append(delta)
+                yield f"data: {json.dumps({'type': 'token', 'content': delta}, ensure_ascii=False)}\n\n"
+            reply_final = "".join(parts).strip()
+        else:
+            reply_final = reply or ""
+
+        payload = _persist(sid, ctx, reply_final, action, status)
+        yield f"data: {json.dumps({'type': 'done', 'data': payload}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 @app.delete("/api/sessions/{sid}")
 def delete_session(sid: str):

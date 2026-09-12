@@ -121,8 +121,8 @@
 
 **怎么做**：
 
-1. 单测：`python -m unittest test_xxx -v`。
-2. 全量回归：`python -m unittest discover -s . -p "test_*.py"`。
+1. 单测：`cd backend && .venv/bin/python -m unittest test_xxx -v`。
+2. 全量回归：`cd backend && .venv/bin/python -m unittest discover -s . -p "test_*.py"`（依赖装在 `backend/.venv`，系统 Python 会缺 `fastapi` 等依赖，勿用系统 Python）。
 3. lint 检查。
 4. 提交 PR → review → squash 合并。
 5. issue 验收评论 → 关闭。

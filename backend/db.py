@@ -81,6 +81,31 @@ def init_db() -> None:
         )
         """
     )
+    # 全局概念库（跨所有历史目标累积的稳定概念，id 为规范化名，跨会话稳定）
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS concepts (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    # 概念关系（is-a 上下位 / related 横向相关 / prerequisite 前置依赖）
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS concept_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_id TEXT NOT NULL,
+            to_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(from_id, to_id, relation_type)
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -420,3 +445,75 @@ def update_message(sid: str, index: int, content: str) -> Optional[list[dict]]:
     conn.commit()
     conn.close()
     return messages
+
+
+# ---------------------------------------------------------------------------
+# 全局概念库（Cognitive Atlas · 跨目标稳定概念）
+# ---------------------------------------------------------------------------
+def upsert_concept(concept_id: str, name: str, summary: str = "") -> None:
+    """写入/更新一个全局概念（id 为规范化名，跨会话稳定）。"""
+    conn = _connect()
+    conn.execute(
+        """
+        INSERT INTO concepts (id, name, summary, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            summary = excluded.summary,
+            updated_at = excluded.updated_at
+        """,
+        (concept_id, name, summary, _now(), _now()),
+    )
+    conn.commit()
+    conn.close()
+
+def get_concept(concept_id: str) -> Optional[dict]:
+    """按全局概念 id 查单条概念；不存在返回 None。"""
+    conn = _connect()
+    cur = conn.execute("SELECT * FROM concepts WHERE id = ?", (concept_id,))
+    r = cur.fetchone()
+    conn.close()
+    return dict(r) if r else None
+
+def list_concepts() -> list[dict]:
+    """返回全局概念库全部概念（按 id 排序）。"""
+    conn = _connect()
+    cur = conn.execute("SELECT * FROM concepts ORDER BY id")
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def upsert_concept_relation(from_id: str, to_id: str, relation_type: str) -> None:
+    """写入/更新一条概念关系（幂等：UNIQUE 约束去重，自环忽略）。"""
+    if from_id == to_id:
+        return
+    conn = _connect()
+    conn.execute(
+        """
+        INSERT INTO concept_relations (from_id, to_id, relation_type, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(from_id, to_id, relation_type) DO NOTHING
+        """,
+        (from_id, to_id, relation_type, _now()),
+    )
+    conn.commit()
+    conn.close()
+
+def list_concept_relations() -> list[dict]:
+    """返回全部概念关系（按 id 排序）。"""
+    conn = _connect()
+    cur = conn.execute("SELECT * FROM concept_relations ORDER BY id")
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_concept_relations(concept_id: str) -> list[dict]:
+    """返回某概念作为 from 或 to 的所有关系。"""
+    conn = _connect()
+    cur = conn.execute(
+        "SELECT * FROM concept_relations WHERE from_id = ? OR to_id = ? ORDER BY id",
+        (concept_id, concept_id),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

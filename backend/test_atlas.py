@@ -169,5 +169,39 @@ class TestBuildAtlasView(unittest.TestCase):
         ))
 
 
+class TestNeighbors(unittest.TestCase):
+    def setUp(self):
+        db.init_db()
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.execute("DELETE FROM concepts")
+        conn.execute("DELETE FROM concept_relations")
+        conn.commit()
+        conn.close()
+
+    def test_isolated_concept_empty(self):
+        self.assertEqual(atlas.neighbors("lonely", 1), [])
+
+    def test_one_hop_neighbors(self):
+        db.upsert_concept_relation("a", "b", "prerequisite")
+        db.upsert_concept_relation("a", "c", "related")
+        ns = atlas.neighbors("a", 1)
+        self.assertEqual(len(ns), 2)
+        self.assertTrue(any(n["node"] == "b" and n["relation_type"] == "prerequisite" for n in ns))
+        self.assertTrue(any(n["node"] == "c" and n["relation_type"] == "related" for n in ns))
+
+    def test_two_hop_depth(self):
+        db.upsert_concept_relation("a", "b", "is-a")
+        db.upsert_concept_relation("b", "c", "is-a")
+        ns = atlas.neighbors("a", 2)
+        nodes = {n["node"] for n in ns}
+        self.assertIn("b", nodes)
+        self.assertIn("c", nodes)
+
+    def test_depth_less_than_one_defaults_to_one(self):
+        db.upsert_concept_relation("a", "b", "related")
+        ns = atlas.neighbors("a", 0)
+        self.assertEqual(len(ns), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

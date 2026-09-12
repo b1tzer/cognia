@@ -233,6 +233,11 @@ def get_atlas():
     """全局个人知识版图：返回全局概念 + 关系 + 掌握度聚合。"""
     return atlas.build_atlas_view()
 
+@app.get("/api/atlas/{concept_id}/neighbors")
+def get_neighbors(concept_id: str, depth: int = 1):
+    """概念周边关联：返回 N 层邻接（is-a/related/prerequisite）。"""
+    return {"concept_id": concept_id, "neighbors": atlas.neighbors(concept_id, depth)}
+
 
 @app.post("/api/sessions")
 def start_session(req: StartSessionRequest):

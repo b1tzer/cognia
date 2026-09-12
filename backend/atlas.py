@@ -116,3 +116,33 @@ def build_atlas_view(user_id: str = db.DEFAULT_USER_ID) -> dict:
         for r in db.list_concept_relations()
     ]
     return {"concepts": concepts, "relations": relations}
+
+
+def neighbors(concept_id: str, depth: int = 1) -> list[dict]:
+    """返回某概念的 N 层邻接（BFS），每条含 from/to/relation_type/depth/node。
+
+    孤立概念（无任何邻接）返回空列表，不报错。
+    """
+    if depth < 1:
+        depth = 1
+    visited = {concept_id}
+    result: list[dict] = []
+    frontier = [concept_id]
+    for d in range(1, depth + 1):
+        nxt: list[str] = []
+        for cid in frontier:
+            for rel in db.get_concept_relations(cid):
+                other = rel["to_id"] if rel["from_id"] == cid else rel["from_id"]
+                if other in visited:
+                    continue
+                visited.add(other)
+                nxt.append(other)
+                result.append({
+                    "from": rel["from_id"],
+                    "to": rel["to_id"],
+                    "relation_type": rel["relation_type"],
+                    "depth": d,
+                    "node": other,
+                })
+        frontier = nxt
+    return result

@@ -11,6 +11,7 @@ from typing import Any
 from llm import chat_json
 import prompt_rules
 from schemas import Concept, KnowledgeModel
+import atlas
 
 # ---------------------------------------------------------------------------
 # LLM 提示词
@@ -130,25 +131,42 @@ def _generic_concepts(goal: str) -> list[Concept]:
     ]
 
 
+def _normalize_km(km: KnowledgeModel) -> KnowledgeModel:
+    """把概念 id 归一化为全局稳定 id，并同步替换 prerequisites / root_concepts 引用。
+
+    这是「概念 id 跨会话稳定」的落点：相同语义概念归一到同一全局 id，
+    使跨会话的 concept_mastery 先验能命中，避免重复确认。
+    """
+    id_map: dict[str, str] = {}
+    for c in km.concepts:
+        id_map[c.id] = atlas.resolve_global_id(c.name, c.summary)
+
+    for c in km.concepts:
+        c.id = id_map.get(c.id, c.id)
+        c.prerequisites = [id_map.get(p, p) for p in c.prerequisites]
+    km.root_concepts = [id_map.get(r, r) for r in km.root_concepts]
+    return km
+
+
 def build_knowledge_model(goal: str) -> KnowledgeModel:
-    """构建知识模型：LLM 优先，降级到内置模板。"""
+    """构建知识模型：LLM 优先，降级到内置模板；概念 id 统一归一化为全局稳定 id。"""
     km = _build_with_llm(goal)
-    if km is not None:
-        return km
+    if km is None:
+        low = goal.lower()
+        concepts: list[Concept] | None = None
+        for key in ("http", "git", "python", "机器学习", "machine learning"):
+            if key in low:
+                concepts = _DOMAIN_TEMPLATES.get(key if key in _DOMAIN_TEMPLATES else "http")
+                break
 
-    low = goal.lower()
-    concepts: list[Concept] | None = None
-    for key in ("http", "git", "python", "机器学习", "machine learning"):
-        if key in low:
-            concepts = _DOMAIN_TEMPLATES.get(key if key in _DOMAIN_TEMPLATES else "http")
-            break
+        if concepts is None:
+            concepts = _generic_concepts(goal)
 
-    if concepts is None:
-        concepts = _generic_concepts(goal)
+        # 兜底：若内置模板无匹配，仍用通用模板
+        if not concepts:
+            concepts = _generic_concepts(goal)
 
-    # 兜底：若内置模板无匹配，仍用通用模板
-    if not concepts:
-        concepts = _generic_concepts(goal)
+        root = [concepts[-1].id] if concepts else []
+        km = KnowledgeModel(goal=goal, root_concepts=root, concepts=concepts)
 
-    root = [concepts[-1].id] if concepts else []
-    return KnowledgeModel(goal=goal, root_concepts=root, concepts=concepts)
+    return _normalize_km(km)

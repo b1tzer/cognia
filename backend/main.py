@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 import db
 import optimizer
+import atlas
 import cognitive as cog
 import decision
 import domain_model
@@ -28,6 +29,7 @@ from schemas import (
     ChatRequest,
     Concept,
     DiagnosticResult,
+    KnowledgeModel,
     StartSessionRequest,
 )
 
@@ -178,9 +180,8 @@ def _clarify_session(sid: str, goal: str, clarify: dict) -> dict:
     return s
 
 
-def _finalize_goal(sid: str, goal: str) -> dict:
-    """用确定的目标构建知识模型与认知模型，切回 active 并追加开场白。"""
-    knowledge = domain_model.build_knowledge_model(goal)
+def _finalize_with_knowledge(sid: str, goal: str, knowledge: KnowledgeModel) -> dict:
+    """用给定知识模型构建认知模型，切回 active 并追加开场白（供目标/概念两条路径复用）。"""
     cognitive = _build_cognitive(goal, knowledge.concepts)
     knowledge_dict = knowledge.model_dump()
     focus = decision.next_focus_concept(knowledge_dict, cognitive)
@@ -191,6 +192,12 @@ def _finalize_goal(sid: str, goal: str) -> dict:
     s = db.get_session(sid)
     s["focus_concept"] = focus
     return s
+
+
+def _finalize_goal(sid: str, goal: str) -> dict:
+    """用确定的目标构建知识模型与认知模型，切回 active 并追加开场白。"""
+    knowledge = domain_model.build_knowledge_model(goal)
+    return _finalize_with_knowledge(sid, goal, knowledge)
 
 
 def _handle_goal_change(sid: str, raw_text: str) -> dict:
@@ -226,6 +233,26 @@ def _handle_goal_change(sid: str, raw_text: str) -> dict:
 @app.get("/api/health")
 def health():
     return {"ok": True, "ai_enabled": config.AI_ENABLED, "model": config.OPENAI_MODEL if config.AI_ENABLED else None}
+
+@app.get("/api/atlas")
+def get_atlas():
+    """全局个人知识版图：返回全局概念 + 关系 + 掌握度聚合。"""
+    return atlas.build_atlas_view()
+
+@app.get("/api/atlas/{concept_id}/neighbors")
+def get_neighbors(concept_id: str, depth: int = 1):
+    """概念周边关联：返回 N 层邻接（is-a/related/prerequisite）。"""
+    return {"concept_id": concept_id, "neighbors": atlas.neighbors(concept_id, depth)}
+
+@app.post("/api/atlas/{concept_id}/session")
+def start_concept_session(concept_id: str):
+    """点击版图概念发起学习会话：复用全局库子图构建知识模型，不重新随机拆解。"""
+    km_dict = atlas.build_knowledge_from_concept(concept_id)
+    if km_dict is None:
+        raise HTTPException(status_code=404, detail="概念不存在")
+    knowledge = KnowledgeModel(**km_dict)
+    session = db.create_session(knowledge.goal, stage="active")
+    return _finalize_with_knowledge(session["id"], knowledge.goal, knowledge)
 
 
 @app.post("/api/sessions")

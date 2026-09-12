@@ -27,7 +27,7 @@ Cognia 持续构建两套模型，并根据二者差距主动驱动学习：
 
 核心机制详见 [Purpose.md](./Purpose.md)。
 
-> 协作与开发规范（AAR 复盘 / GitHub issue 协作 / 前后端分工 / 测试验收等标准作业程序）详见 [docs/SOP.md](./docs/SOP.md)。
+> 协作与开发规范：**通用需求交付元流程**（调研 → 设计 → 开发 → 验收）见 [docs/general-sop.md](./docs/general-sop.md)；本项目的具体操作 SOP（AAR 复盘 / GitHub issue 协作 / 前后端分工 / 测试验收等）见 [docs/SOP.md](./docs/SOP.md)。
 
 ## 技术栈
 

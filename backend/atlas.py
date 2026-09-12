@@ -107,6 +107,9 @@ def build_atlas_view(user_id: str = db.DEFAULT_USER_ID) -> dict:
         for c in db.list_concepts()
     ]
     prior = learner_profile.prior_mastery(user_id)
+    # 叠加 active 会话实时掌握度（版图随学习实时更新，长期记忆仍保持「完成时沉淀」抗噪语义）
+    for cid, m in _live_mastery_from_active_sessions().items():
+        prior[cid] = m
     for c in concepts:
         if c["id"] in prior:
             c["mastery"] = round(prior[c["id"]], 4)
@@ -233,3 +236,70 @@ def find_bridge_paths(
                 "betweenness": round(bc.get(cid, 0.0), 4),
             })
     return bridges
+
+
+def _live_mastery_from_active_sessions() -> dict:
+    """汇总当前所有 active 会话的实时掌握度（每个概念取最大值）。
+
+    用于让版图随学习实时更新，而不污染 concept_mastery 的「完成时沉淀」抗噪语义。
+    """
+    live: dict[str, float] = {}
+    for s in db.list_sessions():
+        if s.get("status") != "active":
+            continue
+        session = db.get_session(s["id"])
+        cognitive = session.get("cognitive") or {}
+        for m in cognitive.get("concepts", []):
+            cid = m.get("concept_id")
+            if not cid:
+                continue
+            mastery = float(m.get("mastery", 0.0))
+            if mastery > live.get(cid, 0.0):
+                live[cid] = mastery
+    return live
+
+
+def build_knowledge_from_concept(concept_id: str) -> dict | None:
+    """以全局概念为目标，复用全局库子图构建知识模型（不重新随机拆解）。
+
+    子图 = 目标概念 + 其邻接（prerequisite 前置 / related 相关）。
+    返回 KnowledgeModel 结构的 dict；概念不存在返回 None。
+    """
+    root = db.get_concept(concept_id)
+    if root is None:
+        return None
+
+    included = {concept_id}
+    relations = db.get_concept_relations(concept_id)
+    for rel in relations:
+        other = rel["to_id"] if rel["from_id"] == concept_id else rel["from_id"]
+        included.add(other)
+
+    concepts: list[dict] = []
+    for cid in included:
+        c = db.get_concept(cid)
+        if c is None:
+            continue
+        concepts.append({
+            "id": c["id"],
+            "name": c["name"],
+            "summary": c.get("summary", ""),
+            "why_matters": "",
+            "prerequisites": [],
+            "common_misconceptions": [],
+        })
+
+    # prerequisite 关系：from 是 to 的前置（学 to 前要先学 from）
+    by_id = {c["id"]: c for c in concepts}
+    for rel in relations:
+        if rel["relation_type"] != "prerequisite":
+            continue
+        from_id, to_id = rel["from_id"], rel["to_id"]
+        if to_id in by_id and from_id in by_id:
+            by_id[to_id]["prerequisites"].append(from_id)
+
+    return {
+        "goal": root["name"],
+        "root_concepts": [concept_id],
+        "concepts": list(by_id.values()),
+    }

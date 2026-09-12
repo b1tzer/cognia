@@ -235,5 +235,73 @@ class TestBridgeDetection(unittest.TestCase):
         self.assertEqual(atlas.find_bridge_paths([], [], {}), [])
 
 
+class TestBuildKnowledgeFromConcept(unittest.TestCase):
+    def setUp(self):
+        db.init_db()
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.execute("DELETE FROM concepts")
+        conn.execute("DELETE FROM concept_relations")
+        conn.commit()
+        conn.close()
+
+    def test_missing_concept_returns_none(self):
+        self.assertIsNone(atlas.build_knowledge_from_concept("not-exist"))
+
+    def test_builds_subgraph(self):
+        db.upsert_concept("target", "目标概念", "s")
+        db.upsert_concept("pre", "前置概念", "s")
+        db.upsert_concept("rel", "相关概念", "s")
+        db.upsert_concept_relation("pre", "target", "prerequisite")
+        db.upsert_concept_relation("target", "rel", "related")
+
+        km = atlas.build_knowledge_from_concept("target")
+        self.assertIsNotNone(km)
+        self.assertEqual(km["goal"], "目标概念")
+        ids = {c["id"] for c in km["concepts"]}
+        self.assertIn("target", ids)
+        self.assertIn("pre", ids)
+        self.assertIn("rel", ids)
+        target = next(c for c in km["concepts"] if c["id"] == "target")
+        self.assertIn("pre", target["prerequisites"])
+
+    def test_single_concept_no_relations(self):
+        db.upsert_concept("solo", "孤立概念", "s")
+        km = atlas.build_knowledge_from_concept("solo")
+        self.assertEqual(len(km["concepts"]), 1)
+        self.assertEqual(km["root_concepts"], ["solo"])
+
+
+class TestLiveMastery(unittest.TestCase):
+    def setUp(self):
+        db.init_db()
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.execute("DELETE FROM sessions")
+        conn.commit()
+        conn.close()
+
+    def test_aggregates_active_session_mastery(self):
+        sid = db.create_session("学习X")["id"]
+        cognitive = {
+            "goal": "学习X",
+            "concepts": [
+                {"concept_id": "a", "mastery": 0.7, "state": "partial"},
+                {"concept_id": "b", "mastery": 0.9, "state": "understood"},
+            ],
+        }
+        db.update_session(sid, cognitive, {"concepts": []}, status="active")
+        live = atlas._live_mastery_from_active_sessions()
+        self.assertIn("a", live)
+        self.assertIn("b", live)
+        self.assertAlmostEqual(live["a"], 0.7)
+        self.assertAlmostEqual(live["b"], 0.9)
+
+    def test_ignores_completed_sessions(self):
+        sid = db.create_session("学习X")["id"]
+        cognitive = {"goal": "学习X", "concepts": [{"concept_id": "a", "mastery": 0.7}]}
+        db.update_session(sid, cognitive, {"concepts": []}, status="completed")
+        live = atlas._live_mastery_from_active_sessions()
+        self.assertNotIn("a", live)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -46,8 +46,155 @@ def init_db() -> None:
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
     if "stage" not in cols:
         conn.execute("ALTER TABLE sessions ADD COLUMN stage TEXT NOT NULL DEFAULT 'active'")
+    # 学习者画像长期记忆层（Phase 3）：跨会话沉淀概念掌握度 / 误解 / 画像
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS learner_profile (
+            user_id TEXT PRIMARY KEY,
+            prior_level TEXT,
+            preferences_json TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS concept_mastery (
+            user_id TEXT NOT NULL,
+            concept_id TEXT NOT NULL,
+            mastery REAL NOT NULL,
+            last_evidence TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, concept_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS misconceptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            concept_id TEXT NOT NULL,
+            misconception TEXT NOT NULL,
+            confidence REAL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
     conn.close()
+
+
+# 学习者画像（长期记忆）默认用户标识。当前无账户系统，固定为全局单用户；
+# 未来接入账户系统时，此处替换为真实 user_id 即可，数据模型无需改动。
+DEFAULT_USER_ID = "default"
+
+# ---------------------------------------------------------------------------
+# 学习者画像（Phase 3 · 跨会话长期记忆）
+# ---------------------------------------------------------------------------
+def get_learner_profile(user_id: str = DEFAULT_USER_ID) -> Optional[dict]:
+    conn = _connect()
+    cur = conn.execute("SELECT * FROM learner_profile WHERE user_id = ?", (user_id,))
+    r = cur.fetchone()
+    conn.close()
+    if r is None:
+        return None
+    return {
+        "user_id": r["user_id"],
+        "prior_level": r["prior_level"],
+        "preferences": json.loads(r["preferences_json"]) if r["preferences_json"] else {},
+        "updated_at": r["updated_at"],
+    }
+
+
+def upsert_learner_profile(
+    user_id: str = DEFAULT_USER_ID,
+    prior_level: Optional[str] = None,
+    preferences: Optional[dict] = None,
+) -> None:
+    conn = _connect()
+    conn.execute(
+        """
+        INSERT INTO learner_profile (user_id, prior_level, preferences_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            prior_level = excluded.prior_level,
+            preferences_json = excluded.preferences_json,
+            updated_at = excluded.updated_at
+        """,
+        (user_id, prior_level, json.dumps(preferences or {}, ensure_ascii=False), _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def upsert_concept_mastery(
+    user_id: str,
+    concept_id: str,
+    mastery: float,
+    last_evidence: str = "",
+) -> None:
+    """写入/更新某概念的掌握度档案（跨 goal 沉淀）。"""
+    conn = _connect()
+    conn.execute(
+        """
+        INSERT INTO concept_mastery (user_id, concept_id, mastery, last_evidence, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, concept_id) DO UPDATE SET
+            mastery = excluded.mastery,
+            last_evidence = excluded.last_evidence,
+            updated_at = excluded.updated_at
+        """,
+        (user_id, concept_id, mastery, last_evidence, _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_concept_mastery(user_id: str = DEFAULT_USER_ID) -> dict:
+    """返回 {concept_id: 行 dict} 掌握度档案快照；无记录返回空 dict。"""
+    conn = _connect()
+    cur = conn.execute("SELECT * FROM concept_mastery WHERE user_id = ?", (user_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return {r["concept_id"]: dict(r) for r in rows}
+
+
+def add_misconception(
+    user_id: str,
+    concept_id: str,
+    misconception: str,
+    confidence: float = 0.5,
+) -> None:
+    """追加一条误解记录（跨 goal 沉淀，去重在 Task 3 处理）。"""
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO misconceptions (user_id, concept_id, misconception, confidence, created_at) VALUES (?, ?, ?, ?, ?)",
+        (user_id, concept_id, misconception, confidence, _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_misconceptions(
+    user_id: str = DEFAULT_USER_ID,
+    concept_id: Optional[str] = None,
+) -> list[dict]:
+    """返回误解记录列表（按创建时间倒序）；可选按 concept_id 过滤。"""
+    conn = _connect()
+    if concept_id:
+        cur = conn.execute(
+            "SELECT * FROM misconceptions WHERE user_id = ? AND concept_id = ? ORDER BY created_at DESC",
+            (user_id, concept_id),
+        )
+    else:
+        cur = conn.execute(
+            "SELECT * FROM misconceptions WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def create_session(

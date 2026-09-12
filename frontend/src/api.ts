@@ -1,4 +1,4 @@
-import type { ChatResponse, Session, Message, LLMTrace, AtlasView } from './types'
+import type { ChatResponse, Session, Message, LLMTrace, AtlasView, AtlasNeighborsResponse } from './types'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -142,4 +142,8 @@ export function getHealth(): Promise<{ ok: boolean; ai_enabled: boolean; model: 
 
 export function getAtlas(): Promise<AtlasView> {
   return request<AtlasView>('/api/atlas')
+}
+
+export function getAtlasNeighbors(conceptId: string, depth: number): Promise<AtlasNeighborsResponse> {
+  return request<AtlasNeighborsResponse>(`/api/atlas/${encodeURIComponent(conceptId)}/neighbors?depth=${depth}`)
 }

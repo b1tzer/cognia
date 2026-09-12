@@ -191,6 +191,42 @@ class TokenBudget:
         return self.usage_ratio >= threshold
 
 
+def _budget_for(label: str | None):
+    """返回某层的 (prompt_tokens, completion_tokens)；label 不在预算表时返回 None。"""
+    if not label:
+        return None
+    b = config.CONTEXT_BUDGET.get(label)
+    if not b:
+        return None
+    return b["prompt_tokens"], b["completion_tokens"]
+
+
+def _warn_budget(label: str, prompt_tokens: int, limit: int) -> None:
+    """prompt 超预算时打印告警（不静默失败，便于后续优化该层 prompt）。"""
+    ratio = prompt_tokens / limit if limit else 0.0
+    print(
+        f"[token-budget] 层「{label}」输入 {prompt_tokens} tokens 超过预算 {limit}（{ratio:.0%}），请压缩该层 prompt",
+        flush=True,
+    )
+
+
+def _apply_budget(budget_label: str | None, system: str, user: str, max_tokens: int) -> int:
+    """按 budget_label 应用预算：覆盖 max_tokens 并做 prompt 超限告警。
+
+    返回最终使用的 max_tokens。budget_label 为空或不在预算表时原样返回，行为等价。
+    """
+    if not budget_label:
+        return max_tokens
+    b = _budget_for(budget_label)
+    if not b:
+        return max_tokens
+    prompt_limit, completion = b
+    prompt_tokens = estimate_tokens(system) + estimate_tokens(user)
+    if prompt_tokens > prompt_limit:
+        _warn_budget(budget_label, prompt_tokens, prompt_limit)
+    return completion
+
+
 def _model_candidates() -> list[str]:
     """按顺序返回要尝试的模型：主模型 + 备选模型（去重）。"""
     models = [config.OPENAI_MODEL]
@@ -207,13 +243,16 @@ def chat_json(
     max_tokens: int = 4000,
     trace: Optional[list] = None,
     trace_label: str = "LLM 调用",
+    budget_label: Optional[str] = None,
 ) -> Optional[dict]:
     """调用 LLM 并返回 JSON 对象。失败或未启用时返回 None，由调用方降级。
 
     trace 传入时，会把本次调用的 prompt 与原始输出记录进去（用于「思考过程」展示）。
+    budget_label 传入时，用 config.CONTEXT_BUDGET 覆盖 max_tokens 并做 prompt 超限告警。
     """
     if not config.AI_ENABLED:
         return None
+    max_tokens = _apply_budget(budget_label, system, user, max_tokens)
     try:
         from openai import OpenAI
 
@@ -268,10 +307,15 @@ def chat_text(
     max_tokens: int = 2000,
     trace: Optional[list] = None,
     trace_label: str = "LLM 调用",
+    budget_label: Optional[str] = None,
 ) -> Optional[str]:
-    """调用 LLM 返回纯文本。失败时返回 None。"""
+    """调用 LLM 返回纯文本。失败时返回 None。
+
+    budget_label 传入时，用 config.CONTEXT_BUDGET 覆盖 max_tokens 并做 prompt 超限告警。
+    """
     if not config.AI_ENABLED:
         return None
+    max_tokens = _apply_budget(budget_label, system, user, max_tokens)
     try:
         from openai import OpenAI
 
@@ -316,15 +360,18 @@ def chat_text_stream(
     max_tokens: int = 2000,
     trace: Optional[list] = None,
     trace_label: str = "LLM 调用",
+    budget_label: Optional[str] = None,
 ):
     """流式调用 LLM，逐个 yield 文本增量（delta）。失败时 yield 空（无输出）。
 
     返回生成器，调用方用 `for delta in chat_text_stream(...)` 消费。
     流式响应最后一个 chunk 携带 usage，会自动累加到 token 用量观测。
     未启用 AI 或全程无有效输出时，该生成器不会 yield 任何内容（由调用方降级）。
+    budget_label 传入时，用 config.CONTEXT_BUDGET 覆盖 max_tokens 并做 prompt 超限告警。
     """
     if not config.AI_ENABLED:
         return
+    max_tokens = _apply_budget(budget_label, system, user, max_tokens)
     try:
         from openai import OpenAI
 

@@ -124,6 +124,7 @@ def _diagnose_with_llm(
         max_tokens=1500,
         trace=trace,
         trace_label="认知诊断",
+        budget_label="cognitive",
     )
     if not data:
         return None

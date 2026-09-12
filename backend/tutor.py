@@ -100,7 +100,7 @@ def _tutor_with_llm(
 ) -> Optional[str]:
     system = _tutor_system(concept, diagnosis, action)
     user = _tutor_user(diagnosis, user_text, history)
-    return chat_text(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成")
+    return chat_text(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成", budget_label="tutor")
 
 
 def stream_tutor_reply(
@@ -118,7 +118,7 @@ def stream_tutor_reply(
     system = _tutor_system(concept, diagnosis, action)
     user = _tutor_user(diagnosis, user_text, history)
     emitted = False
-    for delta in chat_text_stream(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成"):
+    for delta in chat_text_stream(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成", budget_label="tutor"):
         emitted = True
         yield delta
     if not emitted:

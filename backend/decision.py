@@ -158,7 +158,7 @@ def decide_action_llm(
         consecutive_failures=consecutive_failures,
         candidates=cand_text,
     ) + prompt_rules.rules_suffix("decision_action")
-    data = chat_json(system, "", temperature=0.2, max_tokens=1000, trace=trace, trace_label="教学决策")
+    data = chat_json(system, "", temperature=0.2, max_tokens=1000, trace=trace, trace_label="教学决策", budget_label="decision_action")
     if not data:
         return None
     try:
@@ -380,7 +380,7 @@ def select_focus_llm(
     system = _FOCUS_SELECT_SYSTEM.format(
         goal=knowledge.get("goal", ""), candidates=cand_desc
     ) + prompt_rules.rules_suffix("decision_action")
-    data = chat_json(system, "", temperature=0.2, max_tokens=1000, trace=trace, trace_label="焦点选择")
+    data = chat_json(system, "", temperature=0.2, max_tokens=1000, trace=trace, trace_label="焦点选择", budget_label="focus_select")
     if not data:
         return None
     cid = data.get("selected_concept_id", "")

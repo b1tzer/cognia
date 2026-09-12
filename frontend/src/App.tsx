@@ -45,6 +45,15 @@ export default function App() {
     }
   }, [refreshSessions])
 
+  // #40：从认知版图点击概念发起学习会话，成功后切换到会话视图
+  const handleStartFromConcept = useCallback(async (conceptId: string) => {
+    const s = await api.startConceptSession(conceptId)
+    setSession(s)
+    setFocusId(s.focus_concept?.id ?? null)
+    setShowAtlas(false)
+    refreshSessions()
+  }, [refreshSessions])
+
   const handleSelect = useCallback(async (id: string) => {
     setBusy(true)
     setError(null)
@@ -231,7 +240,7 @@ export default function App() {
   }, [session])
 
   if (showAtlas) {
-    return <AtlasView onBack={() => setShowAtlas(false)} />
+    return <AtlasView onBack={() => setShowAtlas(false)} onStartSession={handleStartFromConcept} />
   }
 
   if (!session) {

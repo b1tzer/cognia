@@ -11,6 +11,7 @@ import { forceLayout } from '../atlasLayout'
 
 interface Props {
   onBack: () => void
+  onStartSession: (conceptId: string) => Promise<void>
 }
 
 const STATE_COLOR: Record<string, string> = {
@@ -53,7 +54,7 @@ interface ViewTransform {
   k: number
 }
 
-export default function AtlasView({ onBack }: Props) {
+export default function AtlasView({ onBack, onStartSession }: Props) {
   const [data, setData] = useState<AtlasData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -64,6 +65,10 @@ export default function AtlasView({ onBack }: Props) {
   const [neighbors, setNeighbors] = useState<AtlasNeighborsResponse | null>(null)
   const [neighborsLoading, setNeighborsLoading] = useState(false)
   const [neighborsError, setNeighborsError] = useState<string | null>(null)
+
+  // #40：发起学习会话
+  const [starting, setStarting] = useState(false)
+  const [startError, setStartError] = useState<string | null>(null)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
@@ -289,6 +294,20 @@ export default function AtlasView({ onBack }: Props) {
     setDrag({})
   }, [])
 
+  // #40：在聚焦面板发起学习会话，成功后由父组件切换到会话视图
+  const handleStartSession = useCallback(async () => {
+    if (!focusId) return
+    setStarting(true)
+    setStartError(null)
+    try {
+      await onStartSession(focusId)
+    } catch (e: unknown) {
+      setStartError(e instanceof Error ? e.message : '发起学习会话失败')
+    } finally {
+      setStarting(false)
+    }
+  }, [focusId, onStartSession])
+
   const hasNodes = concepts.length > 0
   const focusConcept = focusId ? conceptById.get(focusId) : undefined
   const isIsolated = !!focusId && !neighborsLoading && !neighborsError && neighborList.length === 0
@@ -478,6 +497,15 @@ export default function AtlasView({ onBack }: Props) {
             {focusConcept.summary && (
               <div className="atlas-focus-summary">{focusConcept.summary}</div>
             )}
+
+            <button
+              className="btn btn-primary atlas-start-session"
+              onClick={handleStartSession}
+              disabled={starting}
+            >
+              {starting ? '发起中…' : '发起学习会话'}
+            </button>
+            {startError && <div className="atlas-hint-error atlas-start-session-error">{startError}</div>}
 
             <div className="atlas-depth">
               <label className="atlas-depth-label">邻接深度</label>

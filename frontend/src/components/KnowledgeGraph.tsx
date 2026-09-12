@@ -57,21 +57,22 @@ function computeLayout(knowledge: KnowledgeModel): Layout {
 
   let maxLayerCount = 0
   for (const ids of layers.values()) maxLayerCount = Math.max(maxLayerCount, ids.length)
-  const width = maxLayerCount * NODE_W + (maxLayerCount - 1) * GAP_X + PAD * 2
+  // 横向 DAG：层数决定宽度（左→右），层内节点数决定高度（纵向堆叠）
+  const width = (maxDepth + 1) * NODE_W + maxDepth * GAP_X + PAD * 2
+  const height = maxLayerCount * NODE_H + (maxLayerCount - 1) * GAP_Y + PAD * 2
 
   const positions = new Map<string, { x: number; y: number }>()
   for (const [d, ids] of layers.entries()) {
-    const layerWidth = ids.length * NODE_W + (ids.length - 1) * GAP_X
-    const startX = (width - layerWidth) / 2
+    const layerHeight = ids.length * NODE_H + (ids.length - 1) * GAP_Y
+    const startY = (height - layerHeight) / 2
     ids.forEach((id, i) => {
       positions.set(id, {
-        x: startX + i * (NODE_W + GAP_X),
-        y: PAD + d * (NODE_H + GAP_Y),
+        x: PAD + d * (NODE_W + GAP_X),
+        y: startY + i * (NODE_H + GAP_Y),
       })
     })
   }
 
-  const height = PAD + maxDepth * (NODE_H + GAP_Y) + NODE_H + PAD
   return { positions, width, height, layers }
 }
 
@@ -101,6 +102,9 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
         <div className="panel-sub">{knowledge.concepts.length} 个概念 · {edges.length} 条依赖</div>
       </div>
       <div className="graph-scroll">
+        {knowledge.concepts.length === 0 ? (
+          <div className="graph-empty">还没有知识模型，完成目标澄清后会生成概念依赖图。</div>
+        ) : (
         <svg
           width={layout.width}
           height={layout.height}
@@ -116,14 +120,17 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
           {edges.map((e, i) => {
             const a = layout.positions.get(e.from)!
             const b = layout.positions.get(e.to)!
-            const x1 = a.x + NODE_W / 2
-            const y1 = a.y + NODE_H
-            const x2 = b.x + NODE_W / 2
-            const y2 = b.y
+            // 左→右布局：从右边缘中点连到左边缘中点
+            const x1 = a.x + NODE_W
+            const y1 = a.y + NODE_H / 2
+            const x2 = b.x
+            const y2 = b.y + NODE_H / 2
             return (
               <path
                 key={i}
-                d={`M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`}
+                className="gedge"
+                pathLength={1}
+                d={`M ${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2} ${y2}`}
                 fill="none"
                 stroke="#b8b0a6"
                 strokeWidth={1.5}
@@ -171,6 +178,7 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
             )
           })}
         </svg>
+        )}
       </div>
     </div>
   )

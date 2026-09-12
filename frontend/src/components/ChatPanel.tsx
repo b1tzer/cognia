@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
+import ConfirmDialog from './ConfirmDialog'
 import type { Message, Session, CognitiveState, TutorAction, LLMTrace, ClarifyInfo } from '../types'
 
 interface Props {
@@ -11,6 +12,7 @@ interface Props {
   onUpdateGoal: (goal: string) => void
   onDeleteMessage: (index: number) => void
   onUpdateMessage: (index: number, content: string) => void
+  onRegenerate: (index: number) => void
   busy: boolean
   error: string | null
 }
@@ -38,13 +40,14 @@ const QUICK_ACTIONS = [
   { label: '回到上一个概念', text: '回到上一个概念' },
 ]
 
-export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal, onDeleteMessage, onUpdateMessage, busy, error }: Props) {
+export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal, onDeleteMessage, onUpdateMessage, onRegenerate, busy, error }: Props) {
   const [input, setInput] = useState('')
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [editText, setEditText] = useState('')
   const [editingGoal, setEditingGoal] = useState(false)
   const [goalText, setGoalText] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // 澄清信息：取最后一条携带 clarify 的 assistant 消息
   const clarifyInfo: ClarifyInfo | null =
@@ -53,6 +56,14 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [session.messages.length, busy])
+
+  // 输入框按内容自动增高（上限 160px，超出后内部滚动）
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [input])
 
   const submit = () => {
     const t = input.trim()
@@ -117,6 +128,13 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
       </div>
 
       <div className="chat-scroll">
+        {session.messages.length === 0 && (
+          <div className="chat-empty">
+            <div className="chat-empty-icon">◆</div>
+            <div className="chat-empty-title">开始你的第一次表达</div>
+            <div className="chat-empty-hint">用自己的话说出对目标的理解，导师会据此评估并引导。</div>
+          </div>
+        )}
         {session.messages.map((m, i) => (
           <Bubble
             key={i}
@@ -129,6 +147,7 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
             onEditSave={saveEdit}
             onEditCancel={cancelEdit}
             onDelete={onDeleteMessage}
+            onRegenerate={onRegenerate}
           />
         ))}
         {busy && session.messages[session.messages.length - 1]?.role !== 'assistant' && (
@@ -163,6 +182,7 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
           <div className="chat-input-bar">
             <textarea
               className="chat-input"
+              ref={inputRef}
               placeholder={
                 session.status === 'completed'
                   ? '本目标已完成，点击右上角「新目标」继续'
@@ -203,11 +223,13 @@ interface BubbleProps {
   onEditSave: (index: number) => void
   onEditCancel: () => void
   onDelete: (index: number) => void
+  onRegenerate: (index: number) => void
 }
 
-function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEditSave, onEditCancel, onDelete }: BubbleProps) {
+function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEditSave, onEditCancel, onDelete, onRegenerate }: BubbleProps) {
   const isUser = msg.role === 'user'
   const diag = msg.diagnosis
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   return (
     <div className={`bubble-row ${isUser ? 'user' : 'assistant'}`}>
       <div className="bubble-avatar">{isUser ? '我' : '◆'}</div>
@@ -261,17 +283,41 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
       </div>
       {!editing && (
         <div className="bubble-tools">
-          {isUser && (
-            <button className="bubble-tool" title="编辑" onClick={() => onEditStart(index, msg.content)}>
-              ✎
-            </button>
+          {isUser ? (
+            <>
+              <button className="bubble-tool" title="编辑" aria-label="编辑这条消息" onClick={() => onEditStart(index, msg.content)}>
+                ✎
+              </button>
+              <button
+                className="bubble-tool"
+                title="删除"
+                aria-label="删除这条消息"
+                onClick={() => setConfirmingDelete(true)}
+              >
+                ✕
+              </button>
+            </>
+          ) : (
+            diag && (
+              <button className="bubble-tool" title="重新生成" aria-label="重新生成这条回答" onClick={() => onRegenerate(index)}>
+                ↻
+              </button>
+            )
           )}
-          <button className="bubble-tool" title="删除" onClick={() => {
-            if (window.confirm('删除这条消息？')) onDelete(index)
-          }}>
-            ✕
-          </button>
         </div>
+      )}
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="删除消息"
+          message="确定删除这条消息？删除后对话流将回溯到该消息之前。"
+          confirmLabel="删除"
+          danger
+          onConfirm={() => {
+            onDelete(index)
+            setConfirmingDelete(false)
+          }}
+          onCancel={() => setConfirmingDelete(false)}
+        />
       )}
     </div>
   )

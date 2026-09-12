@@ -51,6 +51,7 @@
 | 状态 | `status/todo` `status/in-progress` `status/review` `status/done` `status/blocked` |
 | 优先级 | `priority/urgent` `priority/high` `priority/medium` `priority/low` |
 | 类型 | `type/feature` `type/ui` `type/refactor` `type/bugfix` |
+| 层次 | `kind/requirement` `kind/use-case` `kind/task`（需求/用例/任务三层） |
 | 领域 | `area/frontend` `area/backend` |
 | 人员 | `assignee/pm` `assignee/牛马1号`（agent 无 GitHub 账号，用标签标记人） |
 
@@ -131,3 +132,26 @@
 - 全量回归全绿
 - lint 无告警
 - issue 带验收结论后关闭
+
+---
+
+## 7. 需求/用例/任务三层 issue 结构 SOP
+
+**何时用**：当一个需求可拆解为「多个用例、每个用例下又有可执行任务」时，用三层 issue 结构记录，确保全过程文档化、不丢失内容。
+
+**怎么做**：
+
+1. **三层结构**：需求（Requirement，1 个）→ 用例（Use Case，N 个）→ 任务（Task，M 个），逐层用 GitHub 原生 Sub-issue 建立父子关联。
+2. **标题前缀区分层次**：`[需求]` / `[用例]` / `[任务]` 打头，一眼可辨层次。
+3. **标签区分层次**：`kind/requirement`（需求）/ `kind/use-case`（用例）/ `kind/task`（任务），与标题前缀双保险。
+4. **内容分工**：
+   - 需求 issue：背景 + 方案概述 + 用例清单 + 关键决策 + Out of Scope + DoD。
+   - 用例 issue：用户故事（INVEST）+ 验收标准 AC（覆盖正常/边界/异常）。
+   - 任务 issue：契约（做什么、涉及文件/接口）+ 任务级验收标准。
+5. **关联建立**：`gh issue create` 本身不支持 `--sub-issue` 参数，需用 GraphQL `addSubIssue` mutation（`gh api graphql`）挂父子关系。
+
+**验收标准**：
+- 三层结构完整：需求下有全部用例、每个用例下有对应任务，无遗漏
+- 每个 issue 的标题前缀 + 标签与所属层次一致
+- Sub-issue 树可完整追溯（需求 → 用例 → 任务）
+- 全过程（背景/方案/AC/契约）均有文档记载，不丢失内容

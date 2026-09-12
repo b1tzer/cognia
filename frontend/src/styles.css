@@ -1042,16 +1042,11 @@ body {
 
 .concept-list {
   display: flex;
-  flex-direction: row;
-  gap: 12px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  padding-bottom: 4px;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .concept-row {
-  flex: 0 0 auto;
-  width: 190px;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 12px;

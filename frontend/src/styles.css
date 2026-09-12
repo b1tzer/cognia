@@ -1325,3 +1325,124 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- 认知版图（Atlas） ---------- */
+.atlas-view {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.atlas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(246, 244, 240, 0.75);
+  backdrop-filter: blur(8px);
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+.atlas-toolbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex: 1;
+}
+
+.atlas-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.atlas-meta {
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+.atlas-canvas {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(900px 500px at 50% 0%, #fbfaf8 0%, var(--bg) 60%) fixed;
+}
+
+.atlas-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+.atlas-edge {
+  stroke: #c9c2b8;
+  stroke-width: 1.2;
+  opacity: 0.55;
+}
+
+.atlas-node {
+  cursor: grab;
+}
+
+.atlas-node:active {
+  cursor: grabbing;
+}
+
+.atlas-node-ring {
+  fill: var(--panel);
+  stroke-width: 1.4;
+}
+
+.atlas-node-fill {
+  transition: r 0.2s ease;
+}
+
+.atlas-node-name {
+  font-size: 12px;
+  fill: var(--text-dim);
+  pointer-events: none;
+  user-select: none;
+}
+
+.atlas-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.atlas-hint-error {
+  color: var(--red);
+}
+
+.atlas-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 24px;
+}
+
+.atlas-empty-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.atlas-empty-sub {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+

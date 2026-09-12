@@ -113,3 +113,47 @@ export interface ChatResponse {
   trace?: LLMTrace[]
   clarify?: ClarifyInfo | null
 }
+
+// ---------- 认知版图（Cognitive Atlas） ----------
+
+export type RelationType = 'is-a' | 'related' | 'prerequisite'
+
+export interface AtlasConcept {
+  id: string
+  name: string
+  summary: string
+  mastery: number
+  state: CognitiveState
+}
+
+export interface AtlasRelation {
+  from: string
+  to: string
+  relation_type: RelationType
+}
+
+export interface AtlasBridge {
+  bridge: string
+  bridge_name: string
+  neighbors: Array<{ id: string; name: string }>
+  betweenness: number
+}
+
+export interface AtlasView {
+  concepts: AtlasConcept[]
+  relations: AtlasRelation[]
+  bridges: AtlasBridge[]
+}
+
+export interface AtlasNeighbor {
+  from: string
+  to: string
+  relation_type: RelationType
+  depth: number
+  node: string
+}
+
+export interface AtlasNeighborsResponse {
+  concept_id: string
+  neighbors: AtlasNeighbor[]
+}

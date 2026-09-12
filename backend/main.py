@@ -22,6 +22,7 @@ import cognitive as cog
 import decision
 import domain_model
 import goal_clarify
+import learner_profile
 import tutor
 from schemas import (
     ChatRequest,
@@ -48,9 +49,14 @@ def _now() -> str:
 
 
 def _build_cognitive(goal: str, concepts: list[Concept]) -> dict:
-    """初始化认知模型：按用户先验水平赋予不同的初始掌握概率（千人千面）。"""
+    """初始化认知模型：按用户先验水平 + 跨会话历史掌握度赋予初始掌握概率。
+
+    千人千面：优先用 learner_profile 的历史掌握度做先验（含遗忘衰减），
+    无历史的概念回退到按目标推断的先验水平 P_L0。
+    """
     level = cog.infer_prior_level(goal)
     params = cog.get_profile_params(level)
+    prior = learner_profile.prior_mastery()  # {concept_id: 遗忘衰减后的 mastery}
     return {
         "goal": goal,
         "profile": {
@@ -62,7 +68,7 @@ def _build_cognitive(goal: str, concepts: list[Concept]) -> dict:
             {
                 "concept_id": c.id,
                 "concept_name": c.name,
-                "mastery": params["P_L0"],
+                "mastery": prior.get(c.id, params["P_L0"]),
                 "state": "insufficient",
                 "evidence_count": 0,
                 "consecutive_failures": 0,
@@ -436,6 +442,8 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
             ),
         )
         action = "advance"
+        # 目标完成：把本目标的各概念掌握度沉淀到跨会话长期记忆（学习者画像）
+        learner_profile.persist_concept_mastery(ctx["cognitive"])
 
     # 用户消息已在流程开始时立即落库（diagnosis 暂空），此处回填诊断结果
     db.update_last_user_diagnosis(sid, ctx["diagnosis"].model_dump())

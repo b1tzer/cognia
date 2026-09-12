@@ -1591,5 +1591,57 @@ body {
   background: var(--border);
 }
 
+/* 桥接通路高亮（#39）：桥接节点外圈虚线脉冲光晕 + 桥接边脉冲 */
+.atlas-bridge-halo {
+  fill: none;
+  stroke: #e8a832;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  animation: atlas-bridge-pulse 1.6s ease-in-out infinite;
+}
+
+.atlas-edge-bridge {
+  animation: atlas-bridge-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes atlas-bridge-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 桥接提示面板：右下角列出「补上 X 就能打通 A 和 B」 */
+.atlas-bridge-panel {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  background: rgba(246, 244, 240, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  box-shadow: var(--shadow);
+}
+
+.atlas-bridge-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.atlas-bridge-item {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
 
 

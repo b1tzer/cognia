@@ -116,12 +116,17 @@ export function forceLayout(nodes: LayoutNode[], edges: LayoutEdge[]): LayoutRes
       disp.get(e.to)!.y -= fy
     }
 
-    // 全局弱引力：让孤岛 / 孤立节点不至于飘走
-    const g = 0.04
+    // 掌握度 → 径向分层：掌握度越高越靠中心，未掌握/未探索靠外层（不隐藏）。
+    // 低掌握度节点施加外推力（目标半径更大），高掌握度节点施加向心力（目标半径更小）。
+    // 系数放大到 0.55，使径向力足以对抗均匀斥力，保证「越未掌握越靠外层」分层可见。
     for (const nd of nodes) {
       const p = positions.get(nd.id)!
-      disp.get(nd.id)!.x -= p.x * g
-      disp.get(nd.id)!.y -= p.y * g
+      const mastery = Math.min(Math.max(nd.mastery ?? 0, 0), 1)
+      const r = Math.hypot(p.x, p.y) || 1e-6
+      const targetR = R * (1 - mastery * 0.9)
+      const f = (targetR - r) * 0.55
+      disp.get(nd.id)!.x += (p.x / r) * f
+      disp.get(nd.id)!.y += (p.y / r) * f
     }
 
     // 应用位移（温度冷却 + 单步位移上限）

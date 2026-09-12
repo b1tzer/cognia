@@ -308,10 +308,18 @@ def _process_turn(s: dict, content: str) -> dict:
     focus = decision.next_focus_concept(knowledge, cognitive, trace=trace)
     focus_id = focus["id"] if focus else None
 
-    # 2. 认知诊断（只传焦点概念子集，减少 token；携带焦点概念对话栈，关联追问上下文）
+    # 2. 认知诊断（只传焦点概念子集，减少 token；携带焦点概念对话栈 + 历史误解，关联上下文）
     focus_concepts = _focus_concept_subset(focus_id, concepts)
     focus_history = _focus_history(cognitive, focus_id)
-    diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, content, focus_id, trace=trace, history=focus_history)
+    misconceptions = learner_profile.get_misconceptions_for([c.id for c in focus_concepts])
+    diagnosis = cog.diagnose(
+        knowledge["goal"], focus_concepts, content, focus_id,
+        trace=trace, history=focus_history, misconceptions=misconceptions,
+    )
+
+    # 2.1 若诊断出误解，沉淀到跨会话长期记忆（学习者画像）
+    if diagnosis.state == "misconceived" and diagnosis.misconception and focus_id:
+        learner_profile.record_misconception(focus_id, diagnosis.misconception, diagnosis.confidence)
 
     # 2.5 推进意图路由（确定性规则，零 token）：用户明确要求「继续/下一个」时，
     #     预标记当前焦点概念为已掌握并覆盖诊断为 understood，让后续焦点选择

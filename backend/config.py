@@ -66,6 +66,27 @@ DIAG_CONFIDENCE_FLOOR = 0.70
 DECISION_MAX_CANDIDATES = 3
 
 # --------------------------------------------------------------------------
+# 显式 token 预算（Phase 2：把散落的 max_tokens 收敛到一处）
+#
+# 落地行业最佳实践（Anthropic context engineering / TokenBudget 类模式）：
+# - prompt_tokens：该层输入（system+user）的 token 上限，超限触发告警（不静默失败）
+# - completion_tokens：该层输出（即 chat 的 max_tokens）上限
+# - 数值对齐当前各层实际规模，保证「行为等价」（prompt 上限宽松，仅用于告警而非裁剪）
+#
+# 各层：domain_model（知识模型构建）/ cognitive（认知诊断）/ focus_select（焦点选择）
+#       decision_action（教学动作决策）/ tutor（回复生成）
+# ---------------------------------------------------------------------------
+CONTEXT_BUDGET = {
+    "domain_model":    {"prompt_tokens": 2000, "completion_tokens": 4000},
+    "cognitive":       {"prompt_tokens": 4000, "completion_tokens": 1500},
+    "focus_select":    {"prompt_tokens": 2000, "completion_tokens": 1000},
+    "decision_action": {"prompt_tokens": 2500, "completion_tokens": 1000},
+    "tutor":           {"prompt_tokens": 4000, "completion_tokens": 1500},
+}
+# 上下文利用率告警阈值：超过该比例触发告警（行业经验 60-85% 为最优区间）
+BUDGET_WARN_RATIO = 0.80
+
+# --------------------------------------------------------------------------
 # 认知状态四分类的置信度区间（用于诊断结果可视化）
 # --------------------------------------------------------------------------
 # 掌握概率 -> 状态映射

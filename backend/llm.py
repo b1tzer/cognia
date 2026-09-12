@@ -19,26 +19,46 @@ import config
 # ---------------------------------------------------------------------------
 # token 用量观测（用于成本核算，落地「节约」约束）
 # ---------------------------------------------------------------------------
-_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0, "by_layer": {}}
 
 def reset_usage() -> None:
     """清零 token 用量计数器。"""
-    for k in _usage:
-        _usage[k] = 0
+    _usage["prompt_tokens"] = 0
+    _usage["completion_tokens"] = 0
+    _usage["total_tokens"] = 0
+    _usage["calls"] = 0
+    _usage["by_layer"] = {}
 
-def get_usage() -> dict[str, int]:
-    """返回累计 token 用量快照（副本，避免外部误改）。"""
-    return dict(_usage)
+def get_usage() -> dict:
+    """返回累计 token 用量快照（副本，避免外部误改）。
 
-def _record_usage(resp: Any) -> None:
-    """从 OpenAI 响应累加 token 用量（含重试失败轮次的真实消耗）。"""
+    by_layer 按 trace_label 分层统计，可回答「哪一层在烧钱」。
+    """
+    return {
+        "prompt_tokens": _usage["prompt_tokens"],
+        "completion_tokens": _usage["completion_tokens"],
+        "total_tokens": _usage["total_tokens"],
+        "calls": _usage["calls"],
+        "by_layer": {k: dict(v) for k, v in _usage["by_layer"].items()},
+    }
+
+def _record_usage(resp: Any, label: str = "unknown") -> None:
+    """从 OpenAI 响应累加 token 用量（含重试失败轮次的真实消耗），并按层统计。"""
     usage = getattr(resp, "usage", None)
     if not usage:
         return
-    _usage["prompt_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
-    _usage["completion_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
-    _usage["total_tokens"] += int(getattr(usage, "total_tokens", 0) or 0)
+    pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+    ct = int(getattr(usage, "completion_tokens", 0) or 0)
+    tt = int(getattr(usage, "total_tokens", 0) or 0)
+    _usage["prompt_tokens"] += pt
+    _usage["completion_tokens"] += ct
+    _usage["total_tokens"] += tt
     _usage["calls"] += 1
+    layer = _usage["by_layer"].setdefault(label, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0})
+    layer["prompt_tokens"] += pt
+    layer["completion_tokens"] += ct
+    layer["total_tokens"] += tt
+    layer["calls"] += 1
 
 
 def _record_trace(
@@ -110,6 +130,67 @@ def _extract_json(text: str) -> Any:
         return None
 
 
+def estimate_tokens(text: str) -> int:
+    """估算文本 token 数（字符启发式，不绑定任何 tokenizer）。
+
+    CJK 字符（中文等）按 1 字 ≈ 1 token；其余（英文/数字/标点/空白）按
+    4 字符 ≈ 1 token 向上取整。混合文本按比例估算，结果偏保守（宁可高估），
+    保证预算判断不因低估而溢出。这样与模型/供应商解耦，符合「只依赖
+    OpenAI 兼容协议」的约束。
+    """
+    if not text:
+        return 0
+    cjk = 0
+    other = 0
+    for ch in text:
+        code = ord(ch)
+        if (
+            0x4E00 <= code <= 0x9FFF      # CJK 统一汉字
+            or 0x3000 <= code <= 0x303F   # CJK 标点
+            or 0xFF00 <= code <= 0xFFEF   # 全角字符
+        ):
+            cjk += 1
+        else:
+            other += 1
+    return cjk + (other + 3) // 4
+
+
+class TokenBudget:
+    """显式 token 预算器：reserve 输出配额 → 逐 section add → 超限 drop 并告警。
+
+    对应行业「reserve-then-fill（而非 fill-then-trim）」模式：先预留输出 token，
+    再逐个 section 填充，超预算的 section 被丢弃并记录，避免悄悄截断。
+    """
+
+    def __init__(self, limit: int, reserve_output: int = 0):
+        self.limit = max(0, int(limit))
+        self.reserve_output = max(0, int(reserve_output))
+        self.remaining = max(0, self.limit - self.reserve_output)
+        self.dropped: list[str] = []          # 被丢弃的 section 标签
+        self.used: dict[str, int] = {}        # 各 section 实际占用 token 数
+
+    def add(self, label: str, text: str) -> bool:
+        """尝试把一个 section 加入预算。成功返回 True，超限则记录 drop 并返回 False。"""
+        n = estimate_tokens(text)
+        if n > self.remaining:
+            self.dropped.append(label)
+            return False
+        self.remaining -= n
+        self.used[label] = n
+        return True
+
+    @property
+    def usage_ratio(self) -> float:
+        """已用（含预留输出）占总预算的比例，0~1。"""
+        if self.limit <= 0:
+            return 0.0
+        return (self.limit - self.remaining) / self.limit
+
+    def warn_ratio_exceeded(self, threshold: float = 0.8) -> bool:
+        """是否超过告警阈值（默认 80%）。"""
+        return self.usage_ratio >= threshold
+
+
 def _model_candidates() -> list[str]:
     """按顺序返回要尝试的模型：主模型 + 备选模型（去重）。"""
     models = [config.OPENAI_MODEL]
@@ -155,7 +236,7 @@ def chat_json(
                         {"role": "user", "content": user},
                     ],
                 )
-                _record_usage(resp)
+                _record_usage(resp, trace_label)
                 msg = resp.choices[0].message
                 raw = msg.content or ""
                 reasoning = getattr(msg, "reasoning_content", None) or ""
@@ -210,7 +291,7 @@ def chat_text(
                         {"role": "user", "content": user},
                     ],
                 )
-                _record_usage(resp)
+                _record_usage(resp, trace_label)
                 raw = resp.choices[0].message.content or ""
                 _record_trace(trace, trace_label, model, system, user, raw, getattr(resp, "usage", None))
                 content = raw.strip()
@@ -271,7 +352,7 @@ def chat_text_stream(
                 for chunk in stream:
                     # 流式响应最后一个 chunk 携带 usage（配合 include_usage）
                     if getattr(chunk, "usage", None):
-                        _record_usage(chunk)
+                        _record_usage(chunk, trace_label)
                         usage = getattr(chunk, "usage", None)
                     choices = getattr(chunk, "choices", None)
                     if (

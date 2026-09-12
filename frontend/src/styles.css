@@ -1566,6 +1566,15 @@ body {
   color: var(--text-dim);
 }
 
+/* 发起学习会话（#40） */
+.atlas-start-session {
+  width: 100%;
+}
+
+.atlas-start-session-error {
+  font-size: 12px;
+}
+
 .atlas-isolated {
   display: inline-block;
   padding: 3px 10px;

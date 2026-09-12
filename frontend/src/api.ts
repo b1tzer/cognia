@@ -147,3 +147,8 @@ export function getAtlas(): Promise<AtlasView> {
 export function getAtlasNeighbors(conceptId: string, depth: number): Promise<AtlasNeighborsResponse> {
   return request<AtlasNeighborsResponse>(`/api/atlas/${encodeURIComponent(conceptId)}/neighbors?depth=${depth}`)
 }
+
+// 点击版图概念发起学习会话：后端复用全局库子图构建知识模型，返回完整 Session
+export function startConceptSession(conceptId: string): Promise<Session> {
+  return request<Session>(`/api/atlas/${encodeURIComponent(conceptId)}/session`, { method: 'POST' })
+}

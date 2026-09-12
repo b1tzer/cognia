@@ -1,3 +1,6 @@
+import { useState } from 'react'
+import ConfirmDialog from './ConfirmDialog'
+
 interface SessionMeta {
   id: string
   goal: string
@@ -28,6 +31,8 @@ function fmtTime(iso: string): string {
 }
 
 export default function SessionList({ sessions, onSelect, onDelete, activeId }: Props) {
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; goal: string } | null>(null)
+
   if (sessions.length === 0) {
     return <div className="session-empty">暂无学习记录</div>
   }
@@ -47,9 +52,10 @@ export default function SessionList({ sessions, onSelect, onDelete, activeId }: 
           </div>
           <button
             className="session-item-del"
+            aria-label={`删除学习目标「${s.goal}」`}
             onClick={(e) => {
               e.stopPropagation()
-              if (window.confirm(`删除学习目标「${s.goal}」？此操作不可撤销。`)) onDelete(s.id)
+              setPendingDelete({ id: s.id, goal: s.goal })
             }}
             title="删除学习目标"
           >
@@ -57,6 +63,19 @@ export default function SessionList({ sessions, onSelect, onDelete, activeId }: 
           </button>
         </div>
       ))}
+      {pendingDelete && (
+        <ConfirmDialog
+          title="删除学习目标"
+          message={`确定删除「${pendingDelete.goal}」？此操作不可撤销。`}
+          confirmLabel="删除"
+          danger
+          onConfirm={() => {
+            onDelete(pendingDelete.id)
+            setPendingDelete(null)
+          }}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
     </div>
   )
 }

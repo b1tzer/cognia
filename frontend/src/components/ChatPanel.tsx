@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
+import ConfirmDialog from './ConfirmDialog'
 import type { Message, Session, CognitiveState, TutorAction, LLMTrace, ClarifyInfo } from '../types'
 
 interface Props {
@@ -127,6 +128,13 @@ export default function ChatPanel({ session, onSend, onConfirmGoal, onUpdateGoal
       </div>
 
       <div className="chat-scroll">
+        {session.messages.length === 0 && (
+          <div className="chat-empty">
+            <div className="chat-empty-icon">◆</div>
+            <div className="chat-empty-title">开始你的第一次表达</div>
+            <div className="chat-empty-hint">用自己的话说出对目标的理解，导师会据此评估并引导。</div>
+          </div>
+        )}
         {session.messages.map((m, i) => (
           <Bubble
             key={i}
@@ -221,6 +229,7 @@ interface BubbleProps {
 function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEditSave, onEditCancel, onDelete, onRegenerate }: BubbleProps) {
   const isUser = msg.role === 'user'
   const diag = msg.diagnosis
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   return (
     <div className={`bubble-row ${isUser ? 'user' : 'assistant'}`}>
       <div className="bubble-avatar">{isUser ? '我' : '◆'}</div>
@@ -276,23 +285,39 @@ function Bubble({ index, msg, editing, editText, onEditStart, onEditChange, onEd
         <div className="bubble-tools">
           {isUser ? (
             <>
-              <button className="bubble-tool" title="编辑" onClick={() => onEditStart(index, msg.content)}>
+              <button className="bubble-tool" title="编辑" aria-label="编辑这条消息" onClick={() => onEditStart(index, msg.content)}>
                 ✎
               </button>
-              <button className="bubble-tool" title="删除" onClick={() => {
-                if (window.confirm('删除这条消息？')) onDelete(index)
-              }}>
+              <button
+                className="bubble-tool"
+                title="删除"
+                aria-label="删除这条消息"
+                onClick={() => setConfirmingDelete(true)}
+              >
                 ✕
               </button>
             </>
           ) : (
             diag && (
-              <button className="bubble-tool" title="重新生成" onClick={() => onRegenerate(index)}>
+              <button className="bubble-tool" title="重新生成" aria-label="重新生成这条回答" onClick={() => onRegenerate(index)}>
                 ↻
               </button>
             )
           )}
         </div>
+      )}
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="删除消息"
+          message="确定删除这条消息？删除后对话流将回溯到该消息之前。"
+          confirmLabel="删除"
+          danger
+          onConfirm={() => {
+            onDelete(index)
+            setConfirmingDelete(false)
+          }}
+          onCancel={() => setConfirmingDelete(false)}
+        />
       )}
     </div>
   )

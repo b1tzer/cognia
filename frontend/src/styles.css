@@ -1173,3 +1173,160 @@ body {
     font-size: 30px;
   }
 }
+
+/* ---------- 危险按钮 ---------- */
+.btn-danger {
+  background: linear-gradient(135deg, #c0553f, #a44330);
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn-danger:not(:disabled):hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+/* ---------- 自定义确认对话框 ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(31, 29, 26, 0.4);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fade-in 0.15s ease;
+}
+
+.modal {
+  width: min(400px, calc(100vw - 40px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px;
+  animation: pop-in 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.modal-message {
+  font-size: 14px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 18px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- 空状态占位 ---------- */
+.concept-empty,
+.graph-empty {
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 18px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+  text-align: center;
+}
+
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40vh;
+  text-align: center;
+  color: var(--text-faint);
+}
+
+.chat-empty-icon {
+  font-size: 32px;
+  color: var(--text-faint);
+  opacity: 0.5;
+}
+
+.chat-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.chat-empty-hint {
+  font-size: 13px;
+  max-width: 280px;
+}
+
+/* ---------- 知识图谱依赖边生长动画 ---------- */
+.gedge {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: edge-draw 0.5s ease forwards;
+}
+
+@keyframes edge-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ---------- 键盘可达性：焦点可见 ---------- */
+:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- 按钮按压反馈 ---------- */
+.btn:not(:disabled):active,
+.quick-chip:not(:disabled):active,
+.clarify-chip:not(:disabled):active,
+.session-item:active,
+.bubble-tool:active,
+.goal-edit-btn:active {
+  transform: scale(0.97);
+}
+
+/* ---------- 减少动态效果 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

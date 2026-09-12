@@ -102,6 +102,9 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
         <div className="panel-sub">{knowledge.concepts.length} 个概念 · {edges.length} 条依赖</div>
       </div>
       <div className="graph-scroll">
+        {knowledge.concepts.length === 0 ? (
+          <div className="graph-empty">还没有知识模型，完成目标澄清后会生成概念依赖图。</div>
+        ) : (
         <svg
           width={layout.width}
           height={layout.height}
@@ -125,6 +128,8 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
             return (
               <path
                 key={i}
+                className="gedge"
+                pathLength={1}
                 d={`M ${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2} ${y2}`}
                 fill="none"
                 stroke="#b8b0a6"
@@ -173,6 +178,7 @@ export default function KnowledgeGraph({ knowledge, cognitive, focusId }: Props)
             )
           })}
         </svg>
+        )}
       </div>
     </div>
   )

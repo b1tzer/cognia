@@ -72,6 +72,28 @@ def _rules_suffix() -> str:
     lines += [f"- {r}" for r in rules]
     return "\n".join(lines)
 
+def _diagnosis_history_block(history: list | None) -> str:
+    """把「上一轮追问上下文」注入诊断 prompt（仅取最近一轮，控制 token）。
+
+    目的：被追问后的补充回答常是指代性/省略性的（如「就是那个」「对，还有 XX」），
+    脱离上一轮追问就无法判断，容易被误判 insufficient。当上一轮动作是 probe 时，
+    把上一轮追问点与学习者上一轮回答一并喂给诊断层，让它能正确关联。
+    """
+    if not history:
+        return ""
+    last = history[-1]
+    if last.get("action") != "probe":
+        return ""
+    ai_reply = last.get("ai_reply", "")
+    prev_user = last.get("user_text", "")
+    if not ai_reply and not prev_user:
+        return ""
+    block = "\n\n（对话上下文：本轮回答是对上一轮追问的补充）"
+    if ai_reply:
+        block += f"\n上一轮追问：{ai_reply}"
+    if prev_user:
+        block += f"\n学习者上一轮回答：{prev_user}"
+    return block
 
 # ---------------------------------------------------------------------------
 # 诊断
@@ -82,6 +104,7 @@ def _diagnose_with_llm(
     user_text: str,
     focus_concept_id: str | None = None,
     trace: list | None = None,
+    history: list | None = None,
 ) -> DiagnosticResult | None:
     concept_desc = "\n".join(
         f"- {c.id}：{c.name}（{c.summary}）" for c in concepts
@@ -93,9 +116,10 @@ def _diagnose_with_llm(
             focus_name = c.name
             break
     focus_line = f"\n\n当前诊断焦点：{focus_name}（{focus_concept_id}）" if focus_name else ""
+    history_block = _diagnosis_history_block(history)
     data = chat_json(
         _DIAG_SYSTEM + _rules_suffix(),
-        f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}{focus_line}",
+        f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}{history_block}{focus_line}",
         temperature=0.2,
         max_tokens=1500,
         trace=trace,
@@ -219,9 +243,14 @@ def diagnose(
     user_text: str,
     focus_concept_id: str | None = None,
     trace: list | None = None,
+    history: list | None = None,
 ) -> DiagnosticResult:
-    """诊断用户表达，LLM 优先，降级到启发式。trace 用于记录 LLM 调用过程。"""
-    result = _diagnose_with_llm(goal, concepts, user_text, focus_concept_id, trace)
+    """诊断用户表达，LLM 优先，降级到启发式。
+
+    trace 用于记录 LLM 调用过程；history 为对话轨迹（见 _diagnosis_history_block），
+    供被追问后的补充回答关联上下文。
+    """
+    result = _diagnose_with_llm(goal, concepts, user_text, focus_concept_id, trace, history)
     if result is not None:
         return result
     return _heuristic_diagnose(concepts, user_text, focus_concept_id)

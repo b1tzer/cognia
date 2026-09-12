@@ -61,7 +61,22 @@ def _tutor_system(concept: Concept, diagnosis: DiagnosticResult, action: str) ->
     ) + prompt_rules.rules_suffix("tutor")
 
 
-def _tutor_user(diagnosis: DiagnosticResult, user_text: str) -> str:
+def _history_block(history: list | None) -> str:
+    """把对话轨迹渲染成 user prompt 片段，供回复层衔接上下文。
+
+    history 每项含 user_text / ai_reply / action / state 四键；
+    逐轮列出「上一轮导师说了什么 / 学习者答了什么」，让追问不重复、有连贯。
+    """
+    if not history:
+        return ""
+    lines = ["\n\n（近几轮对话轨迹，注意承接，不要重复提问）"]
+    for h in history:
+        action = h.get("action", "")
+        lines.append(f"- 导师（动作 {action}）：{h.get('ai_reply', '')}")
+        lines.append(f"- 学习者：{h.get('user_text', '')}")
+    return "\n".join(lines)
+
+def _tutor_user(diagnosis: DiagnosticResult, user_text: str, history: list | None = None) -> str:
     """构建 tutor 的 user prompt。
 
     学习者表达应直接来自真实用户输入；evidence 仅作诊断依据参考，
@@ -69,6 +84,7 @@ def _tutor_user(diagnosis: DiagnosticResult, user_text: str) -> str:
     """
     learner_text = user_text or diagnosis.evidence or ""
     user = f"学习者表达：{learner_text}"
+    user += _history_block(history)
     if diagnosis.misconception:
         user += f"\n已识别的误解：{diagnosis.misconception}"
     return user
@@ -80,9 +96,10 @@ def _tutor_with_llm(
     action: str,
     user_text: str = "",
     trace: list | None = None,
+    history: list | None = None,
 ) -> Optional[str]:
     system = _tutor_system(concept, diagnosis, action)
-    user = _tutor_user(diagnosis, user_text)
+    user = _tutor_user(diagnosis, user_text, history)
     return chat_text(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成")
 
 
@@ -92,13 +109,14 @@ def stream_tutor_reply(
     action: str,
     user_text: str = "",
     trace: list | None = None,
+    history: list | None = None,
 ):
     """流式生成教学回复：LLM 流式时逐段 yield 文本增量，降级模板时一次性 yield。
 
     返回生成器，调用方用 `for delta in stream_tutor_reply(...)` 消费。
     """
     system = _tutor_system(concept, diagnosis, action)
-    user = _tutor_user(diagnosis, user_text)
+    user = _tutor_user(diagnosis, user_text, history)
     emitted = False
     for delta in chat_text_stream(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成"):
         emitted = True
@@ -157,9 +175,13 @@ def generate_tutor_reply(
     action: str,
     user_text: str = "",
     trace: list | None = None,
+    history: list | None = None,
 ) -> str:
-    """生成教学回复，LLM 优先，降级到模板。user_text 为学习者本轮真实输入。"""
-    text = _tutor_with_llm(concept, diagnosis, action, user_text, trace)
+    """生成教学回复，LLM 优先，降级到模板。
+
+    user_text 为学习者本轮真实输入；history 为对话轨迹（见 _history_block）。
+    """
+    text = _tutor_with_llm(concept, diagnosis, action, user_text, trace, history)
     if text:
         return text.strip()
     return _tutor_template(concept, diagnosis, action)

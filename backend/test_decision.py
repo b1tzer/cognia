@@ -34,9 +34,22 @@ KNOWLEDGE = {
 }
 
 
-def make_cognitive(masteries: dict, failures: dict | None = None) -> dict:
-    """构造认知模型。masteries: {cid: mastery}，failures: {cid: consecutive_failures}"""
+def make_cognitive(
+    masteries: dict,
+    failures: dict | None = None,
+    success_counts: dict | None = None,
+    qualities: dict | None = None,
+) -> dict:
+    """构造认知模型。
+
+    masteries: {cid: mastery}
+    failures: {cid: consecutive_failures}
+    success_counts: {cid: success_count}（证据充分性）
+    qualities: {cid: quality}（deep / surface / ""）
+    """
     failures = failures or {}
+    success_counts = success_counts or {}
+    qualities = qualities or {}
     names = {"a": "概念A", "b": "概念B", "c": "概念C"}
     return {
         "goal": "测试目标",
@@ -50,6 +63,8 @@ def make_cognitive(masteries: dict, failures: dict | None = None) -> dict:
                 "evidence_count": 0,
                 "consecutive_failures": failures.get(cid, 0),
                 "last_evidence": "",
+                "success_count": success_counts.get(cid, 0),
+                "quality": qualities.get(cid, ""),
             }
             for cid in ("a", "b", "c")
         ],
@@ -146,19 +161,57 @@ class TestZpdScore(unittest.TestCase):
 
 class TestFocusCandidates(unittest.TestCase):
     def test_build_focus_candidates(self):
-        # a 已掌握，b 未掌握且前置 a 已掌握 → 候选只有 b；c 因前置 b 未掌握被排除
-        cog = make_cognitive({"a": 0.85, "b": 0.3, "c": 0.3})
+        # a 三层掌握，b 未掌握且前置 a 已掌握 → 候选只有 b；c 因前置 b 未掌握被排除
+        cog = make_cognitive(
+            {"a": 0.85, "b": 0.3, "c": 0.3},
+            success_counts={"a": 2},
+            qualities={"a": "deep"},
+        )
         cands = decision.build_focus_candidates(KNOWLEDGE, cog)
         self.assertEqual([c["concept"]["id"] for c in cands], ["b"])
 
     def test_next_focus_concept_rule(self):
-        cog = make_cognitive({"a": 0.85, "b": 0.3, "c": 0.3})
+        cog = make_cognitive(
+            {"a": 0.85, "b": 0.3, "c": 0.3},
+            success_counts={"a": 2},
+            qualities={"a": "deep"},
+        )
         focus = decision.next_focus_concept(KNOWLEDGE, cog)
         self.assertEqual(focus["id"], "b")
 
     def test_next_focus_concept_all_mastered_returns_none(self):
-        cog = make_cognitive({"a": 0.85, "b": 0.85, "c": 0.85})
+        cog = make_cognitive(
+            {"a": 0.85, "b": 0.85, "c": 0.85},
+            success_counts={"a": 2, "b": 2, "c": 2},
+            qualities={"a": "deep", "b": "deep", "c": "deep"},
+        )
         self.assertIsNone(decision.next_focus_concept(KNOWLEDGE, cog))
+
+
+class TestIsMastered(unittest.TestCase):
+    """is_mastered 三层掌握判定（UC1 的 AC1.1~AC1.7）。"""
+
+    def _m(self, mastery=0.0, success_count=0, quality=""):
+        return {"mastery": mastery, "success_count": success_count, "quality": quality}
+
+    def test_all_three_met_returns_true(self):
+        self.assertTrue(decision.is_mastered(self._m(0.86, 2, "deep")))
+
+    def test_mastery_below_threshold(self):
+        self.assertFalse(decision.is_mastered(self._m(0.84, 2, "deep")))
+
+    def test_insufficient_evidence(self):
+        self.assertFalse(decision.is_mastered(self._m(0.90, 1, "deep")))
+
+    def test_surface_quality(self):
+        self.assertFalse(decision.is_mastered(self._m(0.90, 3, "surface")))
+
+    def test_empty_quality_fallback(self):
+        self.assertFalse(decision.is_mastered(self._m(0.90, 3, "")))
+
+    def test_missing_fields_fallback(self):
+        # 旧数据缺字段 → get 默认值，不判掌握，不抛异常
+        self.assertFalse(decision.is_mastered({}))
 
 
 class TestBacktrack(unittest.TestCase):

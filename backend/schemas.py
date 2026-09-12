@@ -23,8 +23,9 @@ class Concept(BaseModel):
     why_matters: str = ""       # 真正理解它意味着什么 / 为什么重要
     prerequisites: list[str] = Field(default_factory=list)  # 前置概念 id 列表
     common_misconceptions: list[str] = Field(default_factory=list)
+    related: list[str] = Field(default_factory=list)  # 横向相关概念名列表（LLM 额外输出，落库为 related 关系）
 
-    @field_validator("prerequisites", "common_misconceptions", mode="before")
+    @field_validator("prerequisites", "common_misconceptions", "related", mode="before")
     @classmethod
     def _coerce_to_list(cls, v):
         """LLM 可能把列表字段返回成字符串，这里统一转成列表。"""

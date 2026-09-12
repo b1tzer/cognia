@@ -303,5 +303,52 @@ class TestLiveMastery(unittest.TestCase):
         self.assertNotIn("a", live)
 
 
+class TestRelationPersistence(unittest.TestCase):
+    """#42：概念关系数据生产（prerequisite 从 DAG 落库 + related 从 LLM 输出落库 + 幂等）。"""
+
+    def setUp(self):
+        db.init_db()
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.execute("DELETE FROM concepts")
+        conn.execute("DELETE FROM concept_relations")
+        conn.commit()
+        conn.close()
+
+    def test_prerequisite_persisted_from_dag(self):
+        km = domain_model.build_knowledge_model("学习 HTTP")
+        rels = db.list_concept_relations()
+        prereq = {(r["from_id"], r["to_id"]) for r in rels if r["relation_type"] == "prerequisite"}
+        # 每个概念的每个前置都应有一条 prerequisite 关系，且 from=前置、to=后继
+        for c in km.concepts:
+            for p in c.prerequisites:
+                self.assertIn((p, c.id), prereq)
+        # HTTP 模板 DAG 非空，至少有一条 prerequisite 落库
+        self.assertGreaterEqual(len(prereq), 1)
+
+    def test_related_persisted_from_llm_output(self):
+        from schemas import Concept, KnowledgeModel
+        c1 = Concept(id="http", name="HTTP 基础")
+        c2 = Concept(id="session", name="会话与状态保持", related=["Cookie"])
+        km = KnowledgeModel(goal="x", root_concepts=["session"], concepts=[c1, c2])
+        domain_model._persist_relations(km)
+        rels = db.list_concept_relations()
+        cookie_id = atlas.normalize_key("Cookie")
+        self.assertTrue(any(
+            r["from_id"] == "session" and r["to_id"] == cookie_id and r["relation_type"] == "related"
+            for r in rels
+        ))
+
+    def test_persist_relations_idempotent(self):
+        from schemas import Concept, KnowledgeModel
+        c1 = Concept(id="a", name="A")
+        c2 = Concept(id="b", name="B", prerequisites=["a"], related=["C"])
+        km = KnowledgeModel(goal="x", root_concepts=["b"], concepts=[c1, c2])
+        domain_model._persist_relations(km)
+        n1 = len(db.list_concept_relations())
+        domain_model._persist_relations(km)
+        n2 = len(db.list_concept_relations())
+        self.assertEqual(n1, n2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,7 @@ def _build_cognitive(goal: str, concepts: list[Concept]) -> dict:
                 "evidence_count": 0,
                 "consecutive_failures": 0,
                 "last_evidence": "",
+                "dialogue": [],
             }
             for c in concepts
         ],
@@ -97,6 +98,45 @@ def _focus_concept_subset(
         stack.extend(by_id[pid].prerequisites)
     return [by_id[cid] for cid in subset_ids]
 
+# 对话栈（概念级短期记忆）：跟着焦点概念走，切换焦点即切栈，token 天然有界
+_DIALOGUE_MAX_DEPTH = 3      # 每个概念最多保留的轨迹轮数
+_DIALOGUE_USER_MAX = 200     # user_text 截断长度（字符）
+_DIALOGUE_AI_MAX = 120       # ai_reply 截断长度（字符）
+
+def _focus_history(cognitive: dict, focus_id: str | None) -> list:
+    """返回焦点概念的 dialogue 栈；无焦点或无栈时返回空列表。"""
+    if not focus_id:
+        return []
+    for m in cognitive.get("concepts", []):
+        if m.get("concept_id") == focus_id:
+            return m.get("dialogue", [])
+    return []
+
+def _push_dialogue(
+    cognitive: dict,
+    focus_id: str | None,
+    user_text: str,
+    ai_reply: str,
+    action: str,
+    state: str,
+) -> None:
+    """把本轮轨迹压入焦点概念的 dialogue 栈（容量上限 N，字段按长度截断）。
+
+    只保留最近 _DIALOGUE_MAX_DEPTH 轮，超出丢最旧。focus_id 为空时跳过。
+    """
+    if not focus_id:
+        return
+    for m in cognitive.get("concepts", []):
+        if m.get("concept_id") == focus_id:
+            stack = m.setdefault("dialogue", [])
+            stack.append({
+                "user_text": (user_text or "")[:_DIALOGUE_USER_MAX],
+                "ai_reply": (ai_reply or "")[:_DIALOGUE_AI_MAX],
+                "action": action,
+                "state": state,
+            })
+            del stack[: max(0, len(stack) - _DIALOGUE_MAX_DEPTH)]
+            break
 
 def _all_root_mastered(knowledge: dict, cognitive: dict) -> bool:
     mastery = {m["concept_id"]: m["mastery"] for m in cognitive["concepts"]}
@@ -262,9 +302,10 @@ def _process_turn(s: dict, content: str) -> dict:
     focus = decision.next_focus_concept(knowledge, cognitive, trace=trace)
     focus_id = focus["id"] if focus else None
 
-    # 2. 认知诊断（只传焦点概念子集，减少 token）
+    # 2. 认知诊断（只传焦点概念子集，减少 token；携带焦点概念对话栈，关联追问上下文）
     focus_concepts = _focus_concept_subset(focus_id, concepts)
-    diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, content, focus_id, trace=trace)
+    focus_history = _focus_history(cognitive, focus_id)
+    diagnosis = cog.diagnose(knowledge["goal"], focus_concepts, content, focus_id, trace=trace, history=focus_history)
 
     # 2.5 推进意图路由（确定性规则，零 token）：用户明确要求「继续/下一个」时，
     #     预标记当前焦点概念为已掌握并覆盖诊断为 understood，让后续焦点选择
@@ -346,6 +387,7 @@ def _process_turn(s: dict, content: str) -> dict:
         "action": decision_result.chosen_action,
         "completed": _all_root_mastered(knowledge, cognitive),
         "advance_intent": advance_intent,
+        "history": focus_history,
         "trace": trace,
     }
 
@@ -399,6 +441,15 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
     db.update_last_user_diagnosis(sid, ctx["diagnosis"].model_dump())
     ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": ctx["diagnosis"].model_dump(), "decision": decision_result.model_dump(), "trace": ctx["trace"]}
     db.append_messages(sid, [ai_msg])
+    # 本轮结束后，把轨迹压入焦点概念的对话栈（供下一轮诊断/回复关联上下文）
+    _push_dialogue(
+        ctx["cognitive"],
+        ctx.get("focus_id"),
+        ctx.get("content", ""),
+        reply,
+        action,
+        ctx["diagnosis"].state,
+    )
     db.update_session(sid, ctx["cognitive"], ctx["knowledge"], status=status)
 
     return {
@@ -434,7 +485,8 @@ def chat(sid: str, req: ChatRequest):
     reply, action, status, is_stream = _resolve_reply(ctx)
     if is_stream:
         reply = tutor.generate_tutor_reply(
-            Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content, trace=ctx["trace"]
+            Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content,
+            trace=ctx["trace"], history=ctx["history"],
         )
 
     return _persist(sid, ctx, reply, action, status)
@@ -472,7 +524,8 @@ def chat_stream(sid: str, req: ChatRequest):
         if is_stream:
             parts: list[str] = []
             for delta in tutor.stream_tutor_reply(
-                Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content, trace=ctx["trace"]
+                Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content,
+                trace=ctx["trace"], history=ctx["history"],
             ):
                 parts.append(delta)
                 yield f"data: {json.dumps({'type': 'token', 'content': delta}, ensure_ascii=False)}\n\n"

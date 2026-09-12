@@ -95,6 +95,15 @@ def _diagnosis_history_block(history: list | None) -> str:
         block += f"\n学习者上一轮回答：{prev_user}"
     return block
 
+def _misconception_block(misconceptions: dict | None) -> str:
+    """把历史误解注入诊断 prompt（提示诊断时留意是否复发）。"""
+    if not misconceptions:
+        return ""
+    lines = ["\n\n（历史误解参考：该学习者曾在以下概念上有过这些误解，诊断时留意是否复发）"]
+    for cid, texts in misconceptions.items():
+        lines.append(f"- {cid}：{'；'.join(texts)}")
+    return "\n".join(lines)
+
 # ---------------------------------------------------------------------------
 # 诊断
 # ---------------------------------------------------------------------------
@@ -105,6 +114,7 @@ def _diagnose_with_llm(
     focus_concept_id: str | None = None,
     trace: list | None = None,
     history: list | None = None,
+    misconceptions: dict | None = None,
 ) -> DiagnosticResult | None:
     concept_desc = "\n".join(
         f"- {c.id}：{c.name}（{c.summary}）" for c in concepts
@@ -117,9 +127,10 @@ def _diagnose_with_llm(
             break
     focus_line = f"\n\n当前诊断焦点：{focus_name}（{focus_concept_id}）" if focus_name else ""
     history_block = _diagnosis_history_block(history)
+    misconception_block = _misconception_block(misconceptions)
     data = chat_json(
         _DIAG_SYSTEM + _rules_suffix(),
-        f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}{history_block}{focus_line}",
+        f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n学习者的理解陈述：\n{user_text}{history_block}{misconception_block}{focus_line}",
         temperature=0.2,
         max_tokens=1500,
         trace=trace,
@@ -245,13 +256,14 @@ def diagnose(
     focus_concept_id: str | None = None,
     trace: list | None = None,
     history: list | None = None,
+    misconceptions: dict | None = None,
 ) -> DiagnosticResult:
     """诊断用户表达，LLM 优先，降级到启发式。
 
-    trace 用于记录 LLM 调用过程；history 为对话轨迹（见 _diagnosis_history_block），
-    供被追问后的补充回答关联上下文。
+    trace 用于记录 LLM 调用过程；history 为对话轨迹（见 _diagnosis_history_block）；
+    misconceptions 为历史误解 {concept_id: [文本]}（见 _misconception_block）。
     """
-    result = _diagnose_with_llm(goal, concepts, user_text, focus_concept_id, trace, history)
+    result = _diagnose_with_llm(goal, concepts, user_text, focus_concept_id, trace, history, misconceptions)
     if result is not None:
         return result
     return _heuristic_diagnose(concepts, user_text, focus_concept_id)

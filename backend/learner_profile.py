@@ -64,3 +64,32 @@ def prior_mastery(user_id: str = db.DEFAULT_USER_ID) -> dict:
         days = _elapsed_days(row.get("updated_at", ""))
         out[cid] = apply_forgetting(float(row.get("mastery", 0.0)), days)
     return out
+
+
+def record_misconception(
+    concept_id: str,
+    misconception: str,
+    confidence: float = 0.5,
+    user_id: str = db.DEFAULT_USER_ID,
+) -> None:
+    """把一条误解沉淀到长期记忆（去重：相同误解不重复累积）。"""
+    if not concept_id or not misconception:
+        return
+    for e in db.get_misconceptions(user_id, concept_id=concept_id):
+        if e.get("misconception") == misconception:
+            return
+    db.add_misconception(user_id, concept_id, misconception, confidence)
+
+
+def get_misconceptions_for(
+    concept_ids: list,
+    user_id: str = db.DEFAULT_USER_ID,
+) -> dict:
+    """返回 {concept_id: [misconception 文本]}，供诊断层注入历史误解。"""
+    out = {}
+    for cid in concept_ids:
+        rows = db.get_misconceptions(user_id, concept_id=cid)
+        texts = [r["misconception"] for r in rows]
+        if texts:
+            out[cid] = texts
+    return out

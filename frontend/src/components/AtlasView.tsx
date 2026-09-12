@@ -3,6 +3,7 @@ import { getAtlas, getAtlasNeighbors } from '../api'
 import type {
   AtlasView as AtlasData,
   AtlasNeighborsResponse,
+  AtlasBridge,
   RelationType,
   CognitiveState,
 } from '../types'
@@ -29,6 +30,19 @@ const RELATION_LABEL: Record<RelationType, string> = {
   'is-a': 'is-a',
   related: '相关',
   prerequisite: '前置',
+}
+
+// 桥接通路高亮色：区别于普通关系的金色，配合虚线脉冲光晕表示「补上即可打通」
+const BRIDGE_COLOR = '#e8a832'
+
+// 桥接提示文案：「补上 X 就能打通 A 和 B」（X=桥接未掌握概念，A/B=两侧已掌握邻居）
+function bridgeHintText(b: AtlasBridge): string {
+  const names = b.neighbors.map((n) => n.name)
+  const joined =
+    names.length > 2
+      ? names.slice(0, -1).join('、') + ' 和 ' + names[names.length - 1]
+      : names.join(' 和 ')
+  return `补上「${b.bridge_name}」就能打通「${joined}」`
 }
 
 const MAX_DEPTH = 6
@@ -113,6 +127,25 @@ export default function AtlasView({ onBack }: Props) {
 
   const concepts = data?.concepts ?? []
   const relations = data?.relations ?? []
+  const bridges = data?.bridges ?? []
+
+  // 桥接节点 id -> bridge；桥接边集合（桥接节点与两侧已掌握邻居之间的边）
+  const bridgeById = useMemo(() => {
+    const m = new Map<string, AtlasBridge>()
+    for (const b of bridges) m.set(b.bridge, b)
+    return m
+  }, [bridges])
+
+  const bridgeEdgeKeys = useMemo(() => {
+    const keys = new Set<string>()
+    for (const b of bridges) {
+      for (const nb of b.neighbors) {
+        keys.add(b.bridge + '|' + nb.id)
+        keys.add(nb.id + '|' + b.bridge)
+      }
+    }
+    return keys
+  }, [bridges])
 
   const conceptById = useMemo(() => {
     const m = new Map<string, (typeof concepts)[number]>()
@@ -316,6 +349,7 @@ export default function AtlasView({ onBack }: Props) {
                 const a = posOf(e.from)
                 const b = posOf(e.to)
                 if (!a || !b) return null
+                const isBridgeEdge = !focusId && bridgeEdgeKeys.has(e.from + '|' + e.to)
                 const st = RELATION_STYLE[e.relation_type]
                 return (
                   <line
@@ -324,10 +358,10 @@ export default function AtlasView({ onBack }: Props) {
                     y1={a.y}
                     x2={b.x}
                     y2={b.y}
-                    stroke={st.stroke}
-                    strokeDasharray={st.dash || undefined}
-                    strokeWidth={1.4}
-                    className="atlas-edge"
+                    stroke={isBridgeEdge ? BRIDGE_COLOR : st.stroke}
+                    strokeDasharray={isBridgeEdge ? '5 3' : st.dash || undefined}
+                    strokeWidth={isBridgeEdge ? 2.4 : 1.4}
+                    className={isBridgeEdge ? 'atlas-edge atlas-edge-bridge' : 'atlas-edge'}
                     markerEnd={st.arrow ? 'url(#arrow-prereq)' : undefined}
                   />
                 )
@@ -342,10 +376,12 @@ export default function AtlasView({ onBack }: Props) {
                 const color = unexplored ? '#9a938a' : STATE_COLOR[meta.state] ?? STATE_COLOR.insufficient
                 const fillOpacity = unexplored ? 0.08 : 0.35 + 0.65 * meta.mastery
                 const ringOpacity = unexplored ? 0.45 : 0.6 + 0.4 * meta.mastery
+                // #39：桥接节点（两侧掌握 + 自身未掌握）外圈虚线脉冲光晕
+                const bridge = !focusId ? bridgeById.get(n.id) : undefined
                 return (
                   <g
                     key={n.id}
-                    className={'atlas-node' + (isFocus ? ' atlas-node-focus' : '')}
+                    className={'atlas-node' + (isFocus ? ' atlas-node-focus' : '') + (bridge ? ' atlas-node-bridge' : '')}
                     transform={`translate(${pos.x} ${pos.y})`}
                     onPointerDown={(e) => onNodePointerDown(e, n.id)}
                     onPointerMove={(e) => onNodePointerMove(e, n.id)}
@@ -353,6 +389,11 @@ export default function AtlasView({ onBack }: Props) {
                     onPointerCancel={onNodePointerUp}
                     onClick={() => onNodeClick(n.id)}
                   >
+                    {bridge && (
+                      <circle className="atlas-bridge-halo" r={isFocus ? 26 : 21}>
+                        <title>{bridgeHintText(bridge)}</title>
+                      </circle>
+                    )}
                     <circle
                       className={'atlas-node-ring' + (unexplored ? ' atlas-node-ring-unexplored' : '')}
                       r={isFocus ? 20 : 14}
@@ -414,6 +455,17 @@ export default function AtlasView({ onBack }: Props) {
               </svg>
               未探索 · 暗 · 外围
             </span>
+          </div>
+        )}
+
+        {!focusId && bridges.length > 0 && (
+          <div className="atlas-bridge-panel">
+            <div className="atlas-bridge-title">桥接提示</div>
+            {bridges.map((b) => (
+              <div className="atlas-bridge-item" key={b.bridge}>
+                {bridgeHintText(b)}
+              </div>
+            ))}
           </div>
         )}
 

@@ -10,6 +10,7 @@ from typing import Any
 
 from llm import chat_json
 import prompt_rules
+import db
 from schemas import Concept, KnowledgeModel
 import atlas
 
@@ -19,7 +20,7 @@ import atlas
 _BUILD_SYSTEM = """你是资深课程设计师。把学习目标拆成一张概念依赖图(DAG)。
 
 严格按以下 JSON 输出，不要任何解释或思考过程，尽量简短：
-{"root_concepts":["id"],"concepts":[{"id":"english-id","name":"中文名","summary":"一句话","why_matters":"一句话","prerequisites":["id"],"common_misconceptions":["一句话"]}]}
+{"root_concepts":["id"],"concepts":[{"id":"english-id","name":"中文名","summary":"一句话","why_matters":"一句话","prerequisites":["id"],"common_misconceptions":["一句话"],"related":["相关概念名"]}]}
 
 规则：
 1. concepts 共 4~7 个概念，覆盖从基础到目标。
@@ -27,6 +28,7 @@ _BUILD_SYSTEM = """你是资深课程设计师。把学习目标拆成一张概�
 3. root_concepts 是最终要掌握的核心概念 id。
 4. 每个字符串字段尽量一句话，不要展开。
 5. 必须完整保留目标中的修饰限定词（如「高并发 IO」的「高并发」），拆解出的概念必须围绕完整目标，不能只取名词主干（不能把「高并发 IO」简化成「IO 基础」）。
+6. related 是横向相关但非前置依赖的概念名（可为 concepts 之外的概念名，也可留空），用于版图周边关联。
 """
 
 
@@ -148,6 +150,27 @@ def _normalize_km(km: KnowledgeModel) -> KnowledgeModel:
     return km
 
 
+def _persist_relations(km: KnowledgeModel) -> None:
+    """把 DAG 边（prerequisite）与 related 概念名落库为概念关系（幂等）。
+
+    - prerequisite：from=前置概念，to=后继概念（学 to 前需先学 from）。
+    - related：横向相关，from=当前概念，to=归一化后的相关概念（LLM 输出的名字）。
+    任一异常安全降级：关系落库失败不阻塞知识模型构建。
+    """
+    ids = {c.id for c in km.concepts}
+    try:
+        for c in km.concepts:
+            for p in c.prerequisites:
+                if p in ids and p != c.id:
+                    db.upsert_concept_relation(p, c.id, "prerequisite")
+            for rname in c.related:
+                rid = atlas.resolve_global_id(rname)
+                if rid and rid != c.id:
+                    db.upsert_concept_relation(c.id, rid, "related")
+    except Exception:
+        pass
+
+
 def build_knowledge_model(goal: str) -> KnowledgeModel:
     """构建知识模型：LLM 优先，降级到内置模板；概念 id 统一归一化为全局稳定 id。"""
     km = _build_with_llm(goal)
@@ -169,4 +192,6 @@ def build_knowledge_model(goal: str) -> KnowledgeModel:
         root = [concepts[-1].id] if concepts else []
         km = KnowledgeModel(goal=goal, root_concepts=root, concepts=concepts)
 
-    return _normalize_km(km)
+    km = _normalize_km(km)
+    _persist_relations(km)
+    return km

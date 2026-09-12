@@ -57,6 +57,8 @@ class ConceptMastery(BaseModel):
     evidence_count: int = 0       # 已收集的证据条数
     consecutive_failures: int = 0 # 连续失败次数（用于回溯触发）
     last_evidence: str = ""       # 最近一次证据简述
+    success_count: int = 0        # 累计被判定为 understood 的次数（证据充分性）
+    quality: str = ""             # 理解质量：deep / surface / ""（仅 state=understood 时非空）
 
 
 class CognitiveModel(BaseModel):
@@ -108,6 +110,7 @@ class DiagnosticResult(BaseModel):
     evidence: str = ""
     misconception: str = ""
     missing: list[str] = Field(default_factory=list)
+    quality: str = ""  # 理解质量：deep / surface（仅 state=understood 时评估，否则为空）
 
 class ActionReason(BaseModel):
     """教学动作选择的结构化理由（用于可解释性与程序化校验）。"""

@@ -93,5 +93,34 @@ class TestDiagnoseLlmmFocus(unittest.TestCase):
         self.assertIn("当前诊断焦点：并发基础", captured["user"])
 
 
+class TestDiagnoseQuality(unittest.TestCase):
+    def test_understood_with_deep_quality(self):
+        def fake_chat_json(system, user, temperature=0.3, max_tokens=4000, **kwargs):
+            return {
+                "state": "understood", "confidence": 0.9,
+                "concept_ids": ["concurrent-basics"], "evidence": "e",
+                "misconception": "", "missing": [], "quality": "deep",
+            }
+        with mock.patch.object(cognitive, "chat_json", side_effect=fake_chat_json):
+            r = cognitive._diagnose_with_llm(
+                "理解AQS", [_concept()], "并发是多个线程同时执行", focus_concept_id="concurrent-basics"
+            )
+        self.assertEqual(r.quality, "deep")
+
+    def test_partial_forces_empty_quality(self):
+        # LLM 误返回 quality=deep，但 state=partial → 强制置空
+        def fake_chat_json(system, user, temperature=0.3, max_tokens=4000, **kwargs):
+            return {
+                "state": "partial", "confidence": 0.5,
+                "concept_ids": ["concurrent-basics"], "evidence": "e",
+                "misconception": "", "missing": [], "quality": "deep",
+            }
+        with mock.patch.object(cognitive, "chat_json", side_effect=fake_chat_json):
+            r = cognitive._diagnose_with_llm(
+                "理解AQS", [_concept()], "并发是多个线程同时执行", focus_concept_id="concurrent-basics"
+            )
+        self.assertEqual(r.quality, "")
+
+
 if __name__ == "__main__":
     unittest.main()

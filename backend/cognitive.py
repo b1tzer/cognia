@@ -39,9 +39,10 @@ _DIAG_SYSTEM = """你是一名严谨的认知诊断专家。给你一个学习�
 - evidence：用一句话说明判断依据（引述学习者的原话要点）
 - misconception：若存在误解，指出具体错在哪
 - missing：指出还缺失哪些关键理解
+- quality：仅当 state=understood 时评估其理解质量——deep（能说清机制且能正确区分边界/迁移场景）或 surface（结论对但表浅、边界会错）；其余 state 一律输出空字符串 ""
 
 只输出 JSON：
-{"state":"partial","confidence":0.7,"concept_ids":["..."],"evidence":"...","misconception":"...","missing":["..."]}
+{"state":"partial","confidence":0.7,"concept_ids":["..."],"evidence":"...","misconception":"...","missing":["..."],"quality":""}
 """
 
 # ---------------------------------------------------------------------------
@@ -143,6 +144,10 @@ def _diagnose_with_llm(
         state = data.get("state", "partial")
         if state not in ("understood", "partial", "misconceived", "insufficient"):
             state = "partial"
+        quality = str(data.get("quality", ""))
+        # 仅 state=understood 时 quality 有意义，其余强制置空（防止 LLM 误输出）
+        if state != "understood":
+            quality = ""
         return DiagnosticResult(
             state=state,
             confidence=float(data.get("confidence", 0.5)),
@@ -150,6 +155,7 @@ def _diagnose_with_llm(
             evidence=str(data.get("evidence", "")),
             misconception=str(data.get("misconception", "")),
             missing=list(data.get("missing", [])),
+            quality=quality,
         )
     except Exception:
         return None

@@ -266,6 +266,19 @@ def topo_order(knowledge: dict) -> list[str]:
     return order
 
 
+def is_mastered(m: dict) -> bool:
+    """三层掌握判定：概率达标 + 证据充分 + 理解质量过关（三者 AND）。
+
+    唯一真相源：所有「是否已掌握」的决策点都应改调本函数，
+    替代散落的 mastery >= MASTERY_THRESHOLD 硬切。
+    """
+    return (
+        m.get("mastery", 0.0) >= config.MASTERY_THRESHOLD
+        and m.get("success_count", 0) >= config.MIN_SUCCESS_EVIDENCE
+        and m.get("quality", "") == "deep"
+    )
+
+
 def zpd_score(mastery: float) -> float:
     """最近发展区（ZPD）权重：越接近掌握阈值但未达，越值得优先推一把。
 
@@ -293,11 +306,11 @@ def build_focus_candidates(knowledge: dict, cognitive: dict) -> list[dict]:
         if not c:
             continue
         mastery = mastery_map.get(cid, {}).get("mastery", 0.0)
-        if mastery >= config.MASTERY_THRESHOLD:
+        if is_mastered(mastery_map.get(cid, {})):
             continue
-        # 前置概念是否都已基本掌握（拓扑硬约束）
+        # 前置概念是否都已基本掌握（拓扑硬约束，三层判定）
         prereq_ok = all(
-            mastery_map.get(p, {}).get("mastery", 0.0) >= config.MASTERY_THRESHOLD
+            is_mastered(mastery_map.get(p, {}))
             for p in c.get("prerequisites", [])
         )
         if prereq_ok:

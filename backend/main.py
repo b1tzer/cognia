@@ -75,6 +75,8 @@ def _build_cognitive(goal: str, concepts: list[Concept]) -> dict:
                 "evidence_count": 0,
                 "consecutive_failures": 0,
                 "last_evidence": "",
+                "success_count": 0,
+                "quality": "",
                 "dialogue": [],
             }
             for c in concepts
@@ -147,11 +149,11 @@ def _push_dialogue(
             break
 
 def _all_root_mastered(knowledge: dict, cognitive: dict) -> bool:
-    mastery = {m["concept_id"]: m["mastery"] for m in cognitive["concepts"]}
+    mastery = {m["concept_id"]: m for m in cognitive["concepts"]}
     roots = knowledge.get("root_concepts", [])
     if not roots:
         return False
-    return all(mastery.get(r, 0.0) >= config.MASTERY_THRESHOLD for r in roots)
+    return all(decision.is_mastered(mastery.get(r, {})) for r in roots)
 
 
 def _complete_reply() -> str:
@@ -321,6 +323,22 @@ def _get_active_session(sid: str) -> dict:
     return s
 
 
+def _apply_evidence_fields(m: dict, diagnosis: DiagnosticResult) -> None:
+    """更新 L2 证据层 success_count 与 L3 理解质量层 quality。
+
+    - success_count：understood +1 / misconceived 重置 0 / 其余不变
+    - quality：仅 understood 记录 deep/surface，其余置空
+    """
+    if diagnosis.state == "understood":
+        m["success_count"] = m.get("success_count", 0) + 1
+    elif diagnosis.state == "misconceived":
+        m["success_count"] = 0
+    if diagnosis.state == "understood":
+        m["quality"] = diagnosis.quality
+    else:
+        m["quality"] = ""
+
+
 def _process_turn(s: dict, content: str) -> dict:
     """执行「诊断 → 推进意图路由 → 认知更新 → 教学决策」，返回中间结果 ctx。
 
@@ -391,6 +409,7 @@ def _process_turn(s: dict, content: str) -> dict:
         m["evidence_count"] += 1
         m["last_evidence"] = diagnosis.evidence or content[:60]
         m["state"] = cog.state_from_mastery(new_mastery)
+        _apply_evidence_fields(m, diagnosis)
         if is_failure:
             m["consecutive_failures"] = m.get("consecutive_failures", 0) + 1
         else:

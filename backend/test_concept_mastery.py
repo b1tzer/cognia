@@ -17,7 +17,7 @@ config.DB_PATH = os.path.join(tempfile.mkdtemp(), "concept_mastery_test.db")
 import db  # noqa: E402
 import learner_profile  # noqa: E402
 import main  # noqa: E402
-from schemas import Concept  # noqa: E402
+from schemas import Concept, DiagnosticResult  # noqa: E402
 
 
 def _concept(cid: str, name: str) -> Concept:
@@ -93,6 +93,40 @@ class TestBuildCognitivePrior(unittest.TestCase):
         cognitive = main._build_cognitive("理解 HTTP", [_concept("http-basics", "HTTP 基础")])
         # 有历史时用历史掌握度（刚写入几乎不衰减，接近 0.9，但 > P_L0）
         self.assertGreater(cognitive["concepts"][0]["mastery"], config.P_L0)
+
+
+class TestApplyEvidenceFields(unittest.TestCase):
+    """UC2: success_count / quality 生命周期（答对+1/误解清零/其余不变）。"""
+
+    def _diag(self, state, quality=""):
+        return DiagnosticResult(
+            state=state, confidence=0.9, concept_ids=["a"],
+            evidence="e", misconception="", missing=[], quality=quality,
+        )
+
+    def test_understood_increments_and_sets_quality(self):
+        m = {"success_count": 0, "quality": ""}
+        main._apply_evidence_fields(m, self._diag("understood", "deep"))
+        self.assertEqual(m["success_count"], 1)
+        self.assertEqual(m["quality"], "deep")
+
+    def test_misconceived_resets_success_count(self):
+        m = {"success_count": 3, "quality": "deep"}
+        main._apply_evidence_fields(m, self._diag("misconceived"))
+        self.assertEqual(m["success_count"], 0)
+        self.assertEqual(m["quality"], "")
+
+    def test_partial_keeps_success_count(self):
+        m = {"success_count": 2, "quality": "deep"}
+        main._apply_evidence_fields(m, self._diag("partial"))
+        self.assertEqual(m["success_count"], 2)
+        self.assertEqual(m["quality"], "")
+
+    def test_missing_fields_default(self):
+        m = {}
+        main._apply_evidence_fields(m, self._diag("understood", "surface"))
+        self.assertEqual(m["success_count"], 1)
+        self.assertEqual(m["quality"], "surface")
 
 
 if __name__ == "__main__":

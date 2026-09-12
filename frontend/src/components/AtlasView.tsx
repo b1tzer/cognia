@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getAtlas } from '../api'
-import type { AtlasView as AtlasData } from '../types'
+import { getAtlas, getAtlasNeighbors } from '../api'
+import type {
+  AtlasView as AtlasData,
+  AtlasNeighborsResponse,
+  RelationType,
+  CognitiveState,
+} from '../types'
 import { forceLayout } from '../atlasLayout'
 
 interface Props {
@@ -14,6 +19,20 @@ const STATE_COLOR: Record<string, string> = {
   insufficient: '#9a938a',
 }
 
+const RELATION_STYLE: Record<RelationType, { stroke: string; dash: string; arrow: boolean }> = {
+  'is-a': { stroke: '#4a6b5d', dash: '', arrow: false },
+  related: { stroke: '#9a938a', dash: '6 4', arrow: false },
+  prerequisite: { stroke: '#c08a3e', dash: '', arrow: true },
+}
+
+const RELATION_LABEL: Record<RelationType, string> = {
+  'is-a': 'is-a',
+  related: '相关',
+  prerequisite: '前置',
+}
+
+const MAX_DEPTH = 6
+
 interface ViewTransform {
   x: number
   y: number
@@ -24,6 +43,13 @@ export default function AtlasView({ onBack }: Props) {
   const [data, setData] = useState<AtlasData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // 焦点模式（#37：点击节点展开周边关联）
+  const [focusId, setFocusId] = useState<string | null>(null)
+  const [depth, setDepth] = useState(1)
+  const [neighbors, setNeighbors] = useState<AtlasNeighborsResponse | null>(null)
+  const [neighborsLoading, setNeighborsLoading] = useState(false)
+  const [neighborsError, setNeighborsError] = useState<string | null>(null)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
@@ -61,14 +87,80 @@ export default function AtlasView({ onBack }: Props) {
     return () => ro.disconnect()
   }, [])
 
+  // 焦点概念切换时按当前深度拉取周边关联
+  useEffect(() => {
+    if (!focusId) {
+      setNeighbors(null)
+      return
+    }
+    let cancelled = false
+    setNeighborsLoading(true)
+    setNeighborsError(null)
+    getAtlasNeighbors(focusId, depth)
+      .then((r) => {
+        if (!cancelled) setNeighbors(r)
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setNeighborsError(e instanceof Error ? e.message : '加载周边关联失败')
+      })
+      .finally(() => {
+        if (!cancelled) setNeighborsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [focusId, depth])
+
   const concepts = data?.concepts ?? []
   const relations = data?.relations ?? []
 
-  const nodes = useMemo(() => concepts.map((c) => ({ id: c.id, mastery: c.mastery })), [concepts])
-  const edges = useMemo(() => relations.map((r) => ({ from: r.from, to: r.to })), [relations])
-  const layout = useMemo(() => forceLayout(nodes, edges), [nodes, edges])
+  const conceptById = useMemo(() => {
+    const m = new Map<string, (typeof concepts)[number]>()
+    for (const c of concepts) m.set(c.id, c)
+    return m
+  }, [concepts])
 
-  // 数据 / 尺寸变化时自适应居中（拖拽覆盖后的位置仍保留）
+  const nodeMeta = useCallback(
+    (id: string): { name: string; summary: string; mastery: number; state: CognitiveState } => {
+      const c = conceptById.get(id)
+      if (c) return { name: c.name, summary: c.summary, mastery: c.mastery, state: c.state }
+      return { name: id, summary: '', mastery: 0, state: 'insufficient' }
+    },
+    [conceptById],
+  )
+
+  const globalNodes = useMemo(() => concepts.map((c) => ({ id: c.id, mastery: c.mastery })), [concepts])
+  const globalEdges = useMemo(
+    () => relations.map((r) => ({ from: r.from, to: r.to, relation_type: r.relation_type, depth: 0 })),
+    [relations],
+  )
+
+  const neighborList = neighbors?.neighbors ?? []
+  const subNodeIds = useMemo(() => {
+    if (!focusId) return []
+    const ids = new Set<string>([focusId])
+    for (const n of neighborList) {
+      ids.add(n.node)
+      ids.add(n.from)
+      ids.add(n.to)
+    }
+    return [...ids]
+  }, [focusId, neighborList])
+
+  const subNodes = useMemo(
+    () => subNodeIds.map((id) => ({ id, mastery: conceptById.get(id)?.mastery ?? 0 })),
+    [subNodeIds, conceptById],
+  )
+  const subEdges = useMemo(
+    () => neighborList.map((n) => ({ from: n.from, to: n.to, relation_type: n.relation_type, depth: n.depth })),
+    [neighborList],
+  )
+
+  const renderNodes = focusId ? subNodes : globalNodes
+  const renderEdges = focusId ? subEdges : globalEdges
+  const layout = useMemo(() => forceLayout(renderNodes, renderEdges), [renderNodes, renderEdges])
+
+  // 数据 / 尺寸 / 模式变化时自适应居中
   useEffect(() => {
     if (size.w === 0 || size.h === 0) return
     const pad = 60
@@ -149,16 +241,40 @@ export default function AtlasView({ onBack }: Props) {
     nodeDragRef.current = null
   }, [])
 
+  const onNodeClick = useCallback(
+    (id: string) => {
+      if (nodeDragRef.current?.moved) return
+      setFocusId(id)
+      setDepth(1)
+      setDrag({})
+    },
+    [],
+  )
+
+  const clearFocus = useCallback(() => {
+    setFocusId(null)
+    setDrag({})
+  }, [])
+
   const hasNodes = concepts.length > 0
+  const focusConcept = focusId ? conceptById.get(focusId) : undefined
+  const isIsolated = !!focusId && !neighborsLoading && !neighborsError && neighborList.length === 0
 
   return (
     <div className="atlas-view">
       <div className="atlas-toolbar">
         <button className="btn btn-ghost" onClick={onBack}>← 返回</button>
+        {focusId && (
+          <button className="btn btn-ghost" onClick={clearFocus}>← 返回全局版图</button>
+        )}
         <div className="atlas-toolbar-title">
-          <span className="atlas-title">认知版图</span>
+          <span className="atlas-title">{focusId ? '概念周边' : '认知版图'}</span>
           <span className="atlas-meta">
-            {loading ? '加载中…' : `${concepts.length} 概念 · ${relations.length} 关系`}
+            {loading
+              ? '加载中…'
+              : focusId
+                ? `「${focusConcept?.name ?? focusId}」 · ${neighborList.length} 条关联`
+                : `${concepts.length} 概念 · ${relations.length} 关系`}
           </span>
         </div>
       </div>
@@ -182,11 +298,25 @@ export default function AtlasView({ onBack }: Props) {
         )}
         {!loading && !error && hasNodes && size.w > 0 && (
           <svg className="atlas-svg" style={{ cursor: panRef.current ? 'grabbing' : 'grab' }}>
+            <defs>
+              <marker
+                id="arrow-prereq"
+                viewBox="0 0 10 10"
+                refX="10"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#c08a3e" />
+              </marker>
+            </defs>
             <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-              {relations.map((r, i) => {
-                const a = posOf(r.from)
-                const b = posOf(r.to)
+              {renderEdges.map((e, i) => {
+                const a = posOf(e.from)
+                const b = posOf(e.to)
                 if (!a || !b) return null
+                const st = RELATION_STYLE[e.relation_type]
                 return (
                   <line
                     key={i}
@@ -194,34 +324,102 @@ export default function AtlasView({ onBack }: Props) {
                     y1={a.y}
                     x2={b.x}
                     y2={b.y}
+                    stroke={st.stroke}
+                    strokeDasharray={st.dash || undefined}
+                    strokeWidth={1.4}
                     className="atlas-edge"
+                    markerEnd={st.arrow ? 'url(#arrow-prereq)' : undefined}
                   />
                 )
               })}
-              {concepts.map((c) => {
-                const pos = posOf(c.id)
+              {renderNodes.map((n) => {
+                const pos = posOf(n.id)
                 if (!pos) return null
-                const color = STATE_COLOR[c.state] ?? STATE_COLOR.insufficient
+                const meta = nodeMeta(n.id)
+                const isFocus = n.id === focusId
+                const color = STATE_COLOR[meta.state] ?? STATE_COLOR.insufficient
                 return (
                   <g
-                    key={c.id}
-                    className="atlas-node"
+                    key={n.id}
+                    className={'atlas-node' + (isFocus ? ' atlas-node-focus' : '')}
                     transform={`translate(${pos.x} ${pos.y})`}
-                    onPointerDown={(e) => onNodePointerDown(e, c.id)}
-                    onPointerMove={(e) => onNodePointerMove(e, c.id)}
+                    onPointerDown={(e) => onNodePointerDown(e, n.id)}
+                    onPointerMove={(e) => onNodePointerMove(e, n.id)}
                     onPointerUp={onNodePointerUp}
                     onPointerCancel={onNodePointerUp}
+                    onClick={() => onNodeClick(n.id)}
                   >
-                    <circle className="atlas-node-ring" r={14} stroke={color} />
-                    <circle className="atlas-node-fill" r={8} fill={color} />
-                    <text className="atlas-node-name" y={30} textAnchor="middle">
-                      {c.name.length > 12 ? c.name.slice(0, 12) + '…' : c.name}
+                    <circle className="atlas-node-ring" r={isFocus ? 20 : 14} stroke={color} />
+                    <circle className="atlas-node-fill" r={isFocus ? 11 : 8} fill={color} />
+                    <text className="atlas-node-name" y={isFocus ? 36 : 30} textAnchor="middle">
+                      {meta.name.length > 12 ? meta.name.slice(0, 12) + '…' : meta.name}
                     </text>
                   </g>
                 )
               })}
             </g>
           </svg>
+        )}
+
+        {!loading && !error && hasNodes && (
+          <div className="atlas-legend">
+            {(Object.keys(RELATION_LABEL) as RelationType[]).map((t) => {
+              const st = RELATION_STYLE[t]
+              return (
+                <span className="atlas-legend-item" key={t}>
+                  <svg width="22" height="10" viewBox="0 0 22 10">
+                    <line
+                      x1="1"
+                      y1="5"
+                      x2="21"
+                      y2="5"
+                      stroke={st.stroke}
+                      strokeDasharray={st.dash || undefined}
+                      strokeWidth="1.6"
+                      markerEnd={st.arrow ? 'url(#arrow-prereq)' : undefined}
+                    />
+                  </svg>
+                  {RELATION_LABEL[t]}
+                </span>
+              )
+            })}
+          </div>
+        )}
+
+        {focusId && focusConcept && (
+          <div className="atlas-focus-panel">
+            <div className="atlas-focus-head">
+              <span className="atlas-focus-name">{focusConcept.name}</span>
+              <button className="atlas-focus-close" onClick={clearFocus} aria-label="关闭">×</button>
+            </div>
+            {focusConcept.summary && (
+              <div className="atlas-focus-summary">{focusConcept.summary}</div>
+            )}
+
+            <div className="atlas-depth">
+              <label className="atlas-depth-label">邻接深度</label>
+              <input
+                type="range"
+                min={1}
+                max={MAX_DEPTH}
+                value={depth}
+                onChange={(e) => setDepth(Number(e.target.value))}
+              />
+              <span className="atlas-depth-value">{depth} 层</span>
+            </div>
+
+            <div className="atlas-focus-meta">
+              {neighborsLoading ? (
+                <span>加载周边关联…</span>
+              ) : neighborsError ? (
+                <span className="atlas-hint-error">{neighborsError}</span>
+              ) : isIsolated ? (
+                <span className="atlas-isolated">孤立概念 · 暂无关联</span>
+              ) : (
+                <span>{neighborList.length} 条关联关系</span>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </div>

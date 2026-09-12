@@ -337,7 +337,11 @@ export default function AtlasView({ onBack }: Props) {
                 if (!pos) return null
                 const meta = nodeMeta(n.id)
                 const isFocus = n.id === focusId
-                const color = STATE_COLOR[meta.state] ?? STATE_COLOR.insufficient
+                // 掌握度 → 明暗映射；无掌握度数据（mastery=0）按「未探索」渲染
+                const unexplored = meta.mastery <= 0
+                const color = unexplored ? '#9a938a' : STATE_COLOR[meta.state] ?? STATE_COLOR.insufficient
+                const fillOpacity = unexplored ? 0.08 : 0.35 + 0.65 * meta.mastery
+                const ringOpacity = unexplored ? 0.45 : 0.6 + 0.4 * meta.mastery
                 return (
                   <g
                     key={n.id}
@@ -349,9 +353,23 @@ export default function AtlasView({ onBack }: Props) {
                     onPointerCancel={onNodePointerUp}
                     onClick={() => onNodeClick(n.id)}
                   >
-                    <circle className="atlas-node-ring" r={isFocus ? 20 : 14} stroke={color} />
-                    <circle className="atlas-node-fill" r={isFocus ? 11 : 8} fill={color} />
-                    <text className="atlas-node-name" y={isFocus ? 36 : 30} textAnchor="middle">
+                    <circle
+                      className={'atlas-node-ring' + (unexplored ? ' atlas-node-ring-unexplored' : '')}
+                      r={isFocus ? 20 : 14}
+                      stroke={color}
+                      strokeOpacity={ringOpacity}
+                    />
+                    <circle
+                      className="atlas-node-fill"
+                      r={isFocus ? 11 : 8}
+                      fill={color}
+                      fillOpacity={fillOpacity}
+                    />
+                    <text
+                      className={'atlas-node-name' + (unexplored ? ' atlas-node-name-unexplored' : '')}
+                      y={isFocus ? 36 : 30}
+                      textAnchor="middle"
+                    >
                       {meta.name.length > 12 ? meta.name.slice(0, 12) + '…' : meta.name}
                     </text>
                   </g>
@@ -383,6 +401,19 @@ export default function AtlasView({ onBack }: Props) {
                 </span>
               )
             })}
+            <span className="atlas-legend-divider" />
+            <span className="atlas-legend-item">
+              <svg width="22" height="14" viewBox="0 0 22 14">
+                <circle cx="11" cy="7" r="5.5" fill="#7aaf7a" fillOpacity="0.9" stroke="#7aaf7a" strokeWidth="1.4" />
+              </svg>
+              掌握度高 · 亮 · 靠中心
+            </span>
+            <span className="atlas-legend-item">
+              <svg width="22" height="14" viewBox="0 0 22 14">
+                <circle cx="11" cy="7" r="5.5" fill="#9a938a" fillOpacity="0.08" stroke="#9a938a" strokeWidth="1.4" strokeDasharray="3 2" />
+              </svg>
+              未探索 · 暗 · 外围
+            </span>
           </div>
         )}
 

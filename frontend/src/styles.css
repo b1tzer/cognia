@@ -1575,4 +1575,21 @@ body {
   font-weight: 600;
 }
 
+/* 未探索节点（无掌握度数据） */
+.atlas-node-ring-unexplored {
+  stroke-dasharray: 3 2;
+}
+
+.atlas-node-name-unexplored {
+  fill: var(--text-faint);
+  font-style: italic;
+}
+
+.atlas-legend-divider {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--border);
+}
+
+
 

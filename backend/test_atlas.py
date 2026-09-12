@@ -203,5 +203,37 @@ class TestNeighbors(unittest.TestCase):
         self.assertEqual(len(ns), 1)
 
 
+class TestBridgeDetection(unittest.TestCase):
+    def test_betweenness_line_graph(self):
+        # a-b-c 线形图，b 的介数中心性最高
+        ids = ["a", "b", "c"]
+        rels = [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}]
+        bc = atlas.betweenness_centrality(ids, rels)
+        self.assertGreater(bc["b"], bc["a"])
+        self.assertGreater(bc["b"], bc["c"])
+
+    def test_find_bridge_two_mastered_neighbors(self):
+        ids = ["a", "b", "c"]
+        rels = [
+            {"from": "a", "to": "b", "relation_type": "related"},
+            {"from": "b", "to": "c", "relation_type": "related"},
+        ]
+        mastery = {"a": 0.9, "b": 0.1, "c": 0.9}
+        bridges = atlas.find_bridge_paths(ids, rels, mastery)
+        self.assertEqual(len(bridges), 1)
+        self.assertEqual(bridges[0]["bridge"], "b")
+        self.assertEqual(set(bridges[0]["neighbors"]), {"a", "c"})
+
+    def test_find_bridge_no_bridge_when_all_mastered(self):
+        ids = ["a", "b", "c"]
+        rels = [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}]
+        mastery = {"a": 0.9, "b": 0.9, "c": 0.9}
+        bridges = atlas.find_bridge_paths(ids, rels, mastery)
+        self.assertEqual(bridges, [])
+
+    def test_find_bridge_empty_graph(self):
+        self.assertEqual(atlas.find_bridge_paths([], [], {}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

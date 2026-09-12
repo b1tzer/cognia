@@ -115,7 +115,17 @@ def build_atlas_view(user_id: str = db.DEFAULT_USER_ID) -> dict:
         {"from": r["from_id"], "to": r["to_id"], "relation_type": r["relation_type"]}
         for r in db.list_concept_relations()
     ]
-    return {"concepts": concepts, "relations": relations}
+    mastery_map = {c["id"]: c["mastery"] for c in concepts}
+    name_map = {c["id"]: c["name"] for c in concepts}
+    bridges = []
+    for b in find_bridge_paths([c["id"] for c in concepts], relations, mastery_map):
+        bridges.append({
+            "bridge": b["bridge"],
+            "bridge_name": name_map.get(b["bridge"], b["bridge"]),
+            "neighbors": [{"id": n, "name": name_map.get(n, n)} for n in b["neighbors"]],
+            "betweenness": b["betweenness"],
+        })
+    return {"concepts": concepts, "relations": relations, "bridges": bridges}
 
 
 def neighbors(concept_id: str, depth: int = 1) -> list[dict]:
@@ -146,3 +156,80 @@ def neighbors(concept_id: str, depth: int = 1) -> list[dict]:
                 })
         frontier = nxt
     return result
+
+
+def betweenness_centrality(concept_ids: list[str], relations: list[dict]) -> dict:
+    """Brandes 算法计算无权图各节点介数中心性（非归一化）。
+
+    纯 Python 实现，避免引入 networkx 依赖（符合「轻量」决策，
+    个人版图规模（数百~数千节点）下毫秒级可完成）。
+    """
+    adj = {n: [] for n in concept_ids}
+    for r in relations:
+        f, t = r["from"], r["to"]
+        if f in adj and t in adj:
+            adj[f].append(t)
+            adj[t].append(f)
+
+    c = {n: 0.0 for n in concept_ids}
+    for s in concept_ids:
+        stack: list[str] = []
+        pred = {n: [] for n in concept_ids}
+        sigma = {n: 0.0 for n in concept_ids}
+        sigma[s] = 1.0
+        dist = {n: -1 for n in concept_ids}
+        dist[s] = 0
+        queue = [s]
+        while queue:
+            v = queue.pop(0)
+            stack.append(v)
+            for w in adj[v]:
+                if dist[w] < 0:
+                    dist[w] = dist[v] + 1
+                    queue.append(w)
+                if dist[w] == dist[v] + 1:
+                    sigma[w] += sigma[v]
+                    pred[w].append(v)
+        delta = {n: 0.0 for n in concept_ids}
+        while stack:
+            w = stack.pop()
+            for v in pred[w]:
+                delta[v] += (sigma[v] / sigma[w]) * (1 + delta[w])
+            if w != s:
+                c[w] += delta[w]
+    return c
+
+
+def find_bridge_paths(
+    concept_ids: list[str],
+    relations: list[dict],
+    mastery_map: dict,
+    threshold: float | None = None,
+) -> list[dict]:
+    """找桥接通路：桥接节点未掌握，但其两侧（>=2 个）邻居均已掌握。
+
+    返回 [{bridge, neighbors, betweenness}]，无桥接节点时返回空列表（不报错）。
+    """
+    if threshold is None:
+        threshold = config.MASTERY_THRESHOLD
+    bc = betweenness_centrality(concept_ids, relations)
+
+    adj = {n: [] for n in concept_ids}
+    for r in relations:
+        f, t = r["from"], r["to"]
+        if f in adj and t in adj:
+            adj[f].append(t)
+            adj[t].append(f)
+
+    bridges: list[dict] = []
+    for cid in concept_ids:
+        if mastery_map.get(cid, 0.0) >= threshold:
+            continue  # 已掌握，不是桥接点
+        mastered_neighbors = [n for n in adj[cid] if mastery_map.get(n, 0.0) >= threshold]
+        if len(mastered_neighbors) >= 2:
+            bridges.append({
+                "bridge": cid,
+                "neighbors": mastered_neighbors,
+                "betweenness": round(bc.get(cid, 0.0), 4),
+            })
+    return bridges

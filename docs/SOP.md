@@ -41,7 +41,7 @@
 2. **PM 确认**：PM 回复确认后才允许动工。
 3. **切分支**：从 `main` 切 `fix/*` 分支开发（切完立即 `git branch --show-current` 验证）。
 4. **提交 PR**：描述写「改动 + 修复 + 验收结果」。
-5. **Code review**：PM 在 PR 评论做 review，通过则合并，未通过按评论修订。**注意**：PM 与牛马 1 号共用 `b1tzer` GitHub 账号，GitHub 会拒绝「approve 自己的 PR」（`gh pr review --approve` 报错 `Cannot approve your own pull request`），故 review 结论一律用 `gh pr review --comment`（而非 `--approve`），合并用 `gh pr merge` 直接执行。
+5. **Code review**：PM 在 PR 评论做 review，通过则合并，未通过按评论修订。**注意**：PM 与牛马 1 号共用 `b1tzer` GitHub 账号，GitHub 会拒绝「approve 自己的 PR」（`gh pr review --approve` 报错 `Cannot approve your own pull request`），故 review 结论一律用 `gh pr review --comment`（而非 `--approve`），合并用 `gh pr merge` 直接执行。**合并方式选择**：多个 PR 存在链式依赖（分支 A→B→C 串行，每个基于前一个）时，**禁用 `--squash`**（squash 会重写提交 hash，破坏后续分支的 merge-base 导致冲突），应改用 `--merge`（保留提交）或本地 `git merge --no-ff`；只有完全独立的单一 commit 才可安全 squash。
 6. **验收关闭**：PM 在 issue 评论验收结论，关闭 issue。
 
 **标签体系**：

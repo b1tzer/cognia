@@ -17,7 +17,9 @@ from __future__ import annotations
 import re
 import uuid
 
+import config
 import db
+import learner_profile
 
 # 常见泛化后缀：去掉后得到「核心词」，用于跨会话匹配。
 # 例如「HTTP 基础」「HTTP 协议」都归一到 http。
@@ -76,3 +78,41 @@ def resolve_global_id(name: str, summary: str = "") -> str:
     except Exception:
         pass  # 落库失败不阻塞，id 仍可返回
     return key
+
+
+def _state_from_mastery(mastery: float) -> str:
+    """掌握度 -> 认知状态（与 cognitive.state_from_mastery 对齐，避免跨模块依赖）。"""
+    if mastery >= config.MASTERY_THRESHOLD:
+        return "understood"
+    if mastery >= config.STATE_BANDS.get("partial", 0.55):
+        return "partial"
+    return "insufficient"
+
+
+def build_atlas_view(user_id: str = db.DEFAULT_USER_ID) -> dict:
+    """聚合全局概念 + 关系 + 掌握度，返回版图视图。
+
+    - concepts：全局概念库全部概念，附 mastery/state（来自跨会话 concept_mastery，含遗忘衰减）
+    - relations：概念关系（is-a/related/prerequisite）
+    全局库为空时返回空列表，不报错。
+    """
+    concepts = [
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "summary": c.get("summary", ""),
+            "mastery": 0.0,
+            "state": "insufficient",
+        }
+        for c in db.list_concepts()
+    ]
+    prior = learner_profile.prior_mastery(user_id)
+    for c in concepts:
+        if c["id"] in prior:
+            c["mastery"] = round(prior[c["id"]], 4)
+            c["state"] = _state_from_mastery(prior[c["id"]])
+    relations = [
+        {"from": r["from_id"], "to": r["to_id"], "relation_type": r["relation_type"]}
+        for r in db.list_concept_relations()
+    ]
+    return {"concepts": concepts, "relations": relations}

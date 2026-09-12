@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 import db
 import optimizer
+import atlas
 import cognitive as cog
 import decision
 import domain_model
@@ -226,6 +227,11 @@ def _handle_goal_change(sid: str, raw_text: str) -> dict:
 @app.get("/api/health")
 def health():
     return {"ok": True, "ai_enabled": config.AI_ENABLED, "model": config.OPENAI_MODEL if config.AI_ENABLED else None}
+
+@app.get("/api/atlas")
+def get_atlas():
+    """全局个人知识版图：返回全局概念 + 关系 + 掌握度聚合。"""
+    return atlas.build_atlas_view()
 
 
 @app.post("/api/sessions")

@@ -6,6 +6,7 @@ db 概念/关系表读写、以及 domain_model 归一化集成（concept id 稳
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 
@@ -127,6 +128,45 @@ class TestDomainModelNormalization(unittest.TestCase):
         km1 = domain_model.build_knowledge_model("学习 HTTP")
         km2 = domain_model.build_knowledge_model("学习 HTTP")
         self.assertEqual([c.id for c in km1.concepts], [c.id for c in km2.concepts])
+
+
+class TestBuildAtlasView(unittest.TestCase):
+    def setUp(self):
+        db.init_db()
+        # 清空全局概念库 / 关系 / 掌握度，保证空库与聚合场景可独立验证
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.execute("DELETE FROM concepts")
+        conn.execute("DELETE FROM concept_relations")
+        conn.execute("DELETE FROM concept_mastery")
+        conn.commit()
+        conn.close()
+
+    def test_empty_atlas_returns_empty_lists(self):
+        view = atlas.build_atlas_view("nobody")
+        self.assertEqual(view["concepts"], [])
+        self.assertEqual(view["relations"], [])
+
+    def test_aggregates_concepts_and_mastery(self):
+        atlas.resolve_global_id("并发", "s")
+        atlas.resolve_global_id("缓存", "s")
+        db.upsert_concept_mastery("atlas-u1", "并发", 0.9)
+        db.upsert_concept_relation("并发", "缓存", "related")
+
+        view = atlas.build_atlas_view("atlas-u1")
+        ids = [c["id"] for c in view["concepts"]]
+        self.assertIn("并发", ids)
+        self.assertIn("缓存", ids)
+        for c in view["concepts"]:
+            if c["id"] == "并发":
+                self.assertGreater(c["mastery"], 0.89)
+                self.assertEqual(c["state"], "understood")
+            if c["id"] == "缓存":
+                self.assertEqual(c["mastery"], 0.0)
+                self.assertEqual(c["state"], "insufficient")
+        self.assertTrue(any(
+            r["from"] == "并发" and r["to"] == "缓存" and r["relation_type"] == "related"
+            for r in view["relations"]
+        ))
 
 
 if __name__ == "__main__":

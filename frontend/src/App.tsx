@@ -6,6 +6,7 @@ import KnowledgeGraph from './components/KnowledgeGraph'
 import ChatPanel from './components/ChatPanel'
 import CognitivePanel from './components/CognitivePanel'
 import SessionList from './components/SessionList'
+import AtlasView from './components/AtlasView'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -14,6 +15,7 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [focusId, setFocusId] = useState<string | null>(null)
+  const [showAtlas, setShowAtlas] = useState(false)
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -228,6 +230,10 @@ export default function App() {
     }
   }, [session])
 
+  if (showAtlas) {
+    return <AtlasView onBack={() => setShowAtlas(false)} />
+  }
+
   if (!session) {
     return (
       <div className="app">
@@ -237,7 +243,10 @@ export default function App() {
             <span className="brand-name">Cognia</span>
             <span className="brand-tag">AI Learning Agent</span>
           </div>
-          <AiBadge aiEnabled={aiEnabled} />
+          <div className="topbar-actions">
+            <button className="btn btn-ghost" onClick={() => setShowAtlas(true)}>认知版图</button>
+            <AiBadge aiEnabled={aiEnabled} />
+          </div>
         </header>
         <GoalInput onStart={handleStart} busy={busy} error={error} />
         {sessions.length > 0 && (
@@ -260,6 +269,7 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           <AiBadge aiEnabled={aiEnabled} />
+          <button className="btn btn-ghost" onClick={() => setShowAtlas(true)}>认知版图</button>
           <button className="btn btn-ghost" onClick={handleNew}>新目标</button>
         </div>
       </header>

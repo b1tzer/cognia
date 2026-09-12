@@ -1,4 +1,4 @@
-import type { ChatResponse, Session, Message, LLMTrace } from './types'
+import type { ChatResponse, Session, Message, LLMTrace, AtlasView } from './types'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -138,4 +138,8 @@ export function regenerateMessage(sessionId: string, index: number): Promise<Ses
 
 export function getHealth(): Promise<{ ok: boolean; ai_enabled: boolean; model: string | null }> {
   return request('/api/health')
+}
+
+export function getAtlas(): Promise<AtlasView> {
+  return request<AtlasView>('/api/atlas')
 }

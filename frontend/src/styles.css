@@ -388,6 +388,71 @@ body {
   margin-top: 4px;
 }
 
+.session-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.session-header .session-title {
+  margin-bottom: 0;
+}
+
+.session-id-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.session-id-toggle input {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.session-item-id {
+  display: inline-block;
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono',
+    monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-top: 4px;
+  cursor: pointer;
+  text-align: left;
+  letter-spacing: 0.5px;
+  word-break: break-all;
+}
+
+.session-item-id:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.copy-tip {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text);
+  color: var(--panel);
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  z-index: 100;
+  pointer-events: none;
+  box-shadow: var(--shadow);
+}
+
 /* ---------- 对话面板 ---------- */
 .chat-panel {
   flex: 1;

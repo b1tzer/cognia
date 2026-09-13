@@ -122,5 +122,66 @@ class TestDiagnoseQuality(unittest.TestCase):
         self.assertEqual(r.quality, "")
 
 
+class TestDiagnoseConceptIdsSanitize(unittest.TestCase):
+    """concept_ids 校验：LLM 幻觉输出非焦点/非法 id 时应收敛到焦点，防 mastery 更新错位。"""
+
+    def _concepts(self):
+        # 焦点 concurrent-basics 的前置是 aqs；lock-support 是无关概念
+        return [
+            Concept(id="aqs", name="AQS 核心机制", summary="s", why_matters="w",
+                    prerequisites=[], common_misconceptions=[]),
+            Concept(id="concurrent-basics", name="并发基础", summary="s", why_matters="w",
+                    prerequisites=["aqs"], common_misconceptions=[]),
+            Concept(id="lock-support", name="LockSupport", summary="s", why_matters="w",
+                    prerequisites=[], common_misconceptions=[]),
+        ]
+
+    def test_nonfocus_id_removed(self):
+        # 修复前：LLM 返回「存在但非焦点」的 id，会被原样透传，导致 mastery 写到错误概念
+        def fake_chat_json(system, user, temperature=0.3, max_tokens=4000, **kwargs):
+            return {
+                "state": "partial", "confidence": 0.5,
+                "concept_ids": ["lock-support"], "evidence": "e",
+                "misconception": "", "missing": [],
+            }
+        with mock.patch.object(cognitive, "chat_json", side_effect=fake_chat_json):
+            r = cognitive._diagnose_with_llm(
+                "理解并发", self._concepts(), "并发是多个线程同时执行",
+                focus_concept_id="concurrent-basics",
+            )
+        self.assertEqual(r.concept_ids, ["concurrent-basics"])
+
+    def test_focus_and_prereq_kept(self):
+        # 焦点 + 其前置是合法集合，应保留（前置概念可顺带更新 mastery）
+        def fake_chat_json(system, user, temperature=0.3, max_tokens=4000, **kwargs):
+            return {
+                "state": "partial", "confidence": 0.5,
+                "concept_ids": ["concurrent-basics", "aqs"], "evidence": "e",
+                "misconception": "", "missing": [],
+            }
+        with mock.patch.object(cognitive, "chat_json", side_effect=fake_chat_json):
+            r = cognitive._diagnose_with_llm(
+                "理解并发", self._concepts(), "并发是多个线程同时执行",
+                focus_concept_id="concurrent-basics",
+            )
+        self.assertEqual(set(r.concept_ids), {"concurrent-basics", "aqs"})
+
+    def test_missing_focus_recovered(self):
+        # LLM 漏掉焦点只返回前置，焦点必须被补回（防 mastery 更新错位）
+        def fake_chat_json(system, user, temperature=0.3, max_tokens=4000, **kwargs):
+            return {
+                "state": "partial", "confidence": 0.5,
+                "concept_ids": ["aqs"], "evidence": "e",
+                "misconception": "", "missing": [],
+            }
+        with mock.patch.object(cognitive, "chat_json", side_effect=fake_chat_json):
+            r = cognitive._diagnose_with_llm(
+                "理解并发", self._concepts(), "并发是多个线程同时执行",
+                focus_concept_id="concurrent-basics",
+            )
+        self.assertIn("concurrent-basics", r.concept_ids)
+        self.assertIn("aqs", r.concept_ids)
+
+
 if __name__ == "__main__":
     unittest.main()

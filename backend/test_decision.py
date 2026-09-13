@@ -39,6 +39,8 @@ def make_cognitive(
     failures: dict | None = None,
     success_counts: dict | None = None,
     qualities: dict | None = None,
+    evidence_counts: dict | None = None,
+    mastered: dict | None = None,
 ) -> dict:
     """构造认知模型。
 
@@ -46,10 +48,14 @@ def make_cognitive(
     failures: {cid: consecutive_failures}
     success_counts: {cid: success_count}（证据充分性）
     qualities: {cid: quality}（deep / surface / ""）
+    evidence_counts: {cid: evidence_count}（已收集证据条数，默认 0=从未学过）
+    mastered: {cid: bool}（是否已完成该概念学习，推进的权威标记）
     """
     failures = failures or {}
     success_counts = success_counts or {}
     qualities = qualities or {}
+    evidence_counts = evidence_counts or {}
+    mastered = mastered or {}
     names = {"a": "概念A", "b": "概念B", "c": "概念C"}
     return {
         "goal": "测试目标",
@@ -60,11 +66,12 @@ def make_cognitive(
                 "concept_name": names[cid],
                 "mastery": masteries.get(cid, 0.0),
                 "state": "insufficient",
-                "evidence_count": 0,
+                "evidence_count": evidence_counts.get(cid, 0),
                 "consecutive_failures": failures.get(cid, 0),
                 "last_evidence": "",
                 "success_count": success_counts.get(cid, 0),
                 "quality": qualities.get(cid, ""),
+                "mastered": mastered.get(cid, False),
             }
             for cid in ("a", "b", "c")
         ],
@@ -118,14 +125,6 @@ class TestDecideAction(unittest.TestCase):
         self.assertEqual(decision.decide_action("partial", 0, 0).chosen_action, "probe")
         self.assertEqual(decision.decide_action("understood", 0, 0).chosen_action, "advance")
 
-    def test_step_limit_safety_net(self):
-        # 步数超限 → 强制回溯，即使状态是 understood
-        result = decision.decide_action(
-            "understood", config.MAX_STEPS_PER_CONCEPT, 0
-        )
-        self.assertEqual(result.chosen_action, "backtrack")
-        self.assertEqual(result.reasons.criterion_used, "步数上限安全网")
-
     def test_consecutive_failure_backtrack(self):
         # 连续失败达到阈值 → 回溯
         result = decision.decide_action(
@@ -161,11 +160,10 @@ class TestZpdScore(unittest.TestCase):
 
 class TestFocusCandidates(unittest.TestCase):
     def test_build_focus_candidates(self):
-        # a 三层掌握，b 未掌握且前置 a 已掌握 → 候选只有 b；c 因前置 b 未掌握被排除
+        # a 已 mastered，b 未掌握且前置 a 已 mastered → 候选只有 b；c 因前置 b 未 mastered 被排除
         cog = make_cognitive(
             {"a": 0.85, "b": 0.3, "c": 0.3},
-            success_counts={"a": 2},
-            qualities={"a": "deep"},
+            mastered={"a": True},
         )
         cands = decision.build_focus_candidates(KNOWLEDGE, cog)
         self.assertEqual([c["concept"]["id"] for c in cands], ["b"])
@@ -173,8 +171,7 @@ class TestFocusCandidates(unittest.TestCase):
     def test_next_focus_concept_rule(self):
         cog = make_cognitive(
             {"a": 0.85, "b": 0.3, "c": 0.3},
-            success_counts={"a": 2},
-            qualities={"a": "deep"},
+            mastered={"a": True},
         )
         focus = decision.next_focus_concept(KNOWLEDGE, cog)
         self.assertEqual(focus["id"], "b")
@@ -182,35 +179,30 @@ class TestFocusCandidates(unittest.TestCase):
     def test_next_focus_concept_all_mastered_returns_none(self):
         cog = make_cognitive(
             {"a": 0.85, "b": 0.85, "c": 0.85},
-            success_counts={"a": 2, "b": 2, "c": 2},
-            qualities={"a": "deep", "b": "deep", "c": "deep"},
+            mastered={"a": True, "b": True, "c": True},
         )
         self.assertIsNone(decision.next_focus_concept(KNOWLEDGE, cog))
 
 
 class TestIsMastered(unittest.TestCase):
-    """is_mastered 三层掌握判定（UC1 的 AC1.1~AC1.7）。"""
+    """is_mastered 单一 mastered 布尔判定（推进的权威标记）。"""
 
-    def _m(self, mastery=0.0, success_count=0, quality=""):
-        return {"mastery": mastery, "success_count": success_count, "quality": quality}
+    def _m(self, mastered=False):
+        return {"mastered": mastered}
 
-    def test_all_three_met_returns_true(self):
-        self.assertTrue(decision.is_mastered(self._m(0.86, 2, "deep")))
+    def test_mastered_true_returns_true(self):
+        self.assertTrue(decision.is_mastered(self._m(True)))
 
-    def test_mastery_below_threshold(self):
-        self.assertFalse(decision.is_mastered(self._m(0.84, 2, "deep")))
+    def test_mastered_false_returns_false(self):
+        self.assertFalse(decision.is_mastered(self._m(False)))
 
-    def test_insufficient_evidence(self):
-        self.assertFalse(decision.is_mastered(self._m(0.90, 1, "deep")))
-
-    def test_surface_quality(self):
-        self.assertFalse(decision.is_mastered(self._m(0.90, 3, "surface")))
-
-    def test_empty_quality_fallback(self):
-        self.assertFalse(decision.is_mastered(self._m(0.90, 3, "")))
+    def test_legacy_numeric_fields_no_longer_matter(self):
+        # 旧三层数值字段不再影响掌握判定（即使 mastery 高 / success_count 够 / quality deep）
+        m = {"mastery": 0.99, "success_count": 3, "quality": "deep", "mastered": False}
+        self.assertFalse(decision.is_mastered(m))
 
     def test_missing_fields_fallback(self):
-        # 旧数据缺字段 → get 默认值，不判掌握，不抛异常
+        # 旧数据缺字段 → get 默认值 False，不判掌握，不抛异常
         self.assertFalse(decision.is_mastered({}))
 
 
@@ -230,9 +222,15 @@ class TestBacktrack(unittest.TestCase):
         self.assertEqual(decision.detect_backtrack_target(KNOWLEDGE, cog), "a")
 
     def test_detect_backtrack_prereq_decay(self):
-        # b 的前置 a 衰退到 0.4（< floor 0.5）→ 回溯到 a
-        cog = make_cognitive({"a": 0.4, "b": 0.3, "c": 0.3})
+        # b 的前置 a「学过但衰退」到 0.4（< floor 0.5）→ 回溯到 a
+        cog = make_cognitive({"a": 0.4, "b": 0.3, "c": 0.3}, evidence_counts={"a": 3})
         self.assertEqual(decision.detect_backtrack_target(KNOWLEDGE, cog), "a")
+
+    def test_detect_backtrack_unlearned_prereq_not_decay(self):
+        # b 的前置 a「从未学过」（evidence_count=0，mastery 为初始值 0.35 < floor 0.5）
+        # 不应被误判为「衰退」而触发回溯（回归：修复前会误返回 "a"）
+        cog = make_cognitive({"a": 0.35, "b": 0.35, "c": 0.35})
+        self.assertIsNone(decision.detect_backtrack_target(KNOWLEDGE, cog))
 
     def test_next_focus_concept_backtrack_priority(self):
         # 回溯优先于正常候选：b 连续失败 → 焦点切回 a（即使 a 已掌握也回去巩固）

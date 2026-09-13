@@ -188,19 +188,12 @@ def decide_action(
     mastery: float = 0.0,
     trace: list | None = None,
 ) -> ActionDecision:
-    """教学动作决策主入口：骨架安全网 → LLM 语义决策 → 规则回退。"""
-    # 安全网 1（不可被 LLM 覆盖）：单概念步数超限 → 强制回溯，防死循环
-    if evidence_count >= config.MAX_STEPS_PER_CONCEPT:
-        return ActionDecision(
-            chosen_action="backtrack",
-            reasons=ActionReason(
-                evidence_cited=f"evidence_count={evidence_count}",
-                criterion_used="步数上限安全网",
-                pedagogical_intent="该概念交互次数过多，强制回溯到前置概念避免死循环",
-                confidence=1.0,
-            ),
-        )
+    """独立教学动作决策：候选集内 LLM 语义决策 → 规则回退。
 
+    注：主流程 _process_turn 已改用 cognitive.diagnose_and_decide 在一次 LLM
+    调用中同时产出诊断与动作（Map+Guide 单循环）。本函数保留作为「独立动作
+    决策」能力（供测试 / 离线场景使用），不再被主流程调用。
+    """
     candidates = build_action_candidates(state, evidence_count, consecutive_failures)
 
     # LLM 语义决策：候选集内选择
@@ -267,16 +260,15 @@ def topo_order(knowledge: dict) -> list[str]:
 
 
 def is_mastered(m: dict) -> bool:
-    """三层掌握判定：概率达标 + 证据充分 + 理解质量过关（三者 AND）。
+    """概念是否已完成学习（推进的权威标记）。
 
-    唯一真相源：所有「是否已掌握」的决策点都应改调本函数，
-    替代散落的 mastery >= MASTERY_THRESHOLD 硬切。
+    mastered 布尔由主流程在「LLM 判定 understood / 用户明确推进 / 步数上限」
+    时置 True。旧的三层数值 AND（mastery + success_count + quality）因跨层
+    契约易断（生产方只写 mastery、消费方却要求三者齐备）而废弃，改为单一布尔
+    标记。数值字段（mastery/success_count/quality）仍维护，仅供前端星图与
+    跨会话先验，不再参与推进判定。
     """
-    return (
-        m.get("mastery", 0.0) >= config.MASTERY_THRESHOLD
-        and m.get("success_count", 0) >= config.MIN_SUCCESS_EVIDENCE
-        and m.get("quality", "") == "deep"
-    )
+    return bool(m.get("mastered", False))
 
 
 def zpd_score(mastery: float) -> float:
@@ -356,9 +348,12 @@ def detect_backtrack_target(knowledge: dict, cognitive: dict) -> Optional[str]:
                 return target
 
     # 触发 2：前置掌握度衰退 → 回溯到该前置
+    # 仅「学过但衰退」（有证据记录）才回溯；从未学过（evidence_count==0）是正常初始态，
+    # 其 mastery 仍是初始值（低于 floor），不应被误判为「衰退」而强行跳焦点。
     for c in knowledge["concepts"]:
         for p in c.get("prerequisites", []):
-            if mastery_map.get(p, {}).get("mastery", 0.0) < config.BACKTRACK_MASTERY_FLOOR:
+            pm = mastery_map.get(p, {})
+            if pm.get("evidence_count", 0) > 0 and pm.get("mastery", 0.0) < config.BACKTRACK_MASTERY_FLOOR:
                 return p
 
     return None

@@ -59,6 +59,7 @@ class ConceptMastery(BaseModel):
     last_evidence: str = ""       # 最近一次证据简述
     success_count: int = 0        # 累计被判定为 understood 的次数（证据充分性）
     quality: str = ""             # 理解质量：deep / surface / ""（仅 state=understood 时非空）
+    mastered: bool = False        # 是否已完成该概念学习（推进的权威标记，替代旧三层数值 AND）
 
 
 class CognitiveModel(BaseModel):

@@ -148,10 +148,13 @@ def _diagnose_with_llm(
         # 仅 state=understood 时 quality 有意义，其余强制置空（防止 LLM 误输出）
         if state != "understood":
             quality = ""
+        concept_ids = _sanitize_concept_ids(
+            list(data.get("concept_ids", [])), concepts, focus_concept_id
+        )
         return DiagnosticResult(
             state=state,
             confidence=float(data.get("confidence", 0.5)),
-            concept_ids=list(data.get("concept_ids", [])),
+            concept_ids=concept_ids,
             evidence=str(data.get("evidence", "")),
             misconception=str(data.get("misconception", "")),
             missing=list(data.get("missing", [])),
@@ -159,6 +162,29 @@ def _diagnose_with_llm(
         )
     except Exception:
         return None
+
+
+def _sanitize_concept_ids(
+    raw_ids: list, concepts: list[Concept], focus_concept_id: str | None
+) -> list[str]:
+    """校验诊断输出的 concept_ids，防 LLM 幻觉导致 mastery 更新写错概念。
+
+    - 有焦点：只保留「焦点 + 其直接前置」，其余（非焦点/不存在）剔除；
+      焦点不在结果中时补回（保证焦点概念的 mastery 一定被更新）。
+    - 无焦点：只保留 concepts 中的合法 id。
+    """
+    if focus_concept_id:
+        allowed = {focus_concept_id}
+        for c in concepts:
+            if c.id == focus_concept_id:
+                allowed.update(c.prerequisites)
+                break
+        ids = [cid for cid in raw_ids if cid in allowed]
+        if focus_concept_id not in ids:
+            ids.insert(0, focus_concept_id)
+        return ids
+    valid = {c.id for c in concepts}
+    return [cid for cid in raw_ids if cid in valid]
 
 
 # 表示"不知道/不清楚/不会"的信号词。

@@ -39,6 +39,7 @@ def make_cognitive(
     failures: dict | None = None,
     success_counts: dict | None = None,
     qualities: dict | None = None,
+    evidence_counts: dict | None = None,
 ) -> dict:
     """构造认知模型。
 
@@ -46,10 +47,12 @@ def make_cognitive(
     failures: {cid: consecutive_failures}
     success_counts: {cid: success_count}（证据充分性）
     qualities: {cid: quality}（deep / surface / ""）
+    evidence_counts: {cid: evidence_count}（已收集证据条数，默认 0=从未学过）
     """
     failures = failures or {}
     success_counts = success_counts or {}
     qualities = qualities or {}
+    evidence_counts = evidence_counts or {}
     names = {"a": "概念A", "b": "概念B", "c": "概念C"}
     return {
         "goal": "测试目标",
@@ -60,7 +63,7 @@ def make_cognitive(
                 "concept_name": names[cid],
                 "mastery": masteries.get(cid, 0.0),
                 "state": "insufficient",
-                "evidence_count": 0,
+                "evidence_count": evidence_counts.get(cid, 0),
                 "consecutive_failures": failures.get(cid, 0),
                 "last_evidence": "",
                 "success_count": success_counts.get(cid, 0),
@@ -230,9 +233,15 @@ class TestBacktrack(unittest.TestCase):
         self.assertEqual(decision.detect_backtrack_target(KNOWLEDGE, cog), "a")
 
     def test_detect_backtrack_prereq_decay(self):
-        # b 的前置 a 衰退到 0.4（< floor 0.5）→ 回溯到 a
-        cog = make_cognitive({"a": 0.4, "b": 0.3, "c": 0.3})
+        # b 的前置 a「学过但衰退」到 0.4（< floor 0.5）→ 回溯到 a
+        cog = make_cognitive({"a": 0.4, "b": 0.3, "c": 0.3}, evidence_counts={"a": 3})
         self.assertEqual(decision.detect_backtrack_target(KNOWLEDGE, cog), "a")
+
+    def test_detect_backtrack_unlearned_prereq_not_decay(self):
+        # b 的前置 a「从未学过」（evidence_count=0，mastery 为初始值 0.35 < floor 0.5）
+        # 不应被误判为「衰退」而触发回溯（回归：修复前会误返回 "a"）
+        cog = make_cognitive({"a": 0.35, "b": 0.35, "c": 0.35})
+        self.assertIsNone(decision.detect_backtrack_target(KNOWLEDGE, cog))
 
     def test_next_focus_concept_backtrack_priority(self):
         # 回溯优先于正常候选：b 连续失败 → 焦点切回 a（即使 a 已掌握也回去巩固）

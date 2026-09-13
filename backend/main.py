@@ -436,6 +436,10 @@ def _process_turn(s: dict, content: str) -> dict:
 
     # 4. 教学决策：动作已在上面由 diagnose_and_decide 合并产出；
     #    推进时覆盖为 advance（切换焦点由 _resolve_reply 完成）。
+    #    求助意图优先于诊断动作：用户明确说「我不懂/解释一下」→ 直接 explain，
+    #    绕过 insufficient→probe 追问。诊断层（记忆点）仍诚实，不被篡改，
+    #    只覆盖「教学动作」（决策点）——这正是与「决策点/记忆点解耦」的对齐。
+    help_intent = decision.detect_help_intent(content)
     if should_advance:
         decision_result = decision.ActionDecision(
             chosen_action="advance",
@@ -446,6 +450,16 @@ def _process_turn(s: dict, content: str) -> dict:
                 ),
                 criterion_used="推进判定（Map+Guide）",
                 pedagogical_intent="当前概念已完成，推进到下一个概念",
+                confidence=1.0,
+            ),
+        )
+    elif help_intent:
+        decision_result = decision.ActionDecision(
+            chosen_action="explain",
+            reasons=decision.ActionReason(
+                evidence_cited="用户明确表达求助/请求讲解意图",
+                criterion_used="求助意图识别（零 token 规则）",
+                pedagogical_intent="直接讲解，并先给领域全景",
                 confidence=1.0,
             ),
         )
@@ -463,6 +477,7 @@ def _process_turn(s: dict, content: str) -> dict:
         "action": decision_result.chosen_action,
         "completed": _all_root_mastered(knowledge, cognitive),
         "advance_intent": advance_intent,
+        "help_intent": help_intent,
         "should_advance": should_advance,
         "history": focus_history,
         "trace": trace,
@@ -565,7 +580,7 @@ def chat(sid: str, req: ChatRequest):
     if is_stream:
         reply = tutor.generate_tutor_reply(
             Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content,
-            trace=ctx["trace"], history=ctx["history"],
+            trace=ctx["trace"], history=ctx["history"], knowledge=ctx["knowledge"],
         )
 
     return _persist(sid, ctx, reply, action, status)
@@ -604,7 +619,7 @@ def chat_stream(sid: str, req: ChatRequest):
             parts: list[str] = []
             for delta in tutor.stream_tutor_reply(
                 Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content,
-                trace=ctx["trace"], history=ctx["history"],
+                trace=ctx["trace"], history=ctx["history"], knowledge=ctx["knowledge"],
             ):
                 parts.append(delta)
                 yield f"data: {json.dumps({'type': 'token', 'content': delta}, ensure_ascii=False)}\n\n"
@@ -682,7 +697,7 @@ def regenerate_message(sid: str, index: int):
         focus = Concept(**next(iter(by_id.values())))
 
     diagnosis = DiagnosticResult(**diagnosis_data)
-    reply = tutor.generate_tutor_reply(focus, diagnosis, action, user_text)
+    reply = tutor.generate_tutor_reply(focus, diagnosis, action, user_text, knowledge=knowledge)
 
     if db.update_message(sid, index, reply) is None:
         raise HTTPException(status_code=404, detail="消息不存在")

@@ -230,6 +230,37 @@ def detect_advance_intent(user_text: str) -> bool:
         return False
     return any(h in t for h in _ADVANCE_HINTS)
 
+# 求助意图的「强信号」：明确请求讲解/举例，或自述零基础。命中即触发，不限制长度。
+# 这些是「教学意图」而非「诊断证据」，绝不能让诊断层把「我不懂」误判为 insufficient
+# 并继续追问（那正是零基础用户卡死的根因）。
+_HELP_STRONG_HINTS = (
+    "解释一下", "给我讲讲", "讲讲", "讲一下", "详细讲", "再说说",
+    "举个例子", "举个", "举例", "没学过", "没听过", "没接触过",
+    "零基础", "从零", "完全不懂", "完全不知道", "一点都不懂",
+)
+
+# 求助意图的「弱信号」：口语化「不懂/不知道」。仅短句命中才触发，避免误伤正常陈述。
+# 注意不收录「不会」——它会误伤「其他线程不会立马知道」这类正常否定表述。
+_HELP_WEAK_HINTS = (
+    "不懂", "不太懂", "没懂", "没太懂", "不知道", "不了解",
+)
+
+def detect_help_intent(user_text: str) -> bool:
+    """检测用户是否表达「求助/请求讲解」意图。
+
+    与 detect_advance_intent 对称：求助是「元对话指令」而非「对概念的理解陈述」，
+    不应交给诊断层判 insufficient（否则用户说「我不懂」反而被追问）。
+    强信号（明确要求讲解/自述零基础）命中即触发；弱信号（口语化不懂）仅短句触发。
+    """
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    if any(h in t for h in _HELP_STRONG_HINTS):
+        return True
+    if len(t) > 20:
+        return False
+    return any(h in t for h in _HELP_WEAK_HINTS)
+
 
 # ===========================================================================
 # 二、焦点概念选择（决定「学哪个」）

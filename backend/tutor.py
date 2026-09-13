@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 from llm import chat_text, chat_text_stream
 import prompt_rules
+import cognitive
+import decision
 from schemas import Concept, DiagnosticResult
 
 # ---------------------------------------------------------------------------
@@ -48,17 +50,66 @@ _ACTION_LABEL = {
     "advance": "继续",
 }
 
+def _dag_overview(knowledge: dict | None, focus_id: str | None = None) -> str:
+    """把整张概念 DAG 渲染成「领域全景」文本。
 
-def _tutor_system(concept: Concept, diagnosis: DiagnosticResult, action: str) -> str:
-    """构建 tutor 的 system prompt（含动态规则注入）。"""
-    return _TUTOR_SYSTEM.format(
+    供 explain 与 novice 开场使用：先让零基础用户看到「这个领域由哪些概念构成、
+    它们如何串起来、最终解决什么问题」的地图，再聚焦当前概念，避免孤立讲解。
+    """
+    if not knowledge:
+        return ""
+    concepts = knowledge.get("concepts", [])
+    if not concepts:
+        return ""
+    by_id = {c["id"]: c for c in concepts}
+    try:
+        order = decision.topo_order(knowledge)
+    except Exception:
+        order = [c["id"] for c in concepts]
+
+    lines = [f"学习目标：{knowledge.get('goal', '')}", "", "这个领域由以下概念构成（按学习顺序）："]
+    for i, cid in enumerate(order, 1):
+        c = by_id.get(cid)
+        if not c:
+            continue
+        prereqs = [by_id.get(p, {}).get("name", p) for p in c.get("prerequisites", [])]
+        pre = f"（前置：{'、'.join(prereqs)}）" if prereqs else ""
+        marker = " ← 当前正在学" if cid == focus_id else ""
+        lines.append(f"{i}. {c['name']}{pre}{marker}")
+    roots = knowledge.get("root_concepts", [])
+    if roots:
+        root_names = [by_id.get(r, {}).get("name", r) for r in roots]
+        lines.append(f"最终要掌握的核心：{'、'.join(root_names)}")
+    return "\n".join(lines)
+
+def _tutor_system(
+    concept: Concept,
+    diagnosis: DiagnosticResult,
+    action: str,
+    knowledge: dict | None = None,
+) -> str:
+    """构建 tutor 的 system prompt（含动态规则注入）。
+
+    explain 动作时额外注入「领域全景」：先给地图再聚焦当前点，
+    解决零基础用户「讲解只见树木不见森林」的问题。
+    """
+    base = _TUTOR_SYSTEM.format(
         concept=concept.name,
         summary=concept.summary or concept.name,
         why_matters=concept.why_matters or "建立准确的心智模型",
         misconceptions="；".join(concept.common_misconceptions) or "暂无记录",
         state_label=_STATE_LABEL.get(diagnosis.state, "半理解"),
         action_label=_ACTION_LABEL.get(action, "追问"),
-    ) + prompt_rules.rules_suffix("tutor")
+    )
+    if action == "explain":
+        overview = _dag_overview(knowledge, concept.id)
+        if overview:
+            base += (
+                f"\n\n【领域全景】先用一两句话给学习者建立全局认识"
+                f"（这个领域由哪些概念构成、它们如何串起来、最终解决什么问题），"
+                f"再聚焦讲清「{concept.name}」本身。全景如下：\n{overview}"
+            )
+    return base + prompt_rules.rules_suffix("tutor")
 
 
 def _history_block(history: list | None) -> str:
@@ -97,8 +148,9 @@ def _tutor_with_llm(
     user_text: str = "",
     trace: list | None = None,
     history: list | None = None,
+    knowledge: dict | None = None,
 ) -> Optional[str]:
-    system = _tutor_system(concept, diagnosis, action)
+    system = _tutor_system(concept, diagnosis, action, knowledge)
     user = _tutor_user(diagnosis, user_text, history)
     return chat_text(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成", budget_label="tutor")
 
@@ -110,12 +162,13 @@ def stream_tutor_reply(
     user_text: str = "",
     trace: list | None = None,
     history: list | None = None,
+    knowledge: dict | None = None,
 ):
     """流式生成教学回复：LLM 流式时逐段 yield 文本增量，降级模板时一次性 yield。
 
     返回生成器，调用方用 `for delta in stream_tutor_reply(...)` 消费。
     """
-    system = _tutor_system(concept, diagnosis, action)
+    system = _tutor_system(concept, diagnosis, action, knowledge)
     user = _tutor_user(diagnosis, user_text, history)
     emitted = False
     for delta in chat_text_stream(system, user, temperature=0.6, max_tokens=1500, trace=trace, trace_label="回复生成", budget_label="tutor"):
@@ -176,12 +229,14 @@ def generate_tutor_reply(
     user_text: str = "",
     trace: list | None = None,
     history: list | None = None,
+    knowledge: dict | None = None,
 ) -> str:
     """生成教学回复，LLM 优先，降级到模板。
 
-    user_text 为学习者本轮真实输入；history 为对话轨迹（见 _history_block）。
+    user_text 为学习者本轮真实输入；history 为对话轨迹（见 _history_block）；
+    knowledge 为完整知识模型（供 explain 时注入领域全景）。
     """
-    text = _tutor_with_llm(concept, diagnosis, action, user_text, trace, history)
+    text = _tutor_with_llm(concept, diagnosis, action, user_text, trace, history, knowledge)
     if text:
         return text.strip()
     return _tutor_template(concept, diagnosis, action)
@@ -191,14 +246,34 @@ def generate_tutor_reply(
 # 开场白
 # ---------------------------------------------------------------------------
 def build_intro(knowledge: dict, focus: Optional[dict]) -> str:
-    """开场白：说明已建立的知识模型，并抛出第一个诊断问题。"""
+    """开场白：说明已建立的知识模型，并抛出第一个诊断问题。
+
+    对 novice（零基础）用户：先给「领域全景」地图再温和引导，而非一上来就提问；
+    对有基础/进阶用户：保持「先问后教」。
+    """
     concepts = knowledge["concepts"]
     if focus is None:
         focus = concepts[0] if concepts else None
     if focus is None:
         return "我已经为你的学习目标建立了知识模型，让我们开始吧。"
+    goal = knowledge["goal"]
+
+    if cognitive.infer_prior_level(goal) == "novice":
+        overview = _dag_overview(knowledge, focus["id"] if focus else None)
+        lines = [
+            f"欢迎！针对「{goal}」，我把它拆解成 {len(concepts)} 个需要理解的概念。",
+            "先别急着答，我给你一张「地图」，让你先看清整个领域长什么样：",
+            "",
+            overview,
+            "",
+            f"我们从第一个概念 **{focus['name']}** 开始。",
+            "零基础完全没关系——我会先讲清楚基础，再带你一步步往上走。",
+            "你可以点「我不懂，解释一下」，或直接问我任何问题，我们从这里出发。",
+        ]
+        return "\n".join(lines)
+
     lines = [
-        f"我已经把「{knowledge['goal']}」拆解成 {len(concepts)} 个需要理解的概念，"
+        f"我已经把「{goal}」拆解成 {len(concepts)} 个需要理解的概念，"
         "并梳理了它们之间的依赖关系。",
         "",
         f"我们从一个基础概念开始：**{focus['name']}**。",

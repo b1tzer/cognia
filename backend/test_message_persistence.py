@@ -90,6 +90,16 @@ class TestChatPersistence(unittest.TestCase):
             self.assertIsNotNone(user_msg["diagnosis"])
             self.assertIn("state", user_msg["diagnosis"])
 
+    def test_assistant_message_does_not_duplicate_diagnosis(self):
+        """诊断结果只应挂在 user 消息，assistant 消息不应冗余存一份（问题 7 去重）。"""
+        with TestClient(main.app) as client:
+            sid = client.post("/api/sessions", json={"goal": "理解AQS"}).json()["id"]
+            client.post(f"/api/sessions/{sid}/chat", json={"content": "并发基础是线程安全协调的基础"})
+            s = db.get_session(sid)
+            ai_msg = s["messages"][2]
+            self.assertEqual(ai_msg["role"], "assistant")
+            self.assertIsNone(ai_msg.get("diagnosis"))
+
     def test_chat_stream_messages_not_duplicated(self):
         """流式接口完整消费后，消息同样不重复。"""
         with TestClient(main.app) as client:

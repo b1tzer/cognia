@@ -501,7 +501,7 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
 
     # 用户消息已在流程开始时立即落库（diagnosis 暂空），此处回填诊断结果
     db.update_last_user_diagnosis(sid, ctx["diagnosis"].model_dump())
-    ai_msg = {"role": "assistant", "content": reply, "action": action, "diagnosis": ctx["diagnosis"].model_dump(), "decision": decision_result.model_dump(), "trace": ctx["trace"]}
+    ai_msg = {"role": "assistant", "content": reply, "action": action, "decision": decision_result.model_dump(), "trace": ctx["trace"]}
     db.append_messages(sid, [ai_msg])
     # 本轮结束后，把轨迹压入焦点概念的对话栈（供下一轮诊断/回复关联上下文）
     _push_dialogue(

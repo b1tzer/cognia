@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+import decision
 from llm import chat_json
 from schemas import Concept, DiagnosticResult
 
@@ -43,6 +44,60 @@ _DIAG_SYSTEM = """你是一名严谨的认知诊断专家。给你一个学习�
 
 只输出 JSON：
 {"state":"partial","confidence":0.7,"concept_ids":["..."],"evidence":"...","misconception":"...","missing":["..."],"quality":""}
+"""
+
+# ---------------------------------------------------------------------------
+# 诊断 + 动作 合并 prompt（Map+Guide 单循环）
+#
+# 把「认知诊断」与「教学动作决策」合并为一次 LLM 调用：诊断与动作本是一个判断
+# 的两半，拆成两次独立采样会产生跨调用契约（state → action）断裂的风险（正是
+# Java LockSupport 会话死循环的根因）。合并后，state 与 action 在同一推理上下文
+# 产出，物理上不可能矛盾。
+# ---------------------------------------------------------------------------
+def _action_rules_text(consecutive_failures: int, evidence_count: int) -> str:
+    """生成「state → 合法动作」规则文本，阈值与 decision.build_action_candidates 对齐。
+
+    规则本身是确定性的（只依赖 state / consecutive_failures / evidence_count），
+    由代码在拿到 LLM 输出的 state 后用 build_action_candidates 做二次校验兜底。
+    """
+    return (
+        f"- state=misconceived（有误解）：默认 correct（用反例/反问引导其自我发现矛盾）；"
+        f"若 consecutive_failures >= {config.BACKTRACK_CONSECUTIVE_FAILURES} 或 evidence_count >= 2（连续纠错无效），"
+        f"改选 backtrack（回溯到前置概念重新巩固）。\n"
+        f"- state=insufficient（信息不足）：默认 probe（追问引导其先表达已有理解）；"
+        f"若 evidence_count >= 2（连续信息不足），改选 explain（直接解释降低挫败感）。\n"
+        f"- state=partial（半理解）：默认 probe（追问补全因果链）；"
+        f"若 evidence_count >= {config.STAGNATION_WINDOW}（连续多轮半理解无突破），改选 explain（直接解释打破停滞）。\n"
+        f"- state=understood（理解正确）：选 advance（肯定并推进）。"
+    )
+
+
+_DIAG_DECIDE_SYSTEM = """你是一名严谨的认知诊断专家兼教学决策者。给你学习目标、概念列表、以及学习者对当前焦点概念的理解陈述，你要在**同一次推理**中同时完成两件事：①判断学习者的认知状态；②基于诊断结果选定本轮的苏格拉底教学动作。
+
+【认知状态四分类】
+- understood：理解正确、准确、能说清机制/因果，无明显错误
+- partial：半理解，方向对但有遗漏、模糊、不完整
+- misconceived：存在明确的概念错误或误解
+- insufficient：信息不足，表达太空泛或干脆承认不知道，无法判断
+
+【诊断判别原则（务必遵守，优先级最高）】
+- 只诊断焦点概念：只判断学习者对「当前诊断焦点」概念的理解；不要因学习者没提学习目标下的其他概念就判 insufficient。missing 只能填「焦点概念自身」还缺的理解。
+- 否定性证据优先：若表达中出现"不知道/不清楚/不会/没学过/忘了/不确定"等明确否定或承认不知道的信号，一律判 insufficient。
+- 判断 misconceived 必须基于「概念本身的语义错误」，不能仅因表述口语化、不精确、或出现"其实/本质上"等措辞就误判；若语义本质正确、只是措辞不严谨，应归 partial 或 understood。
+- 判断 understood 应聚焦「最终结论的语义正确性」，不被表达过程中的犹豫、自我否定、或"说不清楚"等语气信号误导。
+- 追问兜底：若证据不足以支撑高置信判断，应降低 confidence（< 0.7），宁可判 partial 并触发追问，也不强判 understood 或 misconceived。
+
+【教学动作选择（必须先判定 state，再按 state 选，只能选合法动作，禁止自创）】
+{action_rules}
+
+【输出字段】
+- state / confidence / concept_ids / evidence / misconception / missing / quality
+- quality：仅当 state=understood 时评估其理解质量——deep（能说清机制且能正确区分边界/迁移场景）或 surface（结论对但表浅、边界会错）；其余 state 一律输出空字符串 ""
+- action：你选定的教学动作（probe/explain/correct/backtrack/advance 之一）
+- action_reason：一句话说明为何选该动作（必须引用 evidence/missing/misconception 真实字段，禁止编造）
+
+只输出 JSON，不要任何多余文字：
+{{"state":"partial","confidence":0.7,"concept_ids":["..."],"evidence":"...","misconception":"...","missing":["..."],"quality":"","action":"probe","action_reason":"..."}}
 """
 
 # ---------------------------------------------------------------------------
@@ -299,6 +354,121 @@ def diagnose(
     if result is not None:
         return result
     return _heuristic_diagnose(concepts, user_text, focus_concept_id)
+
+
+def _diagnose_and_decide_with_llm(
+    goal: str,
+    concepts: list[Concept],
+    user_text: str,
+    focus_concept_id: str | None = None,
+    evidence_count: int = 0,
+    consecutive_failures: int = 0,
+    trace: list | None = None,
+    history: list | None = None,
+    misconceptions: dict | None = None,
+) -> tuple[DiagnosticResult, Any] | None:
+    """一次 LLM 调用同时产出认知诊断与教学动作决策。
+
+    返回 (diagnosis, ActionDecision)；LLM 不可用或输出非法时返回 None。
+    动作必须落在 state 对应的确定性候选集内，否则回退到规则动作（防 LLM 自创）。
+    """
+    concept_desc = "\n".join(
+        f"- {c.id}：{c.name}（{c.summary}）" for c in concepts
+    )
+    focus_name = ""
+    for c in concepts:
+        if c.id == focus_concept_id:
+            focus_name = c.name
+            break
+    focus_line = f"\n\n当前诊断焦点：{focus_name}（{focus_concept_id}）" if focus_name else ""
+    history_block = _diagnosis_history_block(history)
+    misconception_block = _misconception_block(misconceptions)
+    system = _DIAG_DECIDE_SYSTEM.format(
+        action_rules=_action_rules_text(consecutive_failures, evidence_count)
+    ) + _rules_suffix()
+    user = (
+        f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n"
+        f"学习者本轮对焦点概念的理解陈述：\n{user_text}{history_block}{misconception_block}{focus_line}"
+    )
+    data = chat_json(
+        system, user, temperature=0.2, max_tokens=1500,
+        trace=trace, trace_label="诊断+决策", budget_label="cognitive",
+    )
+    if not data:
+        return None
+    try:
+        # 解析诊断字段
+        state = data.get("state", "partial")
+        if state not in ("understood", "partial", "misconceived", "insufficient"):
+            state = "partial"
+        quality = str(data.get("quality", ""))
+        if state != "understood":
+            quality = ""
+        concept_ids = _sanitize_concept_ids(
+            list(data.get("concept_ids", [])), concepts, focus_concept_id
+        )
+        diagnosis = DiagnosticResult(
+            state=state,
+            confidence=float(data.get("confidence", 0.5)),
+            concept_ids=concept_ids,
+            evidence=str(data.get("evidence", "")),
+            misconception=str(data.get("misconception", "")),
+            missing=list(data.get("missing", [])),
+            quality=quality,
+        )
+
+        # 解析动作：必须落在 state 对应的确定性候选集内，否则回退规则
+        action = str(data.get("action", ""))
+        legal = {c["action"] for c in decision.build_action_candidates(
+            state, evidence_count, consecutive_failures
+        )}
+        if action not in legal:
+            action = decision.decide_action_rule(
+                state, evidence_count, consecutive_failures
+            ).chosen_action
+        action_reason = str(data.get("action_reason", ""))
+
+        action_decision = decision.ActionDecision(
+            chosen_action=action,
+            reasons=decision.ActionReason(
+                evidence_cited=diagnosis.evidence,
+                criterion_used="诊断与动作合并判定",
+                pedagogical_intent=action_reason,
+                confidence=diagnosis.confidence,
+            ),
+        )
+        return diagnosis, action_decision
+    except Exception:
+        return None
+
+
+def diagnose_and_decide(
+    goal: str,
+    concepts: list[Concept],
+    user_text: str,
+    focus_concept_id: str | None = None,
+    evidence_count: int = 0,
+    consecutive_failures: int = 0,
+    trace: list | None = None,
+    history: list | None = None,
+    misconceptions: dict | None = None,
+) -> tuple[DiagnosticResult, Any]:
+    """合并入口（Map+Guide 单循环）：一次 LLM 调用同时完成诊断与动作决策。
+
+    返回 (diagnosis, ActionDecision)。LLM 不可用时降级：
+    diagnosis 走启发式，action 走确定性规则（候选集首个）。
+    """
+    result = _diagnose_and_decide_with_llm(
+        goal, concepts, user_text, focus_concept_id,
+        evidence_count, consecutive_failures, trace, history, misconceptions,
+    )
+    if result is not None:
+        return result
+    diagnosis = _heuristic_diagnose(concepts, user_text, focus_concept_id)
+    action_decision = decision.decide_action_rule(
+        diagnosis.state, evidence_count, consecutive_failures
+    )
+    return diagnosis, action_decision
 
 
 # ---------------------------------------------------------------------------

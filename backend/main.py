@@ -77,6 +77,7 @@ def _build_cognitive(goal: str, concepts: list[Concept]) -> dict:
                 "last_evidence": "",
                 "success_count": 0,
                 "quality": "",
+                "mastered": False,
                 "dialogue": [],
             }
             for c in concepts
@@ -353,12 +354,23 @@ def _process_turn(s: dict, content: str) -> dict:
     focus = decision.next_focus_concept(knowledge, cognitive, trace=trace)
     focus_id = focus["id"] if focus else None
 
-    # 2. 认知诊断（只传焦点概念子集，减少 token；携带焦点概念对话栈 + 历史误解，关联上下文）
+    # 1.5 提前取焦点认知快照（供合并决策的停滞检测与步数护栏）
+    focus_before = (
+        next((m for m in cognitive["concepts"] if m["concept_id"] == focus_id), {})
+        if focus_id else {}
+    )
+    focus_evidence = focus_before.get("evidence_count", 0)
+    focus_failures = focus_before.get("consecutive_failures", 0)
+
+    # 2. 合并「认知诊断 + 教学动作决策」为一次 LLM 调用（Map+Guide 单循环）。
+    #    替代原 diagnose + decide_action 两次调用，消除 state→action 跨调用契约断裂。
     focus_concepts = _focus_concept_subset(focus_id, concepts)
     focus_history = _focus_history(cognitive, focus_id)
     misconceptions = learner_profile.get_misconceptions_for([c.id for c in focus_concepts])
-    diagnosis = cog.diagnose(
+    diagnosis, action_decision = cog.diagnose_and_decide(
         knowledge["goal"], focus_concepts, content, focus_id,
+        evidence_count=focus_evidence,
+        consecutive_failures=focus_failures,
         trace=trace, history=focus_history, misconceptions=misconceptions,
     )
 
@@ -366,11 +378,21 @@ def _process_turn(s: dict, content: str) -> dict:
     if diagnosis.state == "misconceived" and diagnosis.misconception and focus_id:
         learner_profile.record_misconception(focus_id, diagnosis.misconception, diagnosis.confidence)
 
-    # 2.5 推进意图路由（确定性规则，零 token）：用户明确要求「继续/下一个」时，
-    #     预标记当前焦点概念为已掌握并覆盖诊断为 understood，让后续焦点选择
-    #     自然推进到下一个概念，避免被误判 insufficient 而陷入反复解释的死循环。
+    # 2.5 推进判定（Map+Guide 单循环核心）：推进不再由多层数值 AND 反推，
+    #     而是「LLM 语义（understood）＋ 两条确定性护栏（用户推进意图 / 步数上限）」
+    #     直接决定 should_advance。推进是默认方向，纠缠是例外。
     advance_intent = decision.detect_advance_intent(content)
-    if advance_intent and focus_id:
+    # 步数护栏：更新前的 evidence_count（即「这是第几轮回答」）达上限则强制推进
+    steps_over_limit = focus_evidence >= config.MAX_STEPS_PER_CONCEPT
+    should_advance = (
+        advance_intent                       # 护栏 1：用户明确说「继续/下一个/懂了」
+        or steps_over_limit                  # 护栏 2：1~2 次验证后仍推进
+        or diagnosis.state == "understood"   # LLM 语义：已判定理解
+    )
+
+    # 2.6 若推进，预标记当前焦点为已掌握（覆盖诊断为 understood），
+    #     使后续焦点选择自然推进到下一个概念。
+    if should_advance and focus_id:
         for m in cognitive["concepts"]:
             if m["concept_id"] == focus_id:
                 m["mastery"] = config.MASTERY_THRESHOLD + 0.05
@@ -422,19 +444,33 @@ def _process_turn(s: dict, content: str) -> dict:
             if m:
                 m["state"] = "misconceived"
 
+    # 3.5 若推进，把当前焦点标记为 mastered（推进的权威标记，供焦点选择使用）
+    if should_advance and focus_id:
+        for m in cognitive["concepts"]:
+            if m["concept_id"] == focus_id:
+                m["mastered"] = True
+                break
+
     cognitive["updated_at"] = _now()
 
-    # 4. 教学决策（分层流程控制：候选集内 LLM 决策 + 规则回退）
-    focus_mastery = mastery_map.get(focus_id, {}) if focus_id else {}
-    decision_result = decision.decide_action(
-        diagnosis.state,
-        focus_mastery.get("evidence_count", 0),
-        consecutive_failures=focus_mastery.get("consecutive_failures", 0),
-        concept_name=focus["name"] if focus else "",
-        diagnosis=diagnosis,
-        mastery=focus_mastery.get("mastery", 0.0),
-        trace=trace,
-    )
+    # 4. 教学决策：动作已在上面由 diagnose_and_decide 合并产出；
+    #    推进时覆盖为 advance（切换焦点由 _resolve_reply 完成）。
+    if should_advance:
+        decision_result = decision.ActionDecision(
+            chosen_action="advance",
+            reasons=decision.ActionReason(
+                evidence_cited=(
+                    "用户明确推进意图" if advance_intent
+                    else "步数上限" if steps_over_limit
+                    else "诊断判定 understood"
+                ),
+                criterion_used="推进判定（Map+Guide）",
+                pedagogical_intent="当前概念已完成，推进到下一个概念",
+                confidence=1.0,
+            ),
+        )
+    else:
+        decision_result = action_decision
 
     return {
         "content": content,
@@ -447,6 +483,7 @@ def _process_turn(s: dict, content: str) -> dict:
         "action": decision_result.chosen_action,
         "completed": _all_root_mastered(knowledge, cognitive),
         "advance_intent": advance_intent,
+        "should_advance": should_advance,
         "history": focus_history,
         "trace": trace,
     }
@@ -456,13 +493,13 @@ def _resolve_reply(ctx: dict) -> tuple[str | None, str, str, bool]:
     """根据 ctx 决定回复文本、action、status、是否需要流式生成。
 
     返回 (reply, action, status, is_stream)：
-    - completed / 无焦点 / 推进意图：确定性文本，is_stream=False
+    - completed / 无焦点 / 推进判定：确定性文本，is_stream=False
     - 正常 tutor 回复：reply=None，is_stream=True（由调用方流式生成）
     """
     if ctx["completed"] or ctx["focus"] is None:
         return _complete_reply(), "advance", "completed", False
 
-    if ctx["advance_intent"]:
+    if ctx["should_advance"]:
         next_focus = decision.next_focus_concept(ctx["knowledge"], ctx["cognitive"], trace=ctx["trace"])
         if next_focus is not None:
             ctx["focus"] = next_focus

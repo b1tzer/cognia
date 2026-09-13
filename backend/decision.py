@@ -350,10 +350,14 @@ def detect_backtrack_target(knowledge: dict, cognitive: dict) -> Optional[str]:
     # 触发 2：前置掌握度衰退 → 回溯到该前置
     # 仅「学过但衰退」（有证据记录）才回溯；从未学过（evidence_count==0）是正常初始态，
     # 其 mastery 仍是初始值（低于 floor），不应被误判为「衰退」而强行跳焦点。
+    # 已 mastered 的前置不回溯：mastered 是「完成/跳过」的权威标记，即使其 mastery
+    # 数值低（如用户明确推进意图跳过），也不应再被拉回（否则推进后又退回，形成死循环）。
     for c in knowledge["concepts"]:
         for p in c.get("prerequisites", []):
             pm = mastery_map.get(p, {})
             if pm.get("evidence_count", 0) > 0 and pm.get("mastery", 0.0) < config.BACKTRACK_MASTERY_FLOOR:
+                if is_mastered(pm):
+                    continue
                 return p
 
     return None

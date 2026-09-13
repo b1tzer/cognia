@@ -1,5 +1,6 @@
-"""推进链路端到端测试：验证「明确推进 / 步数上限 / LLM 判定 understood」三种
-推进来源都能让 mastered 置位、焦点前进。
+"""推进链路端到端测试：验证「明确推进 / LLM 判定 understood」两种推进来源
+都能让 mastered 置位、焦点前进；并验证信息不足（insufficient）时绝不被强推、
+诊断不被篡改（防「步数上限伪造完成」假完成回归）。
 
 这是防「诊断准但推进卡死」死循环回归的关键测试。此前 advance_intent 只写
 mastery、is_mastered 却要求三层数值 AND（mastery+success_count+quality），
@@ -70,14 +71,23 @@ class TestAdvanceE2E(unittest.TestCase):
         next_focus = decision.next_focus_concept(ctx["knowledge"], ctx["cognitive"])
         self.assertEqual(next_focus["id"], "b")
 
-    def test_step_limit_forces_advance(self):
+    def test_insufficient_does_not_force_advance(self):
+        """用户明确说「不知道」时，无论已交互多少轮，都不应强推或伪造 mastered。"""
         s = _make_session()
         for m in s["cognitive"]["concepts"]:
             if m["concept_id"] == "a":
-                m["evidence_count"] = config.MAX_STEPS_PER_CONCEPT
-        ctx = main._process_turn(s, "我不知道")
-        self.assertTrue(ctx["should_advance"])
-        self.assertTrue(_mastered(s, "a"))
+                m["evidence_count"] = 5  # 远超旧的步数上限，验证不再被强推
+        diag = DiagnosticResult(
+            state="insufficient", confidence=0.9, concept_ids=["a"],
+            evidence="我不知道", misconception="", missing=[], quality="",
+        )
+        ad = decision.ActionDecision(chosen_action="explain", reasons=decision.ActionReason())
+        with mock.patch.object(cog, "diagnose_and_decide", return_value=(diag, ad)):
+            ctx = main._process_turn(s, "我不知道")
+        self.assertFalse(ctx["should_advance"])
+        self.assertFalse(_mastered(s, "a"))
+        self.assertEqual(ctx["diagnosis"].state, "insufficient")  # 诊断不被篡改为 understood
+        self.assertEqual(ctx["action"], "explain")
 
     def test_understood_advances(self):
         s = _make_session()

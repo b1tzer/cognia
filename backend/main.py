@@ -382,30 +382,11 @@ def _process_turn(s: dict, content: str) -> dict:
     #     而是「LLM 语义（understood）＋ 两条确定性护栏（用户推进意图 / 步数上限）」
     #     直接决定 should_advance。推进是默认方向，纠缠是例外。
     advance_intent = decision.detect_advance_intent(content)
-    # 步数护栏：更新前的 evidence_count（即「这是第几轮回答」）达上限则强制推进
-    steps_over_limit = focus_evidence >= config.MAX_STEPS_PER_CONCEPT
-    should_advance = (
-        advance_intent                       # 护栏 1：用户明确说「继续/下一个/懂了」
-        or steps_over_limit                  # 护栏 2：1~2 次验证后仍推进
-        or diagnosis.state == "understood"   # LLM 语义：已判定理解
-    )
-
-    # 2.6 若推进，预标记当前焦点为已掌握（覆盖诊断为 understood），
-    #     使后续焦点选择自然推进到下一个概念。
-    if should_advance and focus_id:
-        for m in cognitive["concepts"]:
-            if m["concept_id"] == focus_id:
-                m["mastery"] = config.MASTERY_THRESHOLD + 0.05
-                m["state"] = "understood"
-                break
-        diagnosis = DiagnosticResult(
-            state="understood",
-            confidence=0.85,
-            concept_ids=[focus_id],
-            evidence=content[:60],
-            misconception="",
-            missing=[],
-        )
+    # 推进只有两个合法来源：LLM 语义判定 understood，或用户明确的推进元指令。
+    # 「步数上限」不再作为推进来源——它会使用户明确说「我不懂」时仍被强推并伪造
+    # 诊断为 understood（假完成）。防「无限追问」已由 build_action_candidates 的
+    # explain / backtrack 规则 + detect_backtrack_target 的连续失败回溯保证。
+    should_advance = advance_intent or (diagnosis.state == "understood")
 
     # 3. 更新认知模型
     mastery_map = {m["concept_id"]: m for m in cognitive["concepts"]}
@@ -461,7 +442,6 @@ def _process_turn(s: dict, content: str) -> dict:
             reasons=decision.ActionReason(
                 evidence_cited=(
                     "用户明确推进意图" if advance_intent
-                    else "步数上限" if steps_over_limit
                     else "诊断判定 understood"
                 ),
                 criterion_used="推进判定（Map+Guide）",

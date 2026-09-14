@@ -1,211 +1,23 @@
-"""分层流程控制决策引擎。
+"""焦点概念选择引擎（拓扑约束 + ZPD + 回溯）。
 
-落地「确定性骨架 + LLM 语义决策」混合架构（对应架构设计）：
+需求 #71 重构后，本模块不再负责「教学动作决策」——该职责已交还 LLM，
+由 cognitive.diagnose_and_decide 在自由上下文中输出教学动作（probe/explain/
+correct/backtrack/advance）。本模块只保留「物理护栏与事实提供」：
 
-- 骨架层（纯代码，零 token，不可被 AI 突破）：
-    拓扑约束、收敛阈值、防死循环安全网、候选集生成。
-- 决策层（LLM 可选）：
-    在骨架圈定的候选集内做语义选择，输出结构化理由。
-- 校验回退：
-    LLM 输出不合法时，回退到确定性规则，保证流程永远收敛。
-
-职责拆分（分层单一职责）：
-- 教学动作决策 decide_action：针对当前焦点概念，决定 probe/explain/correct/backtrack/advance
 - 焦点概念选择 next_focus_concept：决定下一个要学的概念（拓扑约束 + ZPD + 回溯）
+- 用户元指令识别：detect_advance_intent / detect_help_intent（零 token 规则，高于 LLM 语义）
+- 拓扑与掌握判定工具：topo_order / is_mastered / zpd_score / detect_backtrack_target
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 import config
 from llm import chat_json
 import prompt_rules
-from schemas import ActionDecision, ActionReason, DiagnosticResult
-
-# 认知状态四分类的中文标签（决策层自持，避免跨模块依赖）
-_STATE_LABEL = {
-    "understood": "理解正确",
-    "partial": "半理解（有遗漏或模糊）",
-    "misconceived": "存在错误理解",
-    "insufficient": "信息不足",
-}
 
 
-# ===========================================================================
-# 一、教学动作决策（针对当前焦点概念：决定「怎么教」）
-# ===========================================================================
 
-def build_action_candidates(
-    state: str, evidence_count: int, consecutive_failures: int
-) -> list[dict]:
-    """根据安全不变量生成合法候选动作集（按优先级降序）。
-
-    这是「确定性外壳」的核心：LLM 只能在此集合内选择，不能自创动作。
-    """
-    candidates: list[dict] = []
-    if state == "misconceived":
-        # 连续纠错无效 → 回溯到前置概念重新巩固（防「反复横跳」）
-        if consecutive_failures >= config.BACKTRACK_CONSECUTIVE_FAILURES or evidence_count >= 2:
-            candidates.append({
-                "action": "backtrack",
-                "why_eligible": "连续纠错无效，回溯到前置概念重新巩固",
-            })
-        candidates.append({
-            "action": "correct",
-            "why_eligible": "存在明确误解，用反例或反问引导其自我发现矛盾",
-        })
-    elif state == "insufficient":
-        if evidence_count >= 2:
-            candidates.append({
-                "action": "explain",
-                "why_eligible": "连续信息不足，直接解释降低挫败感",
-            })
-        else:
-            candidates.append({
-                "action": "probe",
-                "why_eligible": "信息不足，追问引导其先表达已有理解",
-            })
-            candidates.append({
-                "action": "explain",
-                "why_eligible": "若判断其基础薄弱，可改为直接解释",
-            })
-    elif state == "partial":
-        if evidence_count >= config.STAGNATION_WINDOW:
-            # 停滞检测：连续多轮半理解无突破 → 优先解释打破「问而不教」
-            candidates.append({
-                "action": "explain",
-                "why_eligible": "连续多轮半理解无突破，改为直接解释打破停滞",
-            })
-            candidates.append({
-                "action": "probe",
-                "why_eligible": "若仍愿意自行补全，可继续追问",
-            })
-        else:
-            candidates.append({
-                "action": "probe",
-                "why_eligible": "方向对但有遗漏，追问补全因果链",
-            })
-            candidates.append({
-                "action": "explain",
-                "why_eligible": "若遗漏点单一明确，可定向解释",
-            })
-    elif state == "understood":
-        candidates.append({
-            "action": "advance",
-            "why_eligible": "理解正确，抛迁移性问题检验",
-        })
-    return candidates
-
-
-def decide_action_rule(
-    state: str, evidence_count: int, consecutive_failures: int
-) -> ActionDecision:
-    """确定性规则降级：取候选集第一个（按教学优先级排序）。"""
-    candidates = build_action_candidates(state, evidence_count, consecutive_failures)
-    action = candidates[0]["action"] if candidates else "probe"
-    return ActionDecision(
-        chosen_action=action,
-        reasons=ActionReason(
-            criterion_used="确定性规则降级",
-            pedagogical_intent="LLM 不可用或输出非法，回退到规则决策",
-            confidence=1.0,
-        ),
-    )
-
-
-_ACTION_DECIDE_SYSTEM = """你是 Cognia 的教学决策裁判。你只负责从给定候选动作集中选一个，不负责写任何教学文案。
-
-当前焦点概念：{concept}
-诊断状态：{state_label}（置信度 {confidence}）
-诊断证据：{evidence}
-遗漏点：{missing}
-误解：{misconception}
-认知快照：掌握度 {mastery}，已收集证据 {evidence_count} 条，连续失败 {consecutive_failures} 次
-
-合法候选动作（你只能从中选一个）：
-{candidates}
-
-规则：
-1. 只能选候选集内列出的动作，禁止自创动作。
-2. 理由必须引用上方真实字段（evidence/missing/misconception/mastery），禁止编造。
-3. 只输出 JSON，不要任何多余文字。
-
-输出格式：
-{{"chosen_action":"probe","reasons":{{"evidence_cited":"...","criterion_used":"...","pedagogical_intent":"...","confidence":0.8}}}}
-"""
-
-
-def decide_action_llm(
-    concept_name: str,
-    diagnosis: DiagnosticResult,
-    candidates: list[dict],
-    mastery: float,
-    evidence_count: int,
-    consecutive_failures: int,
-    trace: list | None = None,
-) -> Optional[ActionDecision]:
-    """LLM 在候选集内做语义选择，输出结构化理由。失败返回 None。"""
-    cand_text = "\n".join(f'- {c["action"]}：{c["why_eligible"]}' for c in candidates)
-    system = _ACTION_DECIDE_SYSTEM.format(
-        concept=concept_name,
-        state_label=_STATE_LABEL.get(diagnosis.state, "半理解"),
-        confidence=diagnosis.confidence,
-        evidence=diagnosis.evidence or "无",
-        missing="、".join(diagnosis.missing) if diagnosis.missing else "无",
-        misconception=diagnosis.misconception or "无",
-        mastery=f"{mastery:.2f}",
-        evidence_count=evidence_count,
-        consecutive_failures=consecutive_failures,
-        candidates=cand_text,
-    ) + prompt_rules.rules_suffix("decision_action")
-    data = chat_json(system, "", temperature=0.2, max_tokens=1000, trace=trace, trace_label="教学决策", budget_label="decision_action")
-    if not data:
-        return None
-    try:
-        action = data.get("chosen_action", "probe")
-        if action not in ("probe", "explain", "correct", "backtrack", "advance"):
-            return None
-        r = data.get("reasons") or {}
-        return ActionDecision(
-            chosen_action=action,
-            reasons=ActionReason(
-                evidence_cited=str(r.get("evidence_cited", "")),
-                criterion_used=str(r.get("criterion_used", "")),
-                pedagogical_intent=str(r.get("pedagogical_intent", "")),
-                confidence=float(r.get("confidence", 0.5)),
-            ),
-        )
-    except Exception:
-        return None
-
-
-def decide_action(
-    state: str,
-    evidence_count: int,
-    consecutive_failures: int = 0,
-    concept_name: str = "",
-    diagnosis: Optional[DiagnosticResult] = None,
-    mastery: float = 0.0,
-    trace: list | None = None,
-) -> ActionDecision:
-    """独立教学动作决策：候选集内 LLM 语义决策 → 规则回退。
-
-    注：主流程 _process_turn 已改用 cognitive.diagnose_and_decide 在一次 LLM
-    调用中同时产出诊断与动作（Map+Guide 单循环）。本函数保留作为「独立动作
-    决策」能力（供测试 / 离线场景使用），不再被主流程调用。
-    """
-    candidates = build_action_candidates(state, evidence_count, consecutive_failures)
-
-    # LLM 语义决策：候选集内选择
-    if config.AI_ENABLED and diagnosis is not None:
-        decision = decide_action_llm(
-            concept_name, diagnosis, candidates, mastery, evidence_count, consecutive_failures, trace
-        )
-        # 校验：LLM 输出必须落在候选集内，否则视为非法
-        if decision is not None and decision.chosen_action in {c["action"] for c in candidates}:
-            return decision
-
-    return decide_action_rule(state, evidence_count, consecutive_failures)
 
 
 # ===========================================================================

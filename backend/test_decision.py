@@ -1,7 +1,6 @@
-"""decision.py 分层流程控制引擎的单元测试。
+"""decision.py 焦点概念选择引擎的单元测试。
 
-覆盖：候选集生成、规则降级、步数上限安全网、连续失败回溯、
-拓扑排序、ZPD 评分、焦点候选集、回溯检测。
+覆盖：拓扑排序、ZPD 评分、焦点候选集、掌握判定、回溯检测。
 
 用标准库 unittest，不引入额外依赖。强制 AI_ENABLED=False 走确定性规则路径，
 保证测试可复现、不依赖外部模型。
@@ -12,7 +11,6 @@ import unittest
 
 import config
 import decision
-from schemas import DiagnosticResult
 
 # 强制离线规则路径（保证测试确定性）
 config.AI_ENABLED = False
@@ -77,65 +75,6 @@ def make_cognitive(
         ],
         "updated_at": "",
     }
-
-
-class TestBuildActionCandidates(unittest.TestCase):
-    def test_misconceived_no_failure(self):
-        cands = decision.build_action_candidates("misconceived", 0, 0)
-        self.assertEqual([c["action"] for c in cands], ["correct"])
-
-    def test_misconceived_consecutive_failure(self):
-        cands = decision.build_action_candidates("misconceived", 0, 3)
-        # 连续失败触发回溯，backtrack 排在最高优先级
-        self.assertEqual(cands[0]["action"], "backtrack")
-        self.assertIn("correct", [c["action"] for c in cands])
-
-    def test_misconceived_evidence_ge_2(self):
-        cands = decision.build_action_candidates("misconceived", 2, 0)
-        self.assertEqual(cands[0]["action"], "backtrack")
-
-    def test_insufficient_low_evidence(self):
-        cands = decision.build_action_candidates("insufficient", 1, 0)
-        self.assertEqual([c["action"] for c in cands], ["probe", "explain"])
-
-    def test_insufficient_high_evidence(self):
-        cands = decision.build_action_candidates("insufficient", 2, 0)
-        self.assertEqual([c["action"] for c in cands], ["explain"])
-
-    def test_partial(self):
-        cands = decision.build_action_candidates("partial", 0, 0)
-        self.assertEqual([c["action"] for c in cands], ["probe", "explain"])
-
-    def test_partial_stagnation(self):
-        # 停滞检测：partial 连续多轮无突破 → 优先 explain
-        cands = decision.build_action_candidates("partial", 3, 0)
-        self.assertEqual(cands[0]["action"], "explain")
-
-    def test_understood(self):
-        cands = decision.build_action_candidates("understood", 0, 0)
-        self.assertEqual([c["action"] for c in cands], ["advance"])
-
-
-class TestDecideAction(unittest.TestCase):
-    def test_rule_behaviors(self):
-        # 向后兼容旧 if-else 行为
-        self.assertEqual(decision.decide_action("misconceived", 0, 0).chosen_action, "correct")
-        self.assertEqual(decision.decide_action("insufficient", 0, 0).chosen_action, "probe")
-        self.assertEqual(decision.decide_action("insufficient", 2, 0).chosen_action, "explain")
-        self.assertEqual(decision.decide_action("partial", 0, 0).chosen_action, "probe")
-        self.assertEqual(decision.decide_action("understood", 0, 0).chosen_action, "advance")
-
-    def test_consecutive_failure_backtrack(self):
-        # 连续失败达到阈值 → 回溯
-        result = decision.decide_action(
-            "misconceived", 0, config.BACKTRACK_CONSECUTIVE_FAILURES
-        )
-        self.assertEqual(result.chosen_action, "backtrack")
-
-    def test_llm_invalid_output_falls_back_to_rule(self):
-        # AI 关闭时走规则；此处验证 decide_action 在无 LLM 时仍返回合法动作
-        result = decision.decide_action("partial", 0, 0, diagnosis=None)
-        self.assertEqual(result.chosen_action, "probe")
 
 
 class TestTopoOrder(unittest.TestCase):
@@ -237,14 +176,6 @@ class TestBacktrack(unittest.TestCase):
         cog = make_cognitive({"a": 0.85, "b": 0.3, "c": 0.3}, failures={"b": 3})
         focus = decision.next_focus_concept(KNOWLEDGE, cog)
         self.assertEqual(focus["id"], "a")
-
-
-class TestDecideActionLLMIntegration(unittest.TestCase):
-    def test_decide_action_returns_action_decision(self):
-        # 校验返回类型与字段完整
-        result = decision.decide_action("partial", 1, 0, concept_name="概念B")
-        self.assertIn(result.chosen_action, ("probe", "explain"))
-        self.assertIsInstance(result.reasons.confidence, float)
 
 
 if __name__ == "__main__":

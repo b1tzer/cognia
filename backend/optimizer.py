@@ -47,7 +47,9 @@ ACTION_LABEL = {
 }
 
 # 各层可优化顺序（执行顺序）
-OPTIMIZABLE_LAYERS = ("diagnosis", "decision_action", "tutor", "domain_model")
+# 需求 #71 重构后，教学动作已与诊断合并（diagnose_and_decide 一次产出 state+action），
+# 不再有独立的 decision_action 层可优化。
+OPTIMIZABLE_LAYERS = ("diagnosis", "tutor", "domain_model")
 
 # ---------------------------------------------------------------------------
 # 无标注质量评估（LLM-as-judge）：每层一个独立评审提示词
@@ -60,13 +62,6 @@ _JUDGE_SYSTEMS = {
 - partial：半理解，方向对但有遗漏、模糊、不完整
 - misconceived：存在明确的概念错误或误解
 - insufficient：信息不足，表达太空泛或承认不知道
-
-只输出 JSON：{"correct": true, "reason": "一句话说明判断依据"}""",
-
-    "decision_action": """你是教学决策的资深评审专家。给定当前认知状态与教学动作，请独立判断该动作是否合理、符合教学规律。
-
-教学动作：probe(追问) / explain(解释) / correct(纠错) / backtrack(回溯) / advance(继续)。
-判断标准：misconceived 应纠错或回溯；insufficient 应追问或解释；partial 应追问或解释；understood 应继续推进。
 
 只输出 JSON：{"correct": true, "reason": "一句话说明判断依据"}""",
 
@@ -86,11 +81,6 @@ _ANALYZE_SYSTEMS = {
     "diagnosis": """你是认知诊断的资深专家。一个诊断引擎在以下多条真实对话样本上判断错误。请综合分析共性根因，提炼 1~3 条通用、可操作的判别原则，用来修正诊断、避免再犯同类错误。
 
 要求：通用（不针对个案）、可操作、简洁（每条一句话）、数量克制（宁缺毋滥）。
-只输出 JSON：{"rules": ["原则1", "原则2"]}""",
-
-    "decision_action": """你是教学决策的资深专家。一个教学决策引擎在以下多条真实对话样本上选择了不合理的动作。请综合分析共性根因，提炼 1~3 条通用、可操作的动作选择原则。
-
-要求：通用、可操作、简洁、数量克制。
 只输出 JSON：{"rules": ["原则1", "原则2"]}""",
 
     "tutor": """你是教学文案的资深专家。一个教学回复引擎在以下多条真实对话样本上回复不当。请综合分析共性根因，提炼 1~3 条通用、可操作的回复原则。
@@ -233,23 +223,6 @@ def extract_samples(layer: str, limit: int, watermark: dict | None = None) -> li
                         "user_text": msg["content"],
                         "predicted_state": diag["state"],
                     })
-            elif layer == "decision_action":
-                if msg.get("role") == "assistant" and msg.get("action") and diag.get("state"):
-                    concept = _find_concept(knowledge, diag.get("concept_ids", []))
-                    cid = (diag.get("concept_ids") or [None])[0]
-                    m = _mastery_of(cognitive, cid)
-                    samples.append({
-                        "layer": layer,
-                        "session_id": s["id"],
-                        "goal": goal,
-                        "concept_name": (concept or {}).get("name", ""),
-                        "state": diag["state"],
-                        "action": msg["action"],
-                        "evidence_count": m.get("evidence_count", 0),
-                        "consecutive_failures": m.get("consecutive_failures", 0),
-                        "mastery": m.get("mastery", 0.0),
-                        "diagnosis": diag,
-                    })
             elif layer == "tutor":
                 if msg.get("role") == "assistant" and msg.get("content") and msg.get("action") and diag.get("state"):
                     concept = _find_concept(knowledge, diag.get("concept_ids", []))
@@ -287,16 +260,6 @@ def _judge_user(layer: str, sample: dict) -> str:
             f"概念列表：\n{_concepts_text(sample.get('concepts', []))}\n\n"
             f"学习者的理解陈述：{sample.get('user_text', '')}\n\n"
             f"诊断引擎的判断：{STATE_LABEL.get(state, state)}（{state}）"
-        )
-    if layer == "decision_action":
-        state = sample.get("state", "")
-        action = sample.get("action", "")
-        return (
-            f"学习目标：{goal}\n"
-            f"当前焦点概念：{sample.get('concept_name', '') or '（未知）'}\n"
-            f"认知状态：{STATE_LABEL.get(state, state)}（{state}）\n"
-            f"已收集证据：{sample.get('evidence_count', 0)} 条\n"
-            f"引擎选择的动作：{ACTION_LABEL.get(action, action)}（{action}）"
         )
     if layer == "tutor":
         state = sample.get("state", "")
@@ -362,18 +325,6 @@ def reevaluate(layer: str, sample: dict) -> dict:
             concepts = [Concept(**c) for c in sample.get("concepts", [])]
             result = cognitive.diagnose(sample["goal"], concepts, sample["user_text"])
             return {"predicted_state": result.state}
-        if layer == "decision_action":
-            import decision
-            diag = DiagnosticResult(**sample.get("diagnosis", {}))
-            d = decision.decide_action(
-                sample["state"],
-                sample.get("evidence_count", 0),
-                sample.get("consecutive_failures", 0),
-                concept_name=sample.get("concept_name", ""),
-                diagnosis=diag,
-                mastery=sample.get("mastery", 0.0),
-            )
-            return {"action": d.chosen_action}
         if layer == "tutor":
             import tutor
             concept = Concept(**sample.get("concept", {}))

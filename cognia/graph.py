@@ -22,11 +22,13 @@
 import operator
 from typing import Annotated, Literal, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
 from cognia import models
+from cognia.memory import get_current_proficiency
 from cognia.schemas import (
     CognitiveState,
     Confidence,
@@ -293,11 +295,14 @@ def build_graph(
     teacher_model=None,
     diagnoser_model=None,
     checkpointer=None,
+    store=None,
 ):
     """构建并编译 Cognia 教学核心图。
 
-    模型与 checkpointer 均可注入（默认用 models.py 工厂），便于测试用 fake 替换。
+    模型、checkpointer、store 均可注入（默认用 models.py 工厂），便于测试用 fake 替换。
     生产环境必须注入持久化 checkpointer（PostgresSaver），否则 interrupt 无法恢复。
+    store（BaseStore）用于跨会话读回历史熟练度（Q6：读→推理→写闭环）；
+    为 None 时按「首次评估」处理（current_long_state 保持 None/unassessed）。
     """
     planner = planner_model if planner_model is not None else models.get_planner_model()
     teacher = teacher_model if teacher_model is not None else models.get_teacher_model()
@@ -323,8 +328,8 @@ def build_graph(
             updates["goal_feedback"] = assessment.feedback
         return updates
 
-    def build_model(state: CogniaState) -> dict:
-        """生成知识模型，并聚焦第一个知识点。"""
+    def build_model(state: CogniaState, config: RunnableConfig) -> dict:
+        """生成知识模型，聚焦第一个知识点，并跨会话读回其历史熟练度。"""
         goal = state["goal"]
         km = planner.with_structured_output(KnowledgeModel).invoke([
             ("system", "你是 Cognia 的知识建模器。将学习目标拆解为 5~15 个知识点及其依赖关系。"),
@@ -333,11 +338,21 @@ def build_graph(
         # 强制目标一致，并取第一个知识点
         km.goal = goal
         current_point_id = km.points[0].id if km.points else None
-        return {
+        updates: dict = {
             "knowledge_model": _dump(km),
             "current_point_id": current_point_id,
             "point_index": 0,
         }
+        # 读侧（Q6）：跨会话恢复第一个知识点的历史熟练度，初始化 current_long_state，
+        # 使教学/诊断从历史态继续，而非永远从 unassessed 重新开始。
+        # store 为 None（如部分测试）时跳过，保持「首次评估」语义。
+        if store is not None and current_point_id is not None:
+            user_id = config.get("configurable", {}).get("user_id")
+            if user_id:
+                historical = get_current_proficiency(store, user_id, current_point_id)
+                if historical is not None:
+                    updates["current_long_state"] = historical
+        return updates
 
     def probe(state: CogniaState) -> dict:
         """生成探针问题（针对当前知识点）。"""
@@ -507,6 +522,11 @@ def build_graph(
             updates["verification"] = _dump(VerificationState())
             updates["intervention_fail_count"] = 0
             updates["state_before_intervention"] = None
+            # 切到新知识点：重置长期状态为 None（新点从未评估）。
+            # 否则会继承上一个点的 mastered，导致伪造「mastered→partial」降级 Delta，
+            # 或 mastered 自我迁移被拒、新点永远无法 mastered。
+            # 未来做「跨会话读回」时，此处应改为读回该点的历史态（而非硬置 None）。
+            updates["current_long_state"] = None
         else:
             updates["ended"] = True
         return updates

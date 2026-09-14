@@ -25,3 +25,6 @@ htmlcov/
 .vscode/
 .idea/
 .DS_Store
+
+# Chainlit 运行时自动生成的翻译文件（噪音，config.toml 定制后需提交）
+.chainlit/translations/

@@ -7,16 +7,21 @@
 3. 3 轮失败回溯 + mastered 双重验证闸门
 """
 
+from datetime import datetime, timezone
+
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
 from cognia.graph import build_graph, resolve_migration
+from cognia.memory import append_proficiency_delta
 from cognia.schemas import (
     CognitiveState,
     Confidence,
     Diagnosis,
     KnowledgeModel,
     KnowledgePoint,
+    ProficiencyEntry,
     ValidationResult,
     VerificationState,
 )
@@ -47,6 +52,14 @@ def _point(point_id="aop-concept", name="AOP 概念"):
 
 def _single_point_model():
     return KnowledgeModel(goal="Spring AOP", points=[_point()])
+
+
+def _two_point_model():
+    """两个知识点：用于验证 select_next 切点后 current_long_state 正确重置。"""
+    return KnowledgeModel(goal="Spring AOP", points=[
+        _point("aop-concept", "AOP 概念"),
+        _point("aop-proxy", "AOP 代理"),
+    ])
 
 
 # ---- 纯函数：resolve_migration（诊断 ≠ 迁移 的核心）----
@@ -340,3 +353,106 @@ class _ConceptAssessmentStub:
     def __init__(self, passed, evidence=""):
         self.passed = passed
         self.evidence = evidence
+
+
+# ---- 读侧闭环（任务⑧：跨会话认知状态恢复）----
+
+def test_cross_session_reads_historical_proficiency():
+    """跨会话读侧闭环（Q6）：同一 user_id + 同一 point_id，build_model 读回历史态。
+
+    模拟「第二次打开 Cognia」：store 里已有 u1 学 aop-concept 到 partial 的历史，
+    第二次会话 build_model 应把 current_long_state 初始化为 partial（而非 unassessed）。
+    """
+    store = InMemoryStore()
+    append_proficiency_delta(store, "u1", ProficiencyEntry(
+        point_id="aop-concept",
+        from_state=None,
+        to_state=CognitiveState.PARTIAL,
+        evidence=["历史证据"],
+        timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    ))
+
+    planner = ScriptedLLM([
+        _GoalAssessmentStub(False),
+        _single_point_model(),  # 返回 point_id="aop-concept"
+    ])
+    teacher = ScriptedLLM(["请解释 AOP"])
+    diagnoser = ScriptedLLM([])  # 跑到 await_answer 即中断，不触发 diagnose
+
+    graph = build_graph(planner_model=planner, teacher_model=teacher,
+                        diagnoser_model=diagnoser, checkpointer=InMemorySaver(),
+                        store=store)
+    config = {"configurable": {"thread_id": "t-new", "user_id": "u1"}}
+
+    graph.invoke({"goal": "Spring AOP"}, config=config)  # 跑到 await_answer interrupt
+
+    state = graph.get_state(config).values
+    assert state["current_long_state"] == "partial"  # 读回历史熟练度，而非 unassessed
+
+
+def test_cross_session_user_isolation():
+    """不同 user_id 读不到对方的历史熟练度（Store 隔离）。"""
+    store = InMemoryStore()
+    append_proficiency_delta(store, "u1", ProficiencyEntry(
+        point_id="aop-concept",
+        from_state=None,
+        to_state=CognitiveState.MASTERED,
+        evidence=["u1 的证据"],
+        timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    ))
+
+    planner = ScriptedLLM([
+        _GoalAssessmentStub(False),
+        _single_point_model(),
+    ])
+    teacher = ScriptedLLM(["请解释 AOP"])
+    diagnoser = ScriptedLLM([])
+
+    graph = build_graph(planner_model=planner, teacher_model=teacher,
+                        diagnoser_model=diagnoser, checkpointer=InMemorySaver(),
+                        store=store)
+    config = {"configurable": {"thread_id": "t-u2", "user_id": "u2"}}  # 不同 user
+
+    graph.invoke({"goal": "Spring AOP"}, config=config)
+
+    state = graph.get_state(config).values
+    assert state["current_long_state"] is None  # u2 无历史，保持 unassessed
+
+
+def test_select_next_resets_long_state_for_new_point():
+    """切到下一个知识点时，current_long_state 应重置为 None（新点从未评估）。
+
+    回归场景：否则第二个点会错误继承第一个点的 mastered，导致：
+    - 伪造「mastered→partial」降级 Delta（can_transition 允许 mastered 降级）
+    - 或 mastered 自我迁移被拒、新点永远无法 mastered
+    """
+    planner = ScriptedLLM([
+        _GoalAssessmentStub(False),
+        _two_point_model(),
+    ])
+    teacher = ScriptedLLM([
+        "q1",  # 第一个点 probe
+        "q2",  # 第二个点 probe（select_next 后）
+    ])
+    diagnoser = ScriptedLLM([
+        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
+                  confidence=Confidence.HIGH, evidence=["解释正确"]),
+        _ConceptAssessmentStub(True, "概念对"),
+        _ScenarioAssessmentStub(True, "场景对"),
+    ])
+
+    graph = build_graph(planner_model=planner, teacher_model=teacher,
+                        diagnoser_model=diagnoser, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t-select"}}
+
+    graph.invoke({"goal": "Spring AOP"}, config=config)  # 中断在第一个点
+    graph.invoke(Command(resume="AOP 是面向切面"), config=config)  # mastered→select_next→第二个点 probe→中断
+
+    state = graph.get_state(config).values
+    # 已切到第二个点，且 current_long_state 重置为 None（而非继承第一个点的 mastered）
+    assert state["current_point_id"] == "aop-proxy"
+    assert state["current_long_state"] is None
+    # 第一个点产生 1 个 mastered Delta，第二个点尚未诊断、零额外 Delta
+    assert len(state["proficiency_deltas"]) == 1
+    assert state["proficiency_deltas"][0]["point_id"] == "aop-concept"
+    assert state["proficiency_deltas"][0]["to_state"] == "mastered"

@@ -92,8 +92,9 @@ State 内置两个计数器（呼应 spec §6 硬约束）：
 mastered 判定必须「概念解释 + 场景辨析」双过（spec US-5），且该验证过程必须被 State 显式记录，而非无状态摆设：
 
 - State 持有 `verification: VerificationState` 字段，记录两类验证分别是否通过、各自证据、以及当前进行到哪一步。
-- `diagnose` 节点只产出「诊断结果」（五态 + 置信度 + 证据），不负责判定 mastered。
-- 「验证是否闭环」由纯逻辑节点判断：`concept_pass && scenario_pass` 才允许状态迁移到 mastered（见 state-machine.md）。
+- `diagnose` 节点只产出「诊断结果」（五态 + 置信度 + 证据）；它可判断「当前表现看起来达到 mastered」，但不能直接完成状态迁移。
+- 「验证是否闭环」由纯逻辑节点判断：`concept == PASSED && scenario == PASSED` 才允许状态迁移到 mastered（见 state-machine.md）。
+- **`mastered` 是「最终状态迁移的结果」，不是单次 `diagnose` 的直接产物**：任何进入 mastered 的迁移都必须完成概念解释 + 场景辨析双重验证，避免出现 `diagnosis.state == MASTERED` 直接写长期状态的旁路。
 
 ## 4. 数据模型（Pydantic Schema 形状）
 
@@ -132,19 +133,25 @@ class Diagnosis(BaseModel):
     confidence: Confidence
     evidence: list[str]  # 用户原话片段，严禁脑补（spec §6）
 
+# 单项验证结果（区分「未评估」与「验证失败」，避免 bool 混淆）
+class ValidationResult(str, Enum):
+    UNASSESSED = "unassessed"  # 尚未验证
+    PASSED = "passed"          # 验证通过
+    FAILED = "failed"          # 验证失败
+
 # 双重验证状态（plan §3.5：mastered 判定需「概念解释 + 场景辨析」双过）
 class VerificationState(BaseModel):
-    concept_pass: bool                                  # 概念解释是否通过
-    scenario_pass: bool                                 # 场景 / 反例辨析是否通过
-    concept_evidence: str                               # 概念验证的证据（用户原话）
-    scenario_evidence: str                              # 场景验证的证据（用户原话）
+    concept: ValidationResult                            # 概念解释验证结果
+    scenario: ValidationResult                           # 场景 / 反例辨析验证结果
+    concept_evidence: list[str]                          # 概念验证的证据（用户原话）
+    scenario_evidence: list[str]                         # 场景验证的证据（用户原话）
     current_step: Literal["concept", "scenario", "done"]  # 当前验证到哪一步
 
 class ProficiencyEntry(BaseModel):
     point_id: str
     from_state: CognitiveState | None  # 状态迁移起点（首次诊断时为 None）
     to_state: CognitiveState           # 状态迁移终点
-    evidence: list[str]                # 诊断证据（用户原话片段），支撑审计与认知变化分析
+    evidence: list[str]                # 支撑本次状态迁移的用户原话（非 AI 总结），支撑审计与认知变化分析
     timestamp: str
     update_type: Literal["delta"]      # 宪法 §5：增量 Delta，严禁全量重写
 

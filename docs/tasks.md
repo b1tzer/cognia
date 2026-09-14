@@ -58,7 +58,7 @@ flowchart LR
 
 - **做什么**：`cognia/models.py`，用 LangChain 抽象封装三个角色，绑定 DeepSeek：
   - `planner_model` / `teacher_model`：`deepseek-v4-flash`
-  - `diagnoser_model`：`deepseek-v4-pro` + 低 temperature + 独立严格 prompt（结构化输出）
+  - `diagnoser_model`：`deepseek-v4-pro` + 低 temperature + 结构化输出（「独立严格 prompt」归任务⑤ `diagnose` 节点，本层只做模型实例化）
   - 统一走配置，可换 Claude / OpenAI / 本地模型（宪法 §7）
 - **验收标准**：三个模型能初始化；`diagnoser_model` 能返回结构化诊断（绑定 `Diagnosis` schema）；mock 输入跑通一次。
 - **依赖**：②
@@ -68,6 +68,7 @@ flowchart LR
 - **做什么**：`cognia/graph.py`，实现 plan §3 的完整 StateGraph：
   - State（TypedDict）：消息、`knowledge_model`、`current_point_id`、`diagnosis`、`verification`、`intervention_fail_count`、`loop_count`
   - 6 节点：`setup_goal`、`build_model`、`probe`、`diagnose`、`intervene`、`select_next`
+  - `diagnose` 节点：独立严格 system prompt（引用知识模型 + 当前知识点 + 五态定义 + 置信度分级标准，锁死诊断确定性，plan §1/§7）
   - 条件边严格按 state-machine 转移矩阵 + 置信度分级路由
   - `interrupt()` 在 `probe` 后暂停等待用户表达
   - 防失控：`intervention_fail_count ≥ 3` 回溯/挂起 + `recursion_limit`

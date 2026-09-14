@@ -1,0 +1,27 @@
+[project]
+name = "cognia"
+version = "0.1.0"
+description = "Cognia - AI 主动学习教练，主动发现用户认知盲区并动态引导掌握知识"
+requires-python = ">=3.12"
+dependencies = [
+    "langgraph>=1.2.0,<2.0.0",
+    "langgraph-checkpoint-postgres>=3.1.0,<4.0.0",
+    "langgraph-checkpoint-sqlite>=3.1.0,<4.0.0",
+    "langchain-core>=1.3.0",
+    "langchain-deepseek>=1.1.0",
+    "pydantic>=2.7.4",
+    "chainlit>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cognia"]

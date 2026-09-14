@@ -99,9 +99,11 @@ mastered 判定必须「概念解释 + 场景辨析」双过（spec US-5），�
 ## 4. 数据模型（Pydantic Schema 形状）
 
 ```python
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
-from pydantic import BaseModel
+
+from pydantic import BaseModel, Field
 
 # 认知状态五态（spec v2.0）
 class CognitiveState(str, Enum):
@@ -152,7 +154,7 @@ class ProficiencyEntry(BaseModel):
     from_state: CognitiveState | None  # 状态迁移起点（首次诊断时为 None）
     to_state: CognitiveState           # 状态迁移终点
     evidence: list[str]                # 支撑本次状态迁移的用户原话（非 AI 总结），支撑审计与认知变化分析
-    timestamp: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     update_type: Literal["delta"]      # 宪法 §5：增量 Delta，严禁全量重写
 
 class Intervention(BaseModel):
@@ -166,8 +168,8 @@ class Intervention(BaseModel):
 | 记忆层 | 技术实现 | 存什么 | namespace |
 |--------|---------|--------|-----------|
 | 短期 | Checkpointer（Supabase Postgres） | 会话 state、消息历史 | 按 `thread_id` |
-| 长期·熟练度 | Store（Supabase Postgres + pgvector） | Proficiency JSON | `("proficiency", user_id)` |
-| 长期·画像 | Store | 基础偏好（沟通风格/语言） | `("profile", user_id)` |
+| 长期·熟练度 | Store（Supabase Postgres） | Proficiency JSON | `("proficiency", user_id)` |
+| 长期·画像 | Store（Supabase Postgres） | 基础偏好（沟通风格/语言） | `("profile", user_id)` |
 
 **关键落地**：
 
@@ -175,6 +177,7 @@ class Intervention(BaseModel):
 - **身份注入**（宪法 §5）：`user_id` 通过 runtime context 注入，不塞进 State。
 - **匿名标识**（clarifications Q6）：前端生成 UUID → 客户端持久化 → 后端作为 `user_id` 隔离映射；后续无缝升级 Supabase Auth，仅替换标识来源。
 - **证据链入 Proficiency**：每次状态迁移的 `ProficiencyEntry` 必须携带 `from_state → to_state + evidence + timestamp`，保证「为什么判成 partial」可追溯，支撑诊断准确率审计与认知变化分析。
+- **MVP 不引入 pgvector**：Proficiency 是结构化精确读取（`user_id + point_id → 状态`），无需语义向量检索；待需要「从历史学习记录语义召回相关认知证据」时再引入。
 
 ## 6. 接口与前端
 
@@ -185,17 +188,17 @@ class Intervention(BaseModel):
 
 | 角色 | 抽象模型名 | 绑定（默认） | 说明 |
 |------|-----------|-------------|------|
-| 知识模型构建 | `planner_model` | deepseek-chat | 一次性调用，成本低 |
-| 诊断 | `diagnoser_model` | deepseek-chat（低 temperature） | 核心，独立严格 prompt |
-| 干预/探测生成 | `teacher_model` | deepseek-chat | 高频调用 |
+| 知识模型构建 | `planner_model` | deepseek-v4-flash | 一次性调用，成本低 |
+| 诊断 | `diagnoser_model` | deepseek-v4-pro（低 temperature） | 核心，独立严格 prompt，需强推理 |
+| 干预/探测生成 | `teacher_model` | deepseek-v4-flash | 高频调用 |
 
 > 全部走 LangChain 集成保持模型无关，未来可无痛切换 Claude 3.5 Sonnet / OpenAI / 本地模型。
 
 ## 8. 评估 harness
 
-- **金标集**：选定标准知识域 **「Python 装饰器」**，专家预先标注该域常见缺陷 → 作为诊断 ground truth。
+- **金标集**：选定标准知识域 **「Spring AOP」**，专家预先标注，**覆盖五态样本**（mastered / partial / misconception / unknown / unassessed），重点覆盖边界 `partial vs misconception`、`unknown vs unassessed`、`mastered vs partial` → 作为诊断 ground truth。
 - **开发集 vs 盲测集分离**（宪法 §6）：开发调 prompt 用开发集；盲测集绝不写进任何 prompt 当 Few-shots，仅最终验收用。
-- **打分脚本**：跑 `diagnose` → 对比专家标注 → 自动算命中率 → 对接北极星「≥50% 专家命中」。
+- **打分脚本**：跑 `diagnose` → 对比专家标注 → 输出**多维度指标**：overall accuracy、各状态 accuracy、confusion matrix（重点盯 `unknown↔unassessed`、`partial↔misconception`、`mastered→partial`）→ 北极星「≥50% 专家命中」保留为及格线，但不作为唯一观察维度。
 
 ## 9. 已确认的关键决策
 
@@ -204,6 +207,6 @@ class Intervention(BaseModel):
 | 1 | 核心架构 | 单 Agent + 单 Stateful Graph 多节点 |
 | 2 | 前端选型 | Chainlit |
 | 3 | FastAPI 时机 | 方案 A：MVP 暂不引入，Chainlit 直接驱动 |
-| 4 | 标准知识域 | Python 装饰器 |
+| 4 | 标准知识域 | Spring AOP |
 | 5 | 数据模型与长期记忆 | 完全认可（五态 + 置信度分级 + 双 namespace + 匿名标识） |
-| 6 | 模型路由 | 默认 deepseek-chat，LangChain 抽象留切换护栏 |
+| 6 | 模型路由 | 默认 deepseek-v4-flash / deepseek-v4-pro，LangChain 抽象留切换护栏 |

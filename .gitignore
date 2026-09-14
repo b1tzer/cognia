@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 环境变量
+.env
+
+# uv
+.uv/
+
+# 数据 / 数据库
+data/*.db
+*.sqlite
+*.sqlite3
+
+# 测试
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / 系统
+.vscode/
+.idea/
+.DS_Store

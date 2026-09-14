@@ -83,6 +83,7 @@
 
 ## 5. 通用规则（所有转换统一约束）
 
-1. **高置信度是唯一迁移门槛**：中置信度「原地冻结 + 追加探针」，低置信度「不改变状态 + 继续探测」，两者都不迁移状态（clarifications Q4）。
-2. **证据必须来自用户原话**：严禁 AI 脑补；未提及知识点一律 `unassessed`（spec §6）。
-3. **每次迁移都要落 ProficiencyEntry**：携带 `from_state → to_state + evidence + timestamp`，增量 Delta，严禁全量重写（宪法 §5）。
+1. **诊断（Diagnosis）是候选，状态迁移（Proficiency）是裁决**：`diagnosis.state` 只是「候选状态」，绝不直接写入长期 Proficiency；必须经「置信度验证（高置信度）+ `can_transition()` 状态机判断」双重闸门后，才允许产生 Proficiency Delta。任何 `proficiency[point_id] = diagnosis.state` 的直写都是旁路，属违规。
+2. **高置信度是唯一迁移门槛**：中置信度「原地冻结 + 追加探针」，低置信度「不改变状态 + 继续探测」，两者都不迁移状态（clarifications Q4）。
+3. **证据必须来自用户原话**：严禁 AI 脑补；未提及知识点一律 `unassessed`（spec §6）。
+4. **每次迁移都要落 ProficiencyEntry**：携带 `from_state → to_state + evidence + timestamp`，增量 Delta，严禁全量重写（宪法 §5）。

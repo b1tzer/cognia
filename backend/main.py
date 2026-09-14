@@ -213,6 +213,86 @@ def _session_history(s: dict) -> tuple[list, str]:
                 })
     return history, summary_text
 
+
+# ---------------------------------------------------------------------------
+# 用户习惯/偏好记忆（需求 #71 需求3）
+#
+# 累计 N 轮对话后，由 LLM 从对话中抽取用户交互风格偏好，merge 进长期记忆；
+# 教学决策与回复时读回注入。离线模式安全跳过（零开销）。
+# ---------------------------------------------------------------------------
+_PREF_EXTRACT_SYSTEM = """你是学习者偏好分析助手。从一段教学对话中，识别学习者表现出的交互风格偏好。
+
+关注这些维度（只记录对话中明确体现的，未体现的不要编造）：
+- teaching_style：教学风格偏好，如「先讲后问」「先问后教」
+- depth：讲解深度偏好，如「浅显易懂」「适中」「深入底层」
+- examples：举例偏好，如「喜欢生活化例子」「喜欢代码例子」「不喜欢举例」
+- pace：节奏偏好，如「喜欢快速推进」「喜欢慢慢巩固」
+
+只输出 JSON，字段为识别到的偏好（键值对），未体现的维度省略。例如：
+{"teaching_style":"先讲后问","depth":"深入底层"}
+
+若对话中未体现任何偏好，输出空对象 {}。"""
+
+
+def _preferences_text(prefs: dict) -> str:
+    """把偏好 dict 渲染成注入 prompt 的文本；空偏好返回空串。"""
+    if not prefs:
+        return ""
+    items = []
+    for k, v in prefs.items():
+        if str(k).startswith("_"):
+            continue
+        items.append(f"{k}={v}")
+    if not items:
+        return ""
+    return "、".join(items)
+
+
+def _extract_preferences(messages: list[dict], existing: dict) -> dict:
+    """LLM 从对话中抽取偏好，merge 到已有偏好。失败或离线返回原偏好。"""
+    if not config.AI_ENABLED:
+        return existing
+    lines = []
+    for m in messages:
+        role = "学习者" if m.get("role") == "user" else "导师"
+        content = m.get("content", "")
+        if content:
+            lines.append(f"{role}：{content}")
+    if not lines:
+        return existing
+    user = f"对话片段：\n" + "\n".join(lines)
+    data = llm.chat_json(
+        _PREF_EXTRACT_SYSTEM, user, temperature=0.2, max_tokens=500,
+        trace_label="偏好抽取",
+    )
+    if not isinstance(data, dict):
+        return existing
+    merged = dict(existing)
+    for k, v in data.items():
+        if str(k).startswith("_"):
+            continue
+        merged[k] = v
+    return merged
+
+
+def _maybe_extract_preferences(s: dict) -> bool:
+    """累计对话轮次达到阈值时，触发一次偏好抽取（批量、惰性）。
+
+    返回是否发生了抽取（供调用方判断是否需要额外处理）。阈值未达只 +1 计数。
+    """
+    pending = learner_profile.bump_preference_pending()
+    if pending < config.PREF_EXTRACT_THRESHOLD:
+        return False
+
+    messages = s.get("messages", [])
+    existing = learner_profile.get_preferences()
+    new_prefs = _extract_preferences(messages, existing)
+    if new_prefs != existing:
+        learner_profile.update_preferences(new_prefs)
+    learner_profile.reset_preference_pending()
+    return True
+
+
 def _all_root_mastered(knowledge: dict, cognitive: dict) -> bool:
     mastery = {m["concept_id"]: m for m in cognitive["concepts"]}
     roots = knowledge.get("root_concepts", [])
@@ -430,12 +510,15 @@ def _process_turn(s: dict, content: str) -> dict:
     #    替代原 diagnose + decide_action 两次调用，消除 state→action 跨调用契约断裂。
     focus_concepts = _focus_concept_subset(focus_id, concepts)
     history, summary = _session_history(s)
+    preferences = learner_profile.get_preferences()
+    preferences_text = _preferences_text(preferences)
     misconceptions = learner_profile.get_misconceptions_for([c.id for c in focus_concepts])
     diagnosis, action_decision = cog.diagnose_and_decide(
         knowledge["goal"], focus_concepts, content, focus_id,
         evidence_count=focus_evidence,
         consecutive_failures=focus_failures,
-        trace=trace, history=history, summary=summary, misconceptions=misconceptions,
+        trace=trace, history=history, summary=summary,
+        preferences=preferences_text, misconceptions=misconceptions,
     )
 
     # 2.1 若诊断出误解，沉淀到跨会话长期记忆（学习者画像）
@@ -545,6 +628,7 @@ def _process_turn(s: dict, content: str) -> dict:
         "should_advance": should_advance,
         "history": history,
         "summary": summary,
+        "preferences": preferences_text,
         "trace": trace,
     }
 
@@ -607,6 +691,8 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
         new_summary = _maybe_summarize(s)
         if new_summary and new_summary != s.get("summary"):
             db.update_summary(sid, new_summary)
+        # 惰性抽取用户偏好（累计 N 轮触发一次，merge 进长期记忆）
+        _maybe_extract_preferences(s)
 
     return {
         "session_id": sid,
@@ -643,7 +729,7 @@ def chat(sid: str, req: ChatRequest):
         reply = tutor.generate_tutor_reply(
             Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content,
             trace=ctx["trace"], history=ctx["history"], summary=ctx["summary"],
-            knowledge=ctx["knowledge"],
+            preferences=ctx["preferences"], knowledge=ctx["knowledge"],
         )
 
     return _persist(sid, ctx, reply, action, status)
@@ -683,7 +769,7 @@ def chat_stream(sid: str, req: ChatRequest):
             for delta in tutor.stream_tutor_reply(
                 Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content,
                 trace=ctx["trace"], history=ctx["history"], summary=ctx["summary"],
-                knowledge=ctx["knowledge"],
+                preferences=ctx["preferences"], knowledge=ctx["knowledge"],
             ):
                 parts.append(delta)
                 yield f"data: {json.dumps({'type': 'token', 'content': delta}, ensure_ascii=False)}\n\n"

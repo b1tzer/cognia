@@ -93,3 +93,73 @@ def get_misconceptions_for(
         if texts:
             out[cid] = texts
     return out
+
+
+def get_preferences(user_id: str = db.DEFAULT_USER_ID) -> dict:
+    """返回用户偏好 dict（不含内部计数字段）；无记录时返回空 dict。
+
+    db 表未初始化（如纯单元测试未 init_db）时安全降级返回空 dict。
+    """
+    try:
+        profile = db.get_learner_profile(user_id)
+    except Exception:
+        return {}
+    if not profile:
+        return {}
+    prefs = profile.get("preferences") or {}
+    # 过滤内部保留字段（_ 开头），只返回真正的用户偏好
+    return {k: v for k, v in prefs.items() if not str(k).startswith("_")}
+
+
+def update_preferences(prefs: dict, user_id: str = db.DEFAULT_USER_ID) -> None:
+    """合并写入用户偏好（幂等：新字段覆盖旧值，其余保留）。
+
+    只合并非内部字段；db 表未初始化时安全跳过。
+    """
+    if not prefs:
+        return
+    try:
+        profile = db.get_learner_profile(user_id)
+        existing = (profile or {}).get("preferences") or {}
+        merged = dict(existing)
+        for k, v in prefs.items():
+            if str(k).startswith("_"):
+                continue
+            merged[k] = v
+        prior_level = (profile or {}).get("prior_level")
+        db.upsert_learner_profile(user_id, prior_level=prior_level, preferences=merged)
+    except Exception:
+        pass
+
+
+def bump_preference_pending(
+    user_id: str = db.DEFAULT_USER_ID,
+) -> int:
+    """把「待抽取偏好」的轮次计数 +1，返回累计后的值（内部字段 _pending_turns）。
+
+    db 表未初始化时安全降级返回 0（不触发抽取）。
+    """
+    try:
+        profile = db.get_learner_profile(user_id)
+        prefs = dict((profile or {}).get("preferences") or {})
+        pending = int(prefs.get("_pending_turns", 0)) + 1
+        prefs["_pending_turns"] = pending
+        prior_level = (profile or {}).get("prior_level")
+        db.upsert_learner_profile(user_id, prior_level=prior_level, preferences=prefs)
+        return pending
+    except Exception:
+        return 0
+
+
+def reset_preference_pending(
+    user_id: str = db.DEFAULT_USER_ID,
+) -> None:
+    """把「待抽取偏好」计数清零（偏好抽取完成后调用）。db 表未初始化时安全跳过。"""
+    try:
+        profile = db.get_learner_profile(user_id)
+        prefs = dict((profile or {}).get("preferences") or {})
+        prefs["_pending_turns"] = 0
+        prior_level = (profile or {}).get("prior_level")
+        db.upsert_learner_profile(user_id, prior_level=prior_level, preferences=prefs)
+    except Exception:
+        pass

@@ -356,12 +356,14 @@ def _diagnose_and_decide_with_llm(
     trace: list | None = None,
     history: list | None = None,
     summary: str = "",
+    preferences: str = "",
     misconceptions: dict | None = None,
 ) -> tuple[DiagnosticResult, Any] | None:
     """一次 LLM 调用同时产出认知诊断与教学动作决策。
 
     返回 (diagnosis, ActionDecision)；LLM 不可用或输出非法时返回 None。
     动作由 LLM 基于完整上下文自主决定（advance=推进、backtrack=回溯）。
+    preferences 为用户交互偏好文本（渲染后的键值对，如「teaching_style=先讲后问」）。
     """
     concept_desc = "\n".join(
         f"- {c.id}：{c.name}（{c.summary}）" for c in concepts
@@ -373,11 +375,12 @@ def _diagnose_and_decide_with_llm(
             break
     focus_line = f"\n\n当前诊断焦点：{focus_name}（{focus_concept_id}）" if focus_name else ""
     history_block = _diagnosis_history_block(history, summary)
+    preference_block = f"\n\n（用户交互偏好参考：{preferences}）" if preferences else ""
     misconception_block = _misconception_block(misconceptions)
     system = _DIAG_DECIDE_SYSTEM + _rules_suffix()
     user = (
         f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n"
-        f"学习者本轮对焦点概念的理解陈述：\n{user_text}{history_block}{misconception_block}{focus_line}"
+        f"学习者本轮对焦点概念的理解陈述：\n{user_text}{history_block}{preference_block}{misconception_block}{focus_line}"
     )
     data = chat_json(
         system, user, temperature=0.2, max_tokens=1500,
@@ -437,6 +440,7 @@ def diagnose_and_decide(
     trace: list | None = None,
     history: list | None = None,
     summary: str = "",
+    preferences: str = "",
     misconceptions: dict | None = None,
 ) -> tuple[DiagnosticResult, Any]:
     """合并入口（Map+Guide 单循环）：一次 LLM 调用同时完成诊断与动作决策。
@@ -446,7 +450,7 @@ def diagnose_and_decide(
     """
     result = _diagnose_and_decide_with_llm(
         goal, concepts, user_text, focus_concept_id,
-        evidence_count, consecutive_failures, trace, history, summary, misconceptions,
+        evidence_count, consecutive_failures, trace, history, summary, preferences, misconceptions,
     )
     if result is not None:
         return result

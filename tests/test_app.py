@@ -6,6 +6,8 @@
 2. graph 产出的 proficiency_deltas 能写入长期 Store（graph → Store 闭环）
 """
 
+import asyncio
+
 from langgraph.store.memory import InMemoryStore
 
 from cognia.app import _build_config, _persist_deltas
@@ -31,7 +33,7 @@ def test_persist_deltas_writes_to_store():
     )
     state = {"proficiency_deltas": [entry.model_dump(mode="json")]}
 
-    _persist_deltas(store, "u1", state)
+    asyncio.run(_persist_deltas(store, "u1", state))
 
     assert get_current_proficiency(store, "u1", "aop-concept") == "partial"
 
@@ -47,8 +49,8 @@ def test_persist_deltas_is_idempotent():
     )
     state = {"proficiency_deltas": [entry.model_dump(mode="json")]}
 
-    _persist_deltas(store, "u1", state)
-    _persist_deltas(store, "u1", state)
+    asyncio.run(_persist_deltas(store, "u1", state))
+    asyncio.run(_persist_deltas(store, "u1", state))
 
     history = get_proficiency_history(store, "u1", "aop-concept")
     assert len(history) == 1  # 幂等，不重复
@@ -57,6 +59,6 @@ def test_persist_deltas_is_idempotent():
 def test_persist_deltas_empty_state_noop():
     """无 Delta 时写入为 noop（不抛错、不产生记录）。"""
     store = InMemoryStore()
-    _persist_deltas(store, "u1", {})
-    _persist_deltas(store, "u1", {"proficiency_deltas": []})
+    asyncio.run(_persist_deltas(store, "u1", {}))
+    asyncio.run(_persist_deltas(store, "u1", {"proficiency_deltas": []}))
     assert get_current_proficiency(store, "u1", "any") is None

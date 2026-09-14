@@ -19,6 +19,7 @@
 - 干预失败判定：一次「干预→探测→表达→诊断」闭环后状态未改善才计数。
 """
 
+import json
 import operator
 from typing import Annotated, Literal, TypedDict
 
@@ -34,6 +35,7 @@ from cognia.schemas import (
     Confidence,
     Diagnosis,
     KnowledgeModel,
+    KnowledgePoint,
     ProficiencyEntry,
     ValidationResult,
     VerificationState,
@@ -290,6 +292,75 @@ def _extract_text(result) -> str:
     return str(result)
 
 
+def _structured(model, schema, messages):
+    """结构化输出：优先 with_structured_output，返回 None 则降级 JSON 解析。
+
+    背景：adapter 支持 function calling，但上游模型对模糊/非常规输入可能不调用
+    工具（finish_reason=stop），导致 with_structured_output 返回 None（实测 flash
+    对「开始」返回 None、对「Spring AOP」正常）。此时降级到
+    models.invoke_structured（普通 invoke + JSON Schema 强约束 + 手动解析），
+    保证任何输入都能拿到结构化对象而非崩溃。
+
+    兼容测试桩：ScriptedLLM 的 with_structured_output 直接返回对象（非 None），
+    走第一分支原样返回，不影响既有单元测试。
+    """
+    result = model.with_structured_output(schema).invoke(messages)
+    if result is not None:
+        return result
+    return models.invoke_structured(model, schema, messages)
+
+
+def _extract_json(text: str):
+    """从模型输出中提取 JSON（容错 markdown 代码块包裹），返回解析后的对象。
+
+    优先按数组 `[...]` 提取（知识建模用扁平数组），否则回退到对象 `{...}`。
+    """
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`")
+        if t.startswith("json"):
+            t = t[4:]
+    start = t.find("[")
+    end = t.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        start = t.find("{")
+        end = t.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        t = t[start:end + 1]
+    return json.loads(t)
+
+
+def _build_knowledge_model(planner, goal: str) -> KnowledgeModel:
+    """构建知识模型：普通文本调用 + 扁平 JSON 数组解析。
+
+    背景：adapter 上游工蜂 Gateway 对带嵌套对象引用（`$defs`/`$ref`）的 JSON Schema
+    的 function calling 支持有缺陷——`with_structured_output(KnowledgeModel)` 会
+    卡死（请求发出后上游不响应，flash / hy-4-preview 均如此），而其他扁平 schema
+    （_GoalAssessment / Diagnosis / _ConceptAssessment）的 function calling 正常。
+    因此 KnowledgeModel 改用「普通 invoke + 输出扁平 JSON 数组 + 手动解析」，
+    实测约 6.8s 稳定返回。
+
+    兼容测试桩：ScriptedLLM 的 invoke 直接返回 KnowledgeModel 对象（而非字符串），
+    isinstance 命中后原样返回，不影响既有单元测试。
+    """
+    result = planner.invoke([
+        ("system", "你是 Cognia 的知识建模器。将学习目标拆解为知识点。"),
+        ("human", (
+            f"学习目标：{goal}\n\n"
+            "请只输出一个 JSON 数组，每个元素是一个知识点对象，格式如下"
+            "（不要输出任何解释、注释或 markdown 代码块）：\n"
+            '[{"id": "唯一标识", "name": "知识点名称", "description": "一句话描述", '
+            '"prerequisites": ["依赖的知识点id"]}]'
+        )),
+    ])
+    if isinstance(result, KnowledgeModel):
+        return result
+    text = result.content if hasattr(result, "content") else str(result)
+    data = _extract_json(text)
+    points = [KnowledgePoint.model_validate(p) for p in data]
+    return KnowledgeModel(goal=goal, points=points)
+
+
 def build_graph(
     planner_model=None,
     teacher_model=None,
@@ -311,7 +382,7 @@ def build_graph(
     def setup_goal(state: CogniaState) -> dict:
         """接收目标，判断是否过大；过大则引导缩小。"""
         goal = state["goal"]
-        assessment = planner.with_structured_output(_GoalAssessment).invoke([
+        assessment = _structured(planner, _GoalAssessment, [
             ("system", "你是 Cognia 的目标引导器。判断学习目标是否过大/过宽泛（主题过多、范围过广、无法在单次会话聚焦）。"),
             ("human", f"学习目标：{goal}"),
         ])
@@ -331,10 +402,7 @@ def build_graph(
     def build_model(state: CogniaState, config: RunnableConfig) -> dict:
         """生成知识模型，聚焦第一个知识点，并跨会话读回其历史熟练度。"""
         goal = state["goal"]
-        km = planner.with_structured_output(KnowledgeModel).invoke([
-            ("system", "你是 Cognia 的知识建模器。将学习目标拆解为 5~15 个知识点及其依赖关系。"),
-            ("human", f"学习目标：{goal}"),
-        ])
+        km = _build_knowledge_model(planner, goal)
         # 强制目标一致，并取第一个知识点
         km.goal = goal
         current_point_id = km.points[0].id if km.points else None
@@ -383,7 +451,7 @@ def build_graph(
         user_answer = state.get("user_answer", "")
         question = state.get("pending_question", "")
 
-        diagnosis = diagnoser.with_structured_output(Diagnosis).invoke([
+        diagnosis = _structured(diagnoser, Diagnosis, [
             ("system", DIAGNOSER_SYSTEM_PROMPT),
             ("human", f"知识点：{point.name}（{point.description}）\n探针问题：{question}\n用户回答：{user_answer}\n\n请诊断。"),
         ])
@@ -421,11 +489,11 @@ def build_graph(
         user_answer = state.get("user_answer", "")
         question = state.get("pending_question", "")
 
-        concept_assessment = diagnoser.with_structured_output(_ConceptAssessment).invoke([
+        concept_assessment = _structured(diagnoser, _ConceptAssessment, [
             ("system", "你是 Cognia 的概念解释验证器。判断用户回答是否准确、完整地解释了当前知识点的核心概念。"),
             ("human", f"知识点：{point.name}（{point.description}）\n探针问题：{question}\n用户回答：{user_answer}\n\n请判断概念解释是否通过。"),
         ])
-        scenario_assessment = diagnoser.with_structured_output(_ScenarioAssessment).invoke([
+        scenario_assessment = _structured(diagnoser, _ScenarioAssessment, [
             ("system", "你是 Cognia 的场景辨析验证器。判断用户回答是否体现对场景/边界/反例的正确辨析能力。"),
             ("human", f"知识点：{point.name}（{point.description}）\n用户回答：{user_answer}\n\n请判断场景辨析是否通过。"),
         ])

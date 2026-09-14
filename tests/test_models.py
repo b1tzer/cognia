@@ -43,11 +43,11 @@ def test_teacher_model_default(monkeypatch):
 
 
 def test_diagnoser_model_low_temperature(monkeypatch):
-    """diagnoser 默认 deepseek-v4-pro + 低 temperature 锁死确定性。"""
+    """diagnoser 默认 deepseek-v4-flash + 低 temperature 锁死确定性。"""
     monkeypatch.delenv("DIAGNOSER_MODEL", raising=False)
     captured = _install_fake_llm(monkeypatch)
     models.get_diagnoser_model()
-    assert captured["kwargs"]["model"] == "deepseek-v4-pro"
+    assert captured["kwargs"]["model"] == "deepseek-v4-flash"
     assert captured["kwargs"]["temperature"] == 0.0
 
 

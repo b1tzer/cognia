@@ -6,10 +6,12 @@
 3. 写库走 Delta 追加（不覆盖）
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 from langgraph.store.memory import InMemoryStore
 
+from cognia import memory as memory_mod
 from cognia.memory import (
     append_proficiency_delta,
     get_checkpointer,
@@ -101,42 +103,52 @@ def test_factory_pool_has_autocommit(monkeypatch):
     commit，全靠连接的 autocommit 立即提交；一旦有人手滑删掉 kwargs 里的
     autocommit=True，写操作会在连接归还池时被回滚，checkpoint / 熟练度 Delta
     静默丢失。由于本环境无 Postgres、无法用真库验证，只能捕获构造参数断言，
-    兜住「参数被删」这一层。同时覆盖 checkpointer 与 store 两个工厂。
+    兜住「参数被删」这一层。同时覆盖 checkpointer 与 store 两个异步工厂。
     """
     captured = {}
 
-    class FakePool:
+    class FakeAsyncPool:
         @classmethod
         def __class_getitem__(cls, item):
-            # langgraph 的 _internal.py 在 import 时执行
-            # `ConnectionPool[Connection[DictRow]]`，需支持下标访问（返回自身即可）。
             return cls
 
         def __init__(self, conninfo, **kwargs):
             captured.setdefault("kwargs_list", []).append(kwargs.get("kwargs", {}))
 
-    class FakeSaver:
+        async def open(self, wait=False):
+            pass
+
+    class FakeAsyncSaver:
         def __init__(self, conn):
             pass
 
-        def setup(self):
+        async def setup(self):
             pass
 
-    class FakeStore:
+    class FakeAsyncStore:
         def __init__(self, conn):
             pass
 
-        def setup(self):
+        async def setup(self):
             pass
 
-    monkeypatch.setenv("DATABASE_URL", "postgres://x:x@localhost/x")
-    monkeypatch.setattr("psycopg_pool.ConnectionPool", FakePool)
-    monkeypatch.setattr("langgraph.checkpoint.postgres.PostgresSaver", FakeSaver)
-    monkeypatch.setattr("langgraph.store.postgres.PostgresStore", FakeStore)
+    # 重置单例缓存，避免被其他用例污染
+    memory_mod._checkpointer_cache = None
+    memory_mod._store_cache = None
 
-    get_checkpointer()
-    get_store()
+    monkeypatch.setenv("LANGGRAPH_DATABASE_URL", "postgres://x:x@localhost/x")
+    monkeypatch.setattr("psycopg_pool.AsyncConnectionPool", FakeAsyncPool)
+    monkeypatch.setattr("langgraph.checkpoint.postgres.aio.AsyncPostgresSaver", FakeAsyncSaver)
+    monkeypatch.setattr("langgraph.store.postgres.aio.AsyncPostgresStore", FakeAsyncStore)
 
-    assert len(captured["kwargs_list"]) == 2
+    async def _init():
+        await get_checkpointer()
+        await get_store()
+
+    asyncio.run(_init())
+
+    # Checkpointer 与 Store 共享同一个 AsyncConnectionPool（_get_pool 单例），
+    # 因此连接池只创建一次。
+    assert len(captured["kwargs_list"]) == 1
     for kwargs in captured["kwargs_list"]:
         assert kwargs["autocommit"] is True

@@ -58,26 +58,35 @@ def _resolve_user_id() -> str:
     return uuid.uuid4().hex
 
 
-def _persist_deltas(store, user_id: str, state: dict) -> None:
+async def _persist_deltas(store, user_id: str, state: dict) -> None:
     """把 state 里的 proficiency_deltas 写入长期 Store。
 
     幂等：append_proficiency_delta 用 `point_id:timestamp` 唯一 key，重复写入覆盖
     同 key，不会产生重复条目（因此可安全地在每轮末尾全量重写）。
+
+    异步：生产 store 是 AsyncPostgresStore，主事件循环线程里必须用 `await aput`，
+    同步 `store.put` 会因 @_check_loop 抛 InvalidStateError。
     """
     for delta in state.get("proficiency_deltas", []):
         entry = ProficiencyEntry.model_validate(delta)
-        memory.append_proficiency_delta(store, user_id, entry)
+        await memory.aappend_proficiency_delta(store, user_id, entry)
 
 
-def _init_memory():
+async def _init_memory():
     """初始化记忆层；Postgres 不可用时降级到内存（本地开发体验）。
 
-    生产配了 DATABASE_URL 就走 Postgres（Checkpointer + Store 持久化）；
+    生产配了 LANGGRAPH_DATABASE_URL 就走 Postgres（Checkpointer + Store 持久化）；
     本地没起 Postgres 时降级到 InMemory，保证「浏览器体验」不被数据库阻塞。
+
+    get_checkpointer() 返回 AsyncPostgresSaver，必须在事件循环里 await 创建；
+    get_store() 保持同步 PostgresStore（graph 同步节点在 executor 线程里调用
+    同步 store.search，天然线程安全）。
     """
-    if os.getenv("DATABASE_URL"):
+    if os.getenv("LANGGRAPH_DATABASE_URL"):
         try:
-            return memory.get_checkpointer(), memory.get_store()
+            checkpointer = await memory.get_checkpointer()
+            store = await memory.get_store()
+            return checkpointer, store
         except Exception as exc:  # 连接失败 / 缺依赖等，降级保体验
             print(f"[Cognia] Postgres 不可用，降级到内存记忆层：{exc}")
     from langgraph.checkpoint.memory import InMemorySaver
@@ -87,7 +96,7 @@ def _init_memory():
 
 @cl.on_chat_start
 async def on_chat_start():
-    checkpointer, store = _init_memory()
+    checkpointer, store = await _init_memory()
     graph = build_graph(checkpointer=checkpointer, store=store)
 
     cl.user_session.set("graph", graph)
@@ -139,9 +148,9 @@ async def on_message(message: cl.Message):
         return
 
     # 持久化 proficiency_deltas 到 Store（graph → Store 接线）
-    snapshot = graph.get_state(config)
+    snapshot = await graph.aget_state(config)
     state = snapshot.values
-    _persist_deltas(store, user_id, state)
+    await _persist_deltas(store, user_id, state)
 
     # 会话结束：区分「目标过大」与「学习达成」
     if state.get("ended"):

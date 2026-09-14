@@ -1,6 +1,7 @@
-"""对话栈随 cognitive 持久化的回归测试（Phase 1 · Task 3 · 验收标准 4）。
+"""会话级对话消息持久化的回归测试。
 
-验证：dialogue 轨迹在 chat 流程结束后随 cognitive 一起落库，重新读取不丢失。
+验证：chat 流程结束后，对话以会话级 messages 落库（需求 #71 需求2 废弃了
+概念级 dialogue 栈，改用 sessions.messages 作为权威对话原文），重新读取不丢失。
 """
 from __future__ import annotations
 
@@ -24,12 +25,15 @@ class TestDialoguePersistence(unittest.TestCase):
         with TestClient(main.app) as client:
             sid = client.post("/api/sessions", json={"goal": "理解 HTTP"}).json()["id"]
             client.post(f"/api/sessions/{sid}/chat", json={"content": "HTTP 是无状态协议，客户端发请求服务器响应"})
-            # 重新从 db 读取，焦点概念应有 1 条对话轨迹
+            # 重新从 db 读取，会话级 messages 应持久化（开场白 + 用户 + 助手）
             s = db.get_session(sid)
-            stacks = [c.get("dialogue", []) for c in s["cognitive"]["concepts"]]
-            non_empty = [x for x in stacks if x]
-            self.assertEqual(len(non_empty), 1)
-            self.assertEqual(non_empty[0][0]["user_text"], "HTTP 是无状态协议，客户端发请求服务器响应")
+            messages = s["messages"]
+            roles = [m["role"] for m in messages]
+            self.assertIn("user", roles)
+            self.assertIn("assistant", roles)
+            # 用户消息内容不丢失
+            user_msgs = [m for m in messages if m["role"] == "user"]
+            self.assertEqual(user_msgs[0]["content"], "HTTP 是无状态协议，客户端发请求服务器响应")
 
 
 if __name__ == "__main__":

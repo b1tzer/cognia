@@ -647,11 +647,8 @@ def _resolve_reply(ctx: dict) -> tuple[str | None, str, str, bool]:
         next_focus = decision.next_focus_concept(ctx["knowledge"], ctx["cognitive"], trace=ctx["trace"])
         if next_focus is not None:
             ctx["focus"] = next_focus
-            reply = (
-                f"好的，这个点你已经掌握了。我们接着看下一个概念：**{next_focus['name']}**。"
-                f"\n\n在讲解之前，先听听你的理解——你能用自己的话说说，"
-                f"「{next_focus['name']}」是什么、解决什么问题吗？"
-            )
+            # 过渡提问措辞交给 LLM 生成（需求 #71 需求4），失败降级到模板
+            reply = tutor.build_transition(next_focus, ctx["knowledge"], trace=ctx["trace"])
             return reply, "advance", "active", False
         return _complete_reply(), "advance", "completed", False
 

@@ -65,9 +65,8 @@ flowchart TD
     WAIT --> D[diagnose]
     D -->|高置信度·非 mastered| E[intervene]
     D -->|高置信度·mastered| V[双重验证：概念 + 场景辨析]
-    D -->|中置信度| C
-    D -->|低置信度| ASK[请求重新表述]
-    ASK --> WAIT
+    D -->|中置信度·原地冻结| C
+    D -->|低置信度·不改变状态| C
     E --> C
     V -->|通过| S[select_next]
     V -->|不通过| E
@@ -79,7 +78,7 @@ flowchart TD
 
 1. **`interrupt()` 处理「等待用户表达」**：`probe` 生成问题后，用 `interrupt({"question": ...})` 暂停图，把问题交给用户；用户回答后 resume，答案作为 state 喂给 `diagnose`。这是 Cognia「AI 主动提问 → 用户回答」节奏的原生支撑，也是 HITL 的正确用法。
 
-2. **`checkpointer` + `thread_id` 持久化会话**：整个学习会话是长生命周期 thread，每轮对话 resume 同一个 thread，state 自动恢复，天然满足「跨会话恢复认知状态」（呼应 clarifications Q6）。
+2. **`checkpointer` + `thread_id` 持久化会话**：整个学习会话是长生命周期 thread，每轮对话 resume 同一个 thread，state 自动恢复。**职责边界**：`thread_id` 仅标识「一次会话」，Checkpointer 只负责会话内的状态恢复；跨会话的长期认知状态（Proficiency JSON）必须靠 Store 按 `user_id` 持久化，不能依赖 Checkpointer（呼应 clarifications Q6）。
 
 ### 3.4 循环防失控
 
@@ -87,6 +86,14 @@ State 内置两个计数器（呼应 spec §6 硬约束）：
 
 - `intervention_fail_count`：单知识点干预失败计数，≥3 触发回溯或挂起（spec「干预循环硬性约束」）。
 - `loop_count` + `recursion_limit`：总循环上限，兜底防烧钱。
+
+### 3.5 双重验证状态（mastered 判定的状态化）
+
+mastered 判定必须「概念解释 + 场景辨析」双过（spec US-5），且该验证过程必须被 State 显式记录，而非无状态摆设：
+
+- State 持有 `verification: VerificationState` 字段，记录两类验证分别是否通过、各自证据、以及当前进行到哪一步。
+- `diagnose` 节点只产出「诊断结果」（五态 + 置信度 + 证据），不负责判定 mastered。
+- 「验证是否闭环」由纯逻辑节点判断：`concept_pass && scenario_pass` 才允许状态迁移到 mastered（见 state-machine.md）。
 
 ## 4. 数据模型（Pydantic Schema 形状）
 
@@ -125,11 +132,21 @@ class Diagnosis(BaseModel):
     confidence: Confidence
     evidence: list[str]  # 用户原话片段，严禁脑补（spec §6）
 
+# 双重验证状态（plan §3.5：mastered 判定需「概念解释 + 场景辨析」双过）
+class VerificationState(BaseModel):
+    concept_pass: bool                                  # 概念解释是否通过
+    scenario_pass: bool                                 # 场景 / 反例辨析是否通过
+    concept_evidence: str                               # 概念验证的证据（用户原话）
+    scenario_evidence: str                              # 场景验证的证据（用户原话）
+    current_step: Literal["concept", "scenario", "done"]  # 当前验证到哪一步
+
 class ProficiencyEntry(BaseModel):
     point_id: str
-    state: CognitiveState
+    from_state: CognitiveState | None  # 状态迁移起点（首次诊断时为 None）
+    to_state: CognitiveState           # 状态迁移终点
+    evidence: list[str]                # 诊断证据（用户原话片段），支撑审计与认知变化分析
     timestamp: str
-    update_type: Literal["delta"]  # 宪法 §5：增量 Delta，严禁全量重写
+    update_type: Literal["delta"]      # 宪法 §5：增量 Delta，严禁全量重写
 
 class Intervention(BaseModel):
     point_id: str
@@ -150,6 +167,7 @@ class Intervention(BaseModel):
 - **认知 Profile 进化**（宪法 §5）：`("profile", user_id)` 存稳定偏好，`("proficiency", user_id)` 存动态熟练度，两类分开 namespace，均增量 Delta 更新。
 - **身份注入**（宪法 §5）：`user_id` 通过 runtime context 注入，不塞进 State。
 - **匿名标识**（clarifications Q6）：前端生成 UUID → 客户端持久化 → 后端作为 `user_id` 隔离映射；后续无缝升级 Supabase Auth，仅替换标识来源。
+- **证据链入 Proficiency**：每次状态迁移的 `ProficiencyEntry` 必须携带 `from_state → to_state + evidence + timestamp`，保证「为什么判成 partial」可追溯，支撑诊断准确率审计与认知变化分析。
 
 ## 6. 接口与前端
 

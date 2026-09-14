@@ -130,8 +130,8 @@ def test_minimal_closed_loop_mastered():
 
     assert final["ended"] is True
     assert len(final["proficiency_deltas"]) == 1
-    assert final["proficiency_deltas"][0].to_state == CognitiveState.MASTERED
-    assert final["proficiency_deltas"][0].from_state is None
+    assert final["proficiency_deltas"][0]["to_state"] == "mastered"
+    assert final["proficiency_deltas"][0]["from_state"] is None
 
 
 def test_medium_confidence_no_delta():
@@ -157,7 +157,7 @@ def test_medium_confidence_no_delta():
 
     snapshot = graph.get_state(config)
     state = snapshot.values
-    assert state["diagnosis"].confidence == Confidence.MEDIUM
+    assert state["diagnosis"]["confidence"] == "medium"
     assert state.get("proficiency_deltas", []) == []  # 中置信度不迁移
 
 
@@ -192,7 +192,7 @@ def test_three_failures_backtrack():
     assert final["intervention_fail_count"] == 3
     # 仅首次 unassessed→misconception 产生 1 个 Delta，后续自我迁移被禁止
     assert len(final["proficiency_deltas"]) == 1
-    assert final["proficiency_deltas"][0].to_state == CognitiveState.MISCONCEPTION
+    assert final["proficiency_deltas"][0]["to_state"] == "misconception"
 
 
 def test_verify_failure_backtrack():
@@ -272,12 +272,12 @@ def test_verify_failure_downgrades_diagnosis():
 
     snapshot = graph.get_state(config)
     state = snapshot.values
-    assert state["diagnosis"].state == CognitiveState.PARTIAL  # 已降级
-    assert state["diagnosis"].confidence == Confidence.HIGH    # 置信度不变
-    assert state["verification"].concept == ValidationResult.FAILED
-    assert state["verification"].scenario == ValidationResult.FAILED
+    assert state["diagnosis"]["state"] == "partial"      # 已降级
+    assert state["diagnosis"]["confidence"] == "high"    # 置信度不变
+    assert state["verification"]["concept"] == "failed"
+    assert state["verification"]["scenario"] == "failed"
     assert state["intervention_fail_count"] == 1
-    assert state["verification"].concept_evidence == []  # 不回填 mastered 正面证据
+    assert state["verification"]["concept_evidence"] == []  # 不回填 mastered 正面证据
 
 
 def test_intervene_reads_verification_gap():

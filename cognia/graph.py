@@ -94,6 +94,12 @@ class _ConceptAssessment(BaseModel):
 class CogniaState(TypedDict, total=False):
     """图状态（total=False 使所有字段可缺省）。
 
+    序列化约束（任务⑥前置）：所有字段必须是 JSON 原生类型（dict/str/list/int/bool），
+    严禁直接存 Pydantic 对象或自定义 Enum——msgpack checkpoint 无法安全反序列化，
+    当前仅告警（`Deserializing unregistered type ... will be blocked in a future version`）。
+    Pydantic 对象统一 `.model_dump(mode="json")` 转 dict 存、读取时 `.model_validate()` 还原；
+    CognitiveState 统一存 `.value`（str）。
+
     注意：`messages` 与 `proficiency_deltas` 用 operator.add 累积（追加不覆盖）。
     `current_long_state` 为 None 表示「未评估（unassessed）」。
     """
@@ -101,20 +107,48 @@ class CogniaState(TypedDict, total=False):
     messages: Annotated[list, operator.add]
     goal: str
     goal_feedback: str
-    knowledge_model: KnowledgeModel
+    knowledge_model: dict  # KnowledgeModel.model_dump(mode="json")
     point_index: int
     current_point_id: str
     pending_question: str
     user_answer: str
-    diagnosis: Diagnosis
-    verification: VerificationState
+    diagnosis: dict  # Diagnosis.model_dump(mode="json")
+    verification: dict  # VerificationState.model_dump(mode="json")
     last_intervention: str
     intervention_fail_count: int
     loop_count: int
-    current_long_state: CognitiveState | None
-    state_before_intervention: CognitiveState | None
-    proficiency_deltas: Annotated[list, operator.add]
+    current_long_state: str | None  # CognitiveState.value
+    state_before_intervention: str | None  # CognitiveState.value
+    proficiency_deltas: Annotated[list, operator.add]  # list[ProficiencyEntry.model_dump(mode="json")]
     ended: bool
+
+
+# ---- 序列化边界 helper（Pydantic <-> JSON dict，Enum <-> str）----
+
+def _dump(model) -> dict:
+    """Pydantic 对象 → JSON 可序列化 dict。
+
+    mode="json" 会把嵌套的 Enum 转成 .value（str）、datetime 转成 ISO 字符串，
+    确保产物是纯 JSON 原生类型，可被 msgpack checkpoint 安全序列化。
+    """
+    return model.model_dump(mode="json")
+
+
+def _load_state(value: str | None) -> CognitiveState | None:
+    """str → CognitiveState（None 透传）。"""
+    return CognitiveState(value) if value is not None else None
+
+
+def _load_diagnosis(value: dict | None) -> Diagnosis | None:
+    return Diagnosis.model_validate(value) if value is not None else None
+
+
+def _load_verification(value: dict | None) -> VerificationState | None:
+    return VerificationState.model_validate(value) if value is not None else None
+
+
+def _load_knowledge_model(value: dict | None) -> KnowledgeModel | None:
+    return KnowledgeModel.model_validate(value) if value is not None else None
 
 
 # ---- 纯函数：迁移裁决（诊断≠迁移 的核心）----
@@ -175,8 +209,8 @@ def _apply_migration(
     """
     entry = resolve_migration(diagnosis, current_long_state, verification)
     if entry is not None:
-        updates["proficiency_deltas"] = [entry]
-        updates["current_long_state"] = entry.to_state
+        updates["proficiency_deltas"] = [_dump(entry)]
+        updates["current_long_state"] = entry.to_state.value
 
 
 # ---- 纯函数：干预失败判定 ----
@@ -214,7 +248,7 @@ def route_after_setup_goal(state: CogniaState) -> str:
 
 def route_after_diagnose(state: CogniaState) -> str:
     """diagnose 之后按置信度 + 失败计数路由。"""
-    diagnosis = state.get("diagnosis")
+    diagnosis = _load_diagnosis(state.get("diagnosis"))
     if diagnosis is None:
         return "probe"
 
@@ -232,7 +266,7 @@ def route_after_diagnose(state: CogniaState) -> str:
 
 def route_after_verify(state: CogniaState) -> str:
     """verify 之后：验证通过 → select_next；不通过 → 重新干预。"""
-    verification = state.get("verification")
+    verification = _load_verification(state.get("verification"))
     if verification is not None and is_mastered_migration_allowed(verification):
         return "select_next"
     return "intervene"
@@ -280,7 +314,7 @@ def build_graph(
             "loop_count": 0,
             "intervention_fail_count": 0,
             "point_index": 0,
-            "verification": VerificationState(),
+            "verification": _dump(VerificationState()),
             "current_long_state": None,
             "state_before_intervention": None,
         }
@@ -300,14 +334,14 @@ def build_graph(
         km.goal = goal
         current_point_id = km.points[0].id if km.points else None
         return {
-            "knowledge_model": km,
+            "knowledge_model": _dump(km),
             "current_point_id": current_point_id,
             "point_index": 0,
         }
 
     def probe(state: CogniaState) -> dict:
         """生成探针问题（针对当前知识点）。"""
-        km = state["knowledge_model"]
+        km = _load_knowledge_model(state["knowledge_model"])
         idx = state.get("point_index", 0)
         point = km.points[idx]
         last_intervention = state.get("last_intervention")
@@ -328,7 +362,7 @@ def build_graph(
 
     def diagnose(state: CogniaState) -> dict:
         """基于用户表达诊断五态 + 置信度 + 证据（独立严格 prompt）。"""
-        km = state["knowledge_model"]
+        km = _load_knowledge_model(state["knowledge_model"])
         idx = state.get("point_index", 0)
         point = km.points[idx]
         user_answer = state.get("user_answer", "")
@@ -342,16 +376,21 @@ def build_graph(
         diagnosis.point_id = point.id
 
         updates: dict = {
-            "diagnosis": diagnosis,
+            "diagnosis": _dump(diagnosis),
             "loop_count": state.get("loop_count", 0) + 1,
         }
 
         # 非 mastered 高置信度：立即尝试迁移（诊断≠迁移的唯一落地处）
         if diagnosis.confidence == Confidence.HIGH and diagnosis.state != CognitiveState.MASTERED:
-            _apply_migration(updates, diagnosis, state.get("current_long_state"), state.get("verification"))
+            _apply_migration(
+                updates,
+                diagnosis,
+                _load_state(state.get("current_long_state")),
+                _load_verification(state.get("verification")),
+            )
 
         # 干预失败判定：仅当存在「干预前状态」时（即已经历过至少一轮干预）
-        before = state.get("state_before_intervention")
+        before = _load_state(state.get("state_before_intervention"))
         if before is not None:
             if not _improved(diagnosis, before):
                 updates["intervention_fail_count"] = state.get("intervention_fail_count", 0) + 1
@@ -360,8 +399,8 @@ def build_graph(
 
     def verify(state: CogniaState) -> dict:
         """双重验证：概念解释 + 场景辨析，均独立 LLM 判定（不白送）。"""
-        diagnosis = state["diagnosis"]
-        km = state["knowledge_model"]
+        diagnosis = _load_diagnosis(state["diagnosis"])
+        km = _load_knowledge_model(state["knowledge_model"])
         idx = state.get("point_index", 0)
         point = km.points[idx]
         user_answer = state.get("user_answer", "")
@@ -396,7 +435,7 @@ def build_graph(
             current_step="done",
         )
 
-        updates: dict = {"verification": verification}
+        updates: dict = {"verification": _dump(verification)}
 
         # 验证失败 = 未真正达到 mastered = 未改善，计数。
         # 否则「diagnose 判 mastered → verify 反复失败 → 再干预」会因
@@ -406,20 +445,20 @@ def build_graph(
             # 同步降级 diagnosis.state：concept/scenario 任一失败都说明实际未达
             # mastered，降到 partial（「概念会场景不会 / 概念未说清」的典型特征）。
             # 避免 intervene 拿到「已 mastered + 请干预」的自相矛盾状态。
-            updates["diagnosis"] = diagnosis.model_copy(update={"state": CognitiveState.PARTIAL})
+            updates["diagnosis"] = _dump(diagnosis.model_copy(update={"state": CognitiveState.PARTIAL}))
 
         return updates
 
     def intervene(state: CogniaState) -> dict:
         """生成干预动作，并记录干预前状态（用于下一轮失败判定）。"""
-        km = state["knowledge_model"]
+        km = _load_knowledge_model(state["knowledge_model"])
         idx = state.get("point_index", 0)
         point = km.points[idx]
-        diagnosis = state["diagnosis"]
+        diagnosis = _load_diagnosis(state["diagnosis"])
 
         # 消费 verification 结果：verify 失败后路由到这里时，verification 携带
         # 「概念 vs 场景」哪块没过，据此生成针对性纠错（而非笼统「已 mastered 请干预」）。
-        verification = state.get("verification")
+        verification = _load_verification(state.get("verification"))
         gap_hint = ""
         if verification is not None:
             concept_failed = verification.concept == ValidationResult.FAILED
@@ -446,21 +485,26 @@ def build_graph(
         回溯语义：fail_count ≥ 3 到达本节点 = 放弃当前知识点、停止干预，
         **不回滚**已记录的历史 Delta（宪法 §5：增量 Delta，严禁全量重写）。
         """
-        diagnosis = state.get("diagnosis")
+        diagnosis = _load_diagnosis(state.get("diagnosis"))
         updates: dict = {}
 
         # mastered 迁移裁决（验证已在 route_after_verify 通过）
         if diagnosis is not None and diagnosis.confidence == Confidence.HIGH \
                 and diagnosis.state == CognitiveState.MASTERED:
-            _apply_migration(updates, diagnosis, state.get("current_long_state"), state.get("verification"))
+            _apply_migration(
+                updates,
+                diagnosis,
+                _load_state(state.get("current_long_state")),
+                _load_verification(state.get("verification")),
+            )
 
         # 选下一个知识点
-        km = state.get("knowledge_model")
+        km = _load_knowledge_model(state.get("knowledge_model"))
         idx = state.get("point_index", 0)
         if km is not None and idx + 1 < len(km.points):
             updates["point_index"] = idx + 1
             updates["current_point_id"] = km.points[idx + 1].id
-            updates["verification"] = VerificationState()
+            updates["verification"] = _dump(VerificationState())
             updates["intervention_fail_count"] = 0
             updates["state_before_intervention"] = None
         else:

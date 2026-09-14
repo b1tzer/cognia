@@ -38,7 +38,8 @@ def init_db() -> None:
             stage TEXT NOT NULL DEFAULT 'active',
             messages_json TEXT NOT NULL DEFAULT '[]',
             cognitive_json TEXT,
-            knowledge_json TEXT
+            knowledge_json TEXT,
+            summary_json TEXT
         )
         """
     )
@@ -46,6 +47,9 @@ def init_db() -> None:
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
     if "stage" not in cols:
         conn.execute("ALTER TABLE sessions ADD COLUMN stage TEXT NOT NULL DEFAULT 'active'")
+    # 迁移：老库补 summary_json 列（长会话上下文管理的滚动摘要，需求 #71 需求2）
+    if "summary_json" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN summary_json TEXT")
     # 学习者画像长期记忆层（Phase 3）：跨会话沉淀概念掌握度 / 误解 / 画像
     conn.execute(
         """
@@ -279,6 +283,7 @@ def get_session(sid: str) -> Optional[dict]:
         "messages": json.loads(r["messages_json"]),
         "cognitive": json.loads(r["cognitive_json"]) if r["cognitive_json"] else None,
         "knowledge": json.loads(r["knowledge_json"]) if r["knowledge_json"] else None,
+        "summary": json.loads(r["summary_json"]) if r["summary_json"] else None,
     }
 
 
@@ -337,6 +342,18 @@ def update_session(sid: str, cognitive: dict, knowledge: dict, status: str = "ac
     conn.commit()
     conn.close()
 
+def update_summary(sid: str, summary: dict) -> None:
+    """写入/更新会话的滚动摘要（summary_json 列，长会话上下文管理）。
+
+    summary 结构：{"text": "摘要文本", "covered_upto": 已压缩到的消息条数}。
+    """
+    conn = _connect()
+    conn.execute(
+        "UPDATE sessions SET summary_json = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(summary, ensure_ascii=False), _now(), sid),
+    )
+    conn.commit()
+    conn.close()
 
 def update_goal(
     sid: str,

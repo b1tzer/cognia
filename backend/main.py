@@ -24,6 +24,7 @@ import decision
 import domain_model
 import goal_clarify
 import learner_profile
+import llm
 import tutor
 from schemas import (
     ActionDecision,
@@ -111,45 +112,106 @@ def _focus_concept_subset(
         stack.extend(by_id[pid].prerequisites)
     return [by_id[cid] for cid in subset_ids]
 
-# 对话栈（概念级短期记忆）：跟着焦点概念走，切换焦点即切栈，token 天然有界
-_DIALOGUE_MAX_DEPTH = 3      # 每个概念最多保留的轨迹轮数
-_DIALOGUE_USER_MAX = 200     # user_text 截断长度（字符）
-_DIALOGUE_AI_MAX = 120       # ai_reply 截断长度（字符）
+# ---------------------------------------------------------------------------
+# 长会话上下文管理（滑动窗口 + 摘要，需求 #71 需求2）
+#
+# 替代旧的「概念级 3 轮短栈」（切换焦点即丢历史，跨概念叙事断裂），
+# 改用行业主流 ConversationSummaryBufferMemory（hybrid）：
+# 滚动摘要 + 最近 KEEP_RECENT 条 verbatim 消息。
+# ---------------------------------------------------------------------------
+_SUMMARIZE_SYSTEM = """你是对话摘要助手。把一段教学对话历史压缩成简洁摘要，供后续对话衔接上下文。
 
-def _focus_history(cognitive: dict, focus_id: str | None) -> list:
-    """返回焦点概念的 dialogue 栈；无焦点或无栈时返回空列表。"""
-    if not focus_id:
-        return []
-    for m in cognitive.get("concepts", []):
-        if m.get("concept_id") == focus_id:
-            return m.get("dialogue", [])
-    return []
+要求：
+1. 保留 4 类关键信息：已做关键决策（学了哪些概念、推进/回溯到哪）、当前状态（当前焦点概念、掌握情况）、仍生效的约束与偏好、待办。
+2. 简洁，只保留对未来对话有用的信息，丢弃寒暄与重复内容。
+3. 用中文，直接输出摘要文本，不要任何多余解释。
+"""
 
-def _push_dialogue(
-    cognitive: dict,
-    focus_id: str | None,
-    user_text: str,
-    ai_reply: str,
-    action: str,
-    state: str,
-) -> None:
-    """把本轮轨迹压入焦点概念的 dialogue 栈（容量上限 N，字段按长度截断）。
+def _summarize(old_summary: str, messages: list[dict]) -> str:
+    """把一段历史消息压缩进滚动摘要（LLM 生成）。失败或离线时返回原摘要。"""
+    if not config.AI_ENABLED:
+        return old_summary
+    lines = []
+    for m in messages:
+        role = "学习者" if m.get("role") == "user" else "导师"
+        content = m.get("content", "")
+        if content:
+            lines.append(f"{role}：{content}")
+    if not lines:
+        return old_summary
+    new_text = "\n".join(lines)
+    user = (
+        f"已有摘要：\n{old_summary or '（无）'}\n\n"
+        f"新增对话：\n{new_text}\n\n"
+        f"请把新增对话合并进摘要，输出更新后的完整摘要。"
+    )
+    text = llm.chat_text(
+        _SUMMARIZE_SYSTEM, user, temperature=0.3, max_tokens=1000,
+        trace_label="上下文摘要",
+    )
+    return text.strip() if text else old_summary
 
-    只保留最近 _DIALOGUE_MAX_DEPTH 轮，超出丢最旧。focus_id 为空时跳过。
+
+def _maybe_summarize(s: dict) -> dict:
+    """惰性维护滚动摘要：从上次摘要位置起累积超过阈值的新消息时触发摘要。
+
+    返回更新后的 summary dict（{"text": ..., "covered_upto": ...}）；无需摘要时原样返回。
     """
-    if not focus_id:
-        return
-    for m in cognitive.get("concepts", []):
-        if m.get("concept_id") == focus_id:
-            stack = m.setdefault("dialogue", [])
-            stack.append({
-                "user_text": (user_text or "")[:_DIALOGUE_USER_MAX],
-                "ai_reply": (ai_reply or "")[:_DIALOGUE_AI_MAX],
-                "action": action,
-                "state": state,
+    messages = s.get("messages", [])
+    summary = s.get("summary") or {}
+    covered = int(summary.get("covered_upto", 0))
+    keep = config.CONTEXT_KEEP_RECENT
+    threshold = config.CONTEXT_SUMMARY_THRESHOLD
+
+    # 从上次摘要位置起，累积的新消息数未达阈值，暂不摘要
+    if len(messages) - covered < threshold:
+        return summary
+
+    upto = len(messages) - keep
+    if upto <= covered:
+        return summary
+
+    segment = messages[covered:upto]
+    old_text = summary.get("text", "")
+    new_text = _summarize(old_text, segment)
+    return {"text": new_text, "covered_upto": upto}
+
+
+def _session_history(s: dict) -> tuple[list, str]:
+    """组装「滑动窗口 + 摘要」上下文。
+
+    返回 (history_list, summary_text)：
+    - history_list：最近 KEEP_RECENT 条消息格式化的对话轨迹（user_text/ai_reply/action/state）
+    - summary_text：滚动摘要文本（超出窗口的旧对话已被压缩进摘要）
+    """
+    messages = s.get("messages", [])
+    summary = s.get("summary") or {}
+    summary_text = summary.get("text", "") if isinstance(summary, dict) else ""
+
+    keep = config.CONTEXT_KEEP_RECENT
+    recent = messages[-keep:] if keep > 0 else []
+    history: list[dict] = []
+    for m in recent:
+        if m.get("role") == "user":
+            diag = m.get("diagnosis") or {}
+            history.append({
+                "user_text": m.get("content", ""),
+                "ai_reply": "",
+                "action": "",
+                "state": diag.get("state", ""),
             })
-            del stack[: max(0, len(stack) - _DIALOGUE_MAX_DEPTH)]
-            break
+        elif m.get("role") == "assistant":
+            if history and not history[-1].get("ai_reply"):
+                history[-1]["ai_reply"] = m.get("content", "")
+                history[-1]["action"] = m.get("action", "")
+            else:
+                history.append({
+                    "user_text": "",
+                    "ai_reply": m.get("content", ""),
+                    "action": m.get("action", ""),
+                    "state": "",
+                })
+    return history, summary_text
 
 def _all_root_mastered(knowledge: dict, cognitive: dict) -> bool:
     mastery = {m["concept_id"]: m for m in cognitive["concepts"]}
@@ -367,13 +429,13 @@ def _process_turn(s: dict, content: str) -> dict:
     # 2. 合并「认知诊断 + 教学动作决策」为一次 LLM 调用（Map+Guide 单循环）。
     #    替代原 diagnose + decide_action 两次调用，消除 state→action 跨调用契约断裂。
     focus_concepts = _focus_concept_subset(focus_id, concepts)
-    focus_history = _focus_history(cognitive, focus_id)
+    history, summary = _session_history(s)
     misconceptions = learner_profile.get_misconceptions_for([c.id for c in focus_concepts])
     diagnosis, action_decision = cog.diagnose_and_decide(
         knowledge["goal"], focus_concepts, content, focus_id,
         evidence_count=focus_evidence,
         consecutive_failures=focus_failures,
-        trace=trace, history=focus_history, misconceptions=misconceptions,
+        trace=trace, history=history, summary=summary, misconceptions=misconceptions,
     )
 
     # 2.1 若诊断出误解，沉淀到跨会话长期记忆（学习者画像）
@@ -481,7 +543,8 @@ def _process_turn(s: dict, content: str) -> dict:
         "advance_intent": advance_intent,
         "help_intent": help_intent,
         "should_advance": should_advance,
-        "history": focus_history,
+        "history": history,
+        "summary": summary,
         "trace": trace,
     }
 
@@ -537,16 +600,13 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
     db.update_last_user_diagnosis(sid, ctx["diagnosis"].model_dump())
     ai_msg = {"role": "assistant", "content": reply, "action": action, "decision": decision_result.model_dump(), "trace": ctx["trace"]}
     db.append_messages(sid, [ai_msg])
-    # 本轮结束后，把轨迹压入焦点概念的对话栈（供下一轮诊断/回复关联上下文）
-    _push_dialogue(
-        ctx["cognitive"],
-        ctx.get("focus_id"),
-        ctx.get("content", ""),
-        reply,
-        action,
-        ctx["diagnosis"].state,
-    )
     db.update_session(sid, ctx["cognitive"], ctx["knowledge"], status=status)
+    # 本轮结束后，惰性维护滚动摘要（把超出窗口的旧对话压缩进摘要，供下一轮上下文）
+    s = db.get_session(sid)
+    if s is not None:
+        new_summary = _maybe_summarize(s)
+        if new_summary and new_summary != s.get("summary"):
+            db.update_summary(sid, new_summary)
 
     return {
         "session_id": sid,
@@ -582,7 +642,8 @@ def chat(sid: str, req: ChatRequest):
     if is_stream:
         reply = tutor.generate_tutor_reply(
             Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content,
-            trace=ctx["trace"], history=ctx["history"], knowledge=ctx["knowledge"],
+            trace=ctx["trace"], history=ctx["history"], summary=ctx["summary"],
+            knowledge=ctx["knowledge"],
         )
 
     return _persist(sid, ctx, reply, action, status)
@@ -621,7 +682,8 @@ def chat_stream(sid: str, req: ChatRequest):
             parts: list[str] = []
             for delta in tutor.stream_tutor_reply(
                 Concept(**ctx["focus"]), ctx["diagnosis"], ctx["action"], req.content,
-                trace=ctx["trace"], history=ctx["history"], knowledge=ctx["knowledge"],
+                trace=ctx["trace"], history=ctx["history"], summary=ctx["summary"],
+                knowledge=ctx["knowledge"],
             ):
                 parts.append(delta)
                 yield f"data: {json.dumps({'type': 'token', 'content': delta}, ensure_ascii=False)}\n\n"

@@ -117,28 +117,29 @@ def _rules_suffix() -> str:
     lines += [f"- {r}" for r in rules]
     return "\n".join(lines)
 
-def _diagnosis_history_block(history: list | None) -> str:
-    """把「上一轮追问上下文」注入诊断 prompt（仅取最近一轮，控制 token）。
+def _diagnosis_history_block(history: list | None, summary: str = "") -> str:
+    """把「滚动摘要 + 最近追问上下文」注入诊断 prompt。
 
-    目的：被追问后的补充回答常是指代性/省略性的（如「就是那个」「对，还有 XX」），
-    脱离上一轮追问就无法判断，容易被误判 insufficient。当上一轮动作是 probe 时，
-    把上一轮追问点与学习者上一轮回答一并喂给诊断层，让它能正确关联。
+    summary 为滚动摘要（超出窗口的旧对话已被压缩，需求 #71 需求2）；
+    history 为最近几轮对话轨迹。当最近一轮动作是 probe 时，额外注入上一轮
+    追问点与学习者回答，帮助诊断层关联指代性/省略性回答（如「就是那个」）。
     """
-    if not history:
-        return ""
-    last = history[-1]
-    if last.get("action") != "probe":
-        return ""
-    ai_reply = last.get("ai_reply", "")
-    prev_user = last.get("user_text", "")
-    if not ai_reply and not prev_user:
-        return ""
-    block = "\n\n（对话上下文：本轮回答是对上一轮追问的补充）"
-    if ai_reply:
-        block += f"\n上一轮追问：{ai_reply}"
-    if prev_user:
-        block += f"\n学习者上一轮回答：{prev_user}"
-    return block
+    parts = []
+    if summary:
+        parts.append(f"\n\n（对话摘要：{summary}）")
+    if history:
+        last = history[-1]
+        if last.get("action") == "probe":
+            ai_reply = last.get("ai_reply", "")
+            prev_user = last.get("user_text", "")
+            if ai_reply or prev_user:
+                block = "\n\n（对话上下文：本轮回答是对上一轮追问的补充）"
+                if ai_reply:
+                    block += f"\n上一轮追问：{ai_reply}"
+                if prev_user:
+                    block += f"\n学习者上一轮回答：{prev_user}"
+                parts.append(block)
+    return "".join(parts)
 
 def _misconception_block(misconceptions: dict | None) -> str:
     """把历史误解注入诊断 prompt（提示诊断时留意是否复发）。"""
@@ -354,12 +355,13 @@ def _diagnose_and_decide_with_llm(
     consecutive_failures: int = 0,
     trace: list | None = None,
     history: list | None = None,
+    summary: str = "",
     misconceptions: dict | None = None,
 ) -> tuple[DiagnosticResult, Any] | None:
     """一次 LLM 调用同时产出认知诊断与教学动作决策。
 
     返回 (diagnosis, ActionDecision)；LLM 不可用或输出非法时返回 None。
-    动作必须落在 state 对应的确定性候选集内，否则回退到规则动作（防 LLM 自创）。
+    动作由 LLM 基于完整上下文自主决定（advance=推进、backtrack=回溯）。
     """
     concept_desc = "\n".join(
         f"- {c.id}：{c.name}（{c.summary}）" for c in concepts
@@ -370,7 +372,7 @@ def _diagnose_and_decide_with_llm(
             focus_name = c.name
             break
     focus_line = f"\n\n当前诊断焦点：{focus_name}（{focus_concept_id}）" if focus_name else ""
-    history_block = _diagnosis_history_block(history)
+    history_block = _diagnosis_history_block(history, summary)
     misconception_block = _misconception_block(misconceptions)
     system = _DIAG_DECIDE_SYSTEM + _rules_suffix()
     user = (
@@ -434,6 +436,7 @@ def diagnose_and_decide(
     consecutive_failures: int = 0,
     trace: list | None = None,
     history: list | None = None,
+    summary: str = "",
     misconceptions: dict | None = None,
 ) -> tuple[DiagnosticResult, Any]:
     """合并入口（Map+Guide 单循环）：一次 LLM 调用同时完成诊断与动作决策。
@@ -443,7 +446,7 @@ def diagnose_and_decide(
     """
     result = _diagnose_and_decide_with_llm(
         goal, concepts, user_text, focus_concept_id,
-        evidence_count, consecutive_failures, trace, history, misconceptions,
+        evidence_count, consecutive_failures, trace, history, summary, misconceptions,
     )
     if result is not None:
         return result

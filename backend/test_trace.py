@@ -23,7 +23,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import main  # noqa: E402
 import cognitive  # noqa: E402
-import decision  # noqa: E402
 import tutor  # noqa: E402
 import llm  # noqa: E402
 from schemas import Concept, DiagnosticResult  # noqa: E402
@@ -67,14 +66,16 @@ class TestTracePropagation(unittest.TestCase):
             self.assertIs(kwargs["trace"], trace)
             self.assertEqual(kwargs["trace_label"], "认知诊断")
 
-    def test_decide_action_passes_trace(self):
-        # 离线模式下 decide_action 走规则回退，但 LLM 路径的透传靠 mock 验证
-        with mock.patch.object(decision, "decide_action_llm", return_value=None) as m:
+    def test_diagnose_and_decide_passes_trace(self):
+        # 合并诊断+决策的 trace 透传：mock chat_json 验证 trace 参数被透传
+        with mock.patch.object(cognitive, "chat_json", return_value=None) as m:
             trace: list = []
-            decision.decide_action("partial", 0, diagnosis=_diag(), concept_name="并发", mastery=0.4, trace=trace)
-            # AI_ENABLED=False 时不进入 LLM 分支，但函数签名已接受 trace（不抛异常即通过）
-            # 这里只验证离线路径不报错
-        self.assertTrue(True)
+            cognitive.diagnose_and_decide("目标", [_concept()], "一些内容", "c1", trace=trace)
+            self.assertTrue(m.called)
+            kwargs = m.call_args.kwargs
+            self.assertIn("trace", kwargs)
+            self.assertIs(kwargs["trace"], trace)
+            self.assertEqual(kwargs["trace_label"], "诊断+决策")
 
     def test_tutor_passes_trace(self):
         with mock.patch.object(tutor, "chat_text", return_value="回复") as m:

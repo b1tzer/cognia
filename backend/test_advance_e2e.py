@@ -81,7 +81,7 @@ class TestAdvanceE2E(unittest.TestCase):
             state="insufficient", confidence=0.9, concept_ids=["a"],
             evidence="我不知道", misconception="", missing=[], quality="",
         )
-        ad = decision.ActionDecision(chosen_action="explain", reasons=decision.ActionReason())
+        ad = ActionDecision(chosen_action="explain", reasons=ActionReason())
         with mock.patch.object(cog, "diagnose_and_decide", return_value=(diag, ad)):
             ctx = main._process_turn(s, "我不知道")
         self.assertFalse(ctx["should_advance"])
@@ -95,7 +95,7 @@ class TestAdvanceE2E(unittest.TestCase):
             state="understood", confidence=0.9, concept_ids=["a"],
             evidence="说得对", misconception="", missing=[], quality="deep",
         )
-        ad = decision.ActionDecision(chosen_action="advance", reasons=decision.ActionReason())
+        ad = ActionDecision(chosen_action="advance", reasons=ActionReason())
         with mock.patch.object(cog, "diagnose_and_decide", return_value=(diag, ad)):
             ctx = main._process_turn(s, "线程有就绪、可运行、阻塞、等待等状态")
         self.assertTrue(ctx["should_advance"])
@@ -107,7 +107,7 @@ class TestAdvanceE2E(unittest.TestCase):
             state="partial", confidence=0.7, concept_ids=["a"],
             evidence="方向对但有遗漏", misconception="", missing=[], quality="",
         )
-        ad = decision.ActionDecision(chosen_action="probe", reasons=decision.ActionReason())
+        ad = ActionDecision(chosen_action="probe", reasons=ActionReason())
         with mock.patch.object(cog, "diagnose_and_decide", return_value=(diag, ad)):
             ctx = main._process_turn(s, "线程有就绪、可运行、阻塞等状态")
         self.assertFalse(ctx["should_advance"])

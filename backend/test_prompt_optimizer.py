@@ -111,14 +111,6 @@ class TestExtractSamples(unittest.TestCase):
         self.assertEqual(samples[0]["user_text"], "HTTP 是无状态协议，通过请求响应工作")
 
     @mock.patch.object(optimizer.db, "recent_sessions")
-    def test_extract_decision_action(self, recent):
-        recent.return_value = [_make_session()]
-        samples = optimizer.extract_samples("decision_action", 10)
-        self.assertEqual(len(samples), 1)
-        self.assertEqual(samples[0]["action"], "probe")
-        self.assertEqual(samples[0]["state"], "partial")
-
-    @mock.patch.object(optimizer.db, "recent_sessions")
     def test_extract_tutor(self, recent):
         recent.return_value = [_make_session()]
         samples = optimizer.extract_samples("tutor", 10)
@@ -241,7 +233,7 @@ class TestRunAllCycles(unittest.TestCase):
         # 新增对话轮次达标 → 执行并推进水位
         result = optimizer.run_all_cycles(limit=10)
         self.assertEqual(result["status"], "executed")
-        self.assertEqual(result["optimized"], 4)  # 4 层均 optimized
+        self.assertEqual(result["optimized"], 3)  # 3 层均 optimized（decision_action 已移除）
         advance.assert_called_once()
         save.assert_called_once()
 

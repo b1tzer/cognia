@@ -12,9 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import config
-import decision
 from llm import chat_json
-from schemas import Concept, DiagnosticResult
+from schemas import ActionDecision, ActionReason, Concept, DiagnosticResult
 
 # ---------------------------------------------------------------------------
 # LLM 诊断提示词
@@ -50,26 +49,10 @@ _DIAG_SYSTEM = """你是一名严谨的认知诊断专家。给你一个学习�
 # 诊断 + 动作 合并 prompt（Map+Guide 单循环）
 #
 # 把「认知诊断」与「教学动作决策」合并为一次 LLM 调用：诊断与动作本是一个判断
-# 的两半，拆成两次独立采样会产生跨调用契约（state → action）断裂的风险（正是
-# Java LockSupport 会话死循环的根因）。合并后，state 与 action 在同一推理上下文
-# 产出，物理上不可能矛盾。
+# 的两半，拆成两次独立采样会产生跨调用契约（state → action）断裂的风险。
+# 需求 #71 重构后，动作不再由确定性候选集约束，而是由 LLM 基于完整上下文
+# 自主决定（advance=推进、backtrack=回溯，即「AI 说往哪走」的信号）。
 # ---------------------------------------------------------------------------
-def _action_rules_text(consecutive_failures: int, evidence_count: int) -> str:
-    """生成「state → 合法动作」规则文本，阈值与 decision.build_action_candidates 对齐。
-
-    规则本身是确定性的（只依赖 state / consecutive_failures / evidence_count），
-    由代码在拿到 LLM 输出的 state 后用 build_action_candidates 做二次校验兜底。
-    """
-    return (
-        f"- state=misconceived（有误解）：默认 correct（用反例/反问引导其自我发现矛盾）；"
-        f"若 consecutive_failures >= {config.BACKTRACK_CONSECUTIVE_FAILURES} 或 evidence_count >= 2（连续纠错无效），"
-        f"改选 backtrack（回溯到前置概念重新巩固）。\n"
-        f"- state=insufficient（信息不足）：默认 probe（追问引导其先表达已有理解）；"
-        f"若 evidence_count >= 2（连续信息不足），改选 explain（直接解释降低挫败感）。\n"
-        f"- state=partial（半理解）：默认 probe（追问补全因果链）；"
-        f"若 evidence_count >= {config.STAGNATION_WINDOW}（连续多轮半理解无突破），改选 explain（直接解释打破停滞）。\n"
-        f"- state=understood（理解正确）：选 advance（肯定并推进）。"
-    )
 
 
 _DIAG_DECIDE_SYSTEM = """你是一名严谨的认知诊断专家兼教学决策者。给你学习目标、概念列表、以及学习者对当前焦点概念的理解陈述，你要在**同一次推理**中同时完成两件事：①判断学习者的认知状态；②基于诊断结果选定本轮的苏格拉底教学动作。
@@ -87,8 +70,14 @@ _DIAG_DECIDE_SYSTEM = """你是一名严谨的认知诊断专家兼教学决策�
 - 判断 understood 应聚焦「最终结论的语义正确性」，不被表达过程中的犹豫、自我否定、或"说不清楚"等语气信号误导。
 - 追问兜底：若证据不足以支撑高置信判断，应降低 confidence（< 0.7），宁可判 partial 并触发追问，也不强判 understood 或 misconceived。
 
-【教学动作选择（必须先判定 state，再按 state 选，只能选合法动作，禁止自创）】
-{action_rules}
+【教学动作选择（自主决定，勿被固定规则束缚）】
+- probe（追问）：引导学习者自己补全因果链
+- explain（解释）：直接讲清楚，帮他建立正确理解
+- correct（纠错）：用反例或反问让他自己发现矛盾
+- backtrack（回溯）：建议先回到前置概念巩固
+- advance（继续）：肯定并推进到下一个概念
+
+根据学习者的认知状态、已收集证据、连续失败情况，自主选择最符合当前教学需要的动作；用户明确说"不懂/不会"时优先解释而非继续追问，连续失败或停滞时主动换策略（解释或回溯），理解到位时果断推进。
 
 【输出字段】
 - state / confidence / concept_ids / evidence / misconception / missing / quality
@@ -383,9 +372,7 @@ def _diagnose_and_decide_with_llm(
     focus_line = f"\n\n当前诊断焦点：{focus_name}（{focus_concept_id}）" if focus_name else ""
     history_block = _diagnosis_history_block(history)
     misconception_block = _misconception_block(misconceptions)
-    system = _DIAG_DECIDE_SYSTEM.format(
-        action_rules=_action_rules_text(consecutive_failures, evidence_count)
-    ) + _rules_suffix()
+    system = _DIAG_DECIDE_SYSTEM + _rules_suffix()
     user = (
         f"学习目标：{goal}\n\n概念列表：\n{concept_desc}\n\n"
         f"学习者本轮对焦点概念的理解陈述：\n{user_text}{history_block}{misconception_block}{focus_line}"
@@ -417,22 +404,18 @@ def _diagnose_and_decide_with_llm(
             quality=quality,
         )
 
-        # 解析动作：必须落在 state 对应的确定性候选集内，否则回退规则
+        # 解析动作：仅校验在合法词汇表内（防 LLM 输出非法动作），不再受候选集约束。
+        # 动作由 LLM 基于完整上下文自主决定（advance=推进、backtrack=回溯）。
         action = str(data.get("action", ""))
-        legal = {c["action"] for c in decision.build_action_candidates(
-            state, evidence_count, consecutive_failures
-        )}
-        if action not in legal:
-            action = decision.decide_action_rule(
-                state, evidence_count, consecutive_failures
-            ).chosen_action
+        if action not in ("probe", "explain", "correct", "backtrack", "advance"):
+            action = "probe"
         action_reason = str(data.get("action_reason", ""))
 
-        action_decision = decision.ActionDecision(
+        action_decision = ActionDecision(
             chosen_action=action,
-            reasons=decision.ActionReason(
+            reasons=ActionReason(
                 evidence_cited=diagnosis.evidence,
-                criterion_used="诊断与动作合并判定",
+                criterion_used="诊断与动作合并判定（LLM 自主）",
                 pedagogical_intent=action_reason,
                 confidence=diagnosis.confidence,
             ),
@@ -456,7 +439,7 @@ def diagnose_and_decide(
     """合并入口（Map+Guide 单循环）：一次 LLM 调用同时完成诊断与动作决策。
 
     返回 (diagnosis, ActionDecision)。LLM 不可用时降级：
-    diagnosis 走启发式，action 走确定性规则（候选集首个）。
+    diagnosis 走启发式，action 默认 probe（无 LLM 无法做语义动作决策，保守追问）。
     """
     result = _diagnose_and_decide_with_llm(
         goal, concepts, user_text, focus_concept_id,
@@ -465,8 +448,13 @@ def diagnose_and_decide(
     if result is not None:
         return result
     diagnosis = _heuristic_diagnose(concepts, user_text, focus_concept_id)
-    action_decision = decision.decide_action_rule(
-        diagnosis.state, evidence_count, consecutive_failures
+    action_decision = ActionDecision(
+        chosen_action="probe",
+        reasons=ActionReason(
+            criterion_used="LLM 不可用降级",
+            pedagogical_intent="无 LLM 语义决策能力，保守追问",
+            confidence=1.0,
+        ),
     )
     return diagnosis, action_decision
 

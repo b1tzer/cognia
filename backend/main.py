@@ -26,6 +26,8 @@ import goal_clarify
 import learner_profile
 import tutor
 from schemas import (
+    ActionDecision,
+    ActionReason,
     ChatRequest,
     Concept,
     DiagnosticResult,
@@ -378,15 +380,21 @@ def _process_turn(s: dict, content: str) -> dict:
     if diagnosis.state == "misconceived" and diagnosis.misconception and focus_id:
         learner_profile.record_misconception(focus_id, diagnosis.misconception, diagnosis.confidence)
 
-    # 2.5 推进判定（Map+Guide 单循环核心）：推进不再由多层数值 AND 反推，
-    #     而是「LLM 语义（understood）＋ 两条确定性护栏（用户推进意图 / 步数上限）」
-    #     直接决定 should_advance。推进是默认方向，纠缠是例外。
+    # 2.5 元指令识别（零 token，高于 LLM 语义）：推进/求助是「元对话指令」，
+    #     不是诊断证据，由确定性规则直接路由，不交给诊断层。
     advance_intent = decision.detect_advance_intent(content)
-    # 推进只有两个合法来源：LLM 语义判定 understood，或用户明确的推进元指令。
-    # 「步数上限」不再作为推进来源——它会使用户明确说「我不懂」时仍被强推并伪造
-    # 诊断为 understood（假完成）。防「无限追问」已由 build_action_candidates 的
-    # explain / backtrack 规则 + detect_backtrack_target 的连续失败回溯保证。
-    should_advance = advance_intent or (diagnosis.state == "understood")
+    help_intent = decision.detect_help_intent(content)
+
+    # 最终教学动作：用户元指令 > LLM 自主决策。
+    # 推进不再由 diagnosis.state 反推，而是由 LLM 输出的 action=advance 决定；
+    # 用户元指令（继续/我不懂）覆盖 LLM 语义。诊断层（记忆点）保持诚实。
+    if advance_intent:
+        chosen_action = "advance"
+    elif help_intent:
+        chosen_action = "explain"
+    else:
+        chosen_action = action_decision.chosen_action
+    should_advance = (chosen_action == "advance")
 
     # 3. 更新认知模型
     mastery_map = {m["concept_id"]: m for m in cognitive["concepts"]}
@@ -434,29 +442,23 @@ def _process_turn(s: dict, content: str) -> dict:
 
     cognitive["updated_at"] = _now()
 
-    # 4. 教学决策：动作已在上面由 diagnose_and_decide 合并产出；
-    #    推进时覆盖为 advance（切换焦点由 _resolve_reply 完成）。
-    #    求助意图优先于诊断动作：用户明确说「我不懂/解释一下」→ 直接 explain，
-    #    绕过 insufficient→probe 追问。诊断层（记忆点）仍诚实，不被篡改，
-    #    只覆盖「教学动作」（决策点）——这正是与「决策点/记忆点解耦」的对齐。
-    help_intent = decision.detect_help_intent(content)
-    if should_advance:
-        decision_result = decision.ActionDecision(
+    # 4. 构造最终决策结果（决策点）：元指令覆盖时给出确定性理由，否则用 LLM 的自主决策。
+    #    诊断层（记忆点）仍诚实，不被篡改；只覆盖「教学动作」（决策点），
+    #    与「决策点/记忆点解耦」对齐。
+    if advance_intent:
+        decision_result = ActionDecision(
             chosen_action="advance",
-            reasons=decision.ActionReason(
-                evidence_cited=(
-                    "用户明确推进意图" if advance_intent
-                    else "诊断判定 understood"
-                ),
-                criterion_used="推进判定（Map+Guide）",
+            reasons=ActionReason(
+                evidence_cited="用户明确推进意图",
+                criterion_used="推进元指令（零 token）",
                 pedagogical_intent="当前概念已完成，推进到下一个概念",
                 confidence=1.0,
             ),
         )
     elif help_intent:
-        decision_result = decision.ActionDecision(
+        decision_result = ActionDecision(
             chosen_action="explain",
-            reasons=decision.ActionReason(
+            reasons=ActionReason(
                 evidence_cited="用户明确表达求助/请求讲解意图",
                 criterion_used="求助意图识别（零 token 规则）",
                 pedagogical_intent="直接讲解，并先给领域全景",
@@ -519,9 +521,9 @@ def _persist(sid: str, ctx: dict, reply: str, action: str, status: str) -> dict:
     decision_result = ctx["decision_result"]
     # 完成时统一决策语义为「完成推进」，保证 decision 与 action 一致
     if status == "completed":
-        decision_result = decision.ActionDecision(
+        decision_result = ActionDecision(
             chosen_action="advance",
-            reasons=decision.ActionReason(
+            reasons=ActionReason(
                 criterion_used="完成判定",
                 pedagogical_intent="学习目标已完成",
                 confidence=1.0,

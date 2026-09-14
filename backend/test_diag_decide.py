@@ -1,7 +1,8 @@
 """诊断+动作合并（Map+Guide 单循环）单元测试。
 
-验证 diagnose_and_decide 一次 LLM 调用同时产出诊断与动作，且动作与 state
-在确定性候选集内保持一致；非法动作回退规则；LLM 不可用降级到启发式+规则。
+验证 diagnose_and_decide 一次 LLM 调用同时产出诊断与动作，动作由 LLM 自主决定
+（不再受 state 候选集约束，仅校验在合法词汇表内）；非法动作回退 probe；
+LLM 不可用降级到启发式+默认 probe。
 """
 from __future__ import annotations
 
@@ -47,12 +48,13 @@ class TestDiagnoseAndDecide(unittest.TestCase):
         self.assertIn("认知状态四分类", captured["system"])
         self.assertIn("教学动作选择", captured["system"])
 
-    def test_action_must_be_legal_for_state(self):
-        # state=misconceived 的合法动作是 correct/backtrack，不含 advance
+    def test_action_free_from_state_constraint(self):
+        # 需求1：动作不再受 state 候选集约束，LLM 可自由选择
+        # （即使 state=misconceived，只要 LLM 判断该推进，也可选 advance）
         data = {
             "state": "misconceived", "confidence": 0.8, "concept_ids": ["a"],
             "evidence": "混淆了", "misconception": "搞混了", "missing": [],
-            "quality": "", "action": "advance", "action_reason": "乱选",
+            "quality": "", "action": "advance", "action_reason": "已澄清并理解，推进",
         }
         with mock.patch.object(cog, "chat_json", return_value=data):
             diag, ad = cog.diagnose_and_decide(
@@ -60,8 +62,21 @@ class TestDiagnoseAndDecide(unittest.TestCase):
                 evidence_count=0, consecutive_failures=0,
             )
         self.assertEqual(diag.state, "misconceived")
-        # advance 非法（不在 misconceived 候选集内），回退到规则首个 = correct
-        self.assertEqual(ad.chosen_action, "correct")
+        self.assertEqual(ad.chosen_action, "advance")
+
+    def test_invalid_action_falls_back_to_probe(self):
+        # 非法动作（不在合法词汇表内）回退到默认 probe
+        data = {
+            "state": "partial", "confidence": 0.8, "concept_ids": ["a"],
+            "evidence": "方向对", "misconception": "", "missing": [],
+            "quality": "", "action": "not_a_real_action", "action_reason": "乱选",
+        }
+        with mock.patch.object(cog, "chat_json", return_value=data):
+            diag, ad = cog.diagnose_and_decide(
+                "目标", [_concept()], "我的理解", focus_concept_id="a",
+                evidence_count=0, consecutive_failures=0,
+            )
+        self.assertEqual(ad.chosen_action, "probe")
 
     def test_llm_unavailable_falls_back(self):
         with mock.patch.object(cog, "chat_json", return_value=None):

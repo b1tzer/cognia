@@ -260,13 +260,94 @@ def generate_tutor_reply(
 
 
 # ---------------------------------------------------------------------------
-# 开场白
+# 开场白 + 过渡提问（LLM 生成，去模板化，需求 #71 需求4）
+#
+# 代码只提供结构化信息（目标/概念数/领域地图/焦点概念），措辞交给 LLM 生成，
+# LLM 不可用或失败时降级到确定性模板（保证离线/异常时不阻塞主流程）。
 # ---------------------------------------------------------------------------
+_INTRO_SYSTEM = """你是 Cognia 的 AI 学习导师，负责为一次学习会话生成自然、个性化的开场白。
+
+你会收到结构化信息：学习目标、概念总数、学习者先验水平（novice 零基础 / 有基础）、第一个焦点概念、（可选）领域地图。
+
+要求：
+1. 用自然、有温度、个性化的语言开场，不要套用固定模板。
+2. 简要说明学习目标被拆解成几个概念、它们如何串起来（让学习者看到整体学习路径）。
+3. 引出第一个焦点概念，并抛出一个苏格拉底式提问，引导学习者先表达对这个概念的已有理解。
+4. 若是零基础学习者，语气温和、降低压力，先给「领域地图」再聚焦。
+5. 严禁出现「你能用自己的话说说，X 是什么、解决什么问题吗」这种固定句式，用你自己的方式提问。
+6. 直接输出开场白文本，不要任何解释、前缀或 Markdown 标题。
+"""
+
+_TRANSITION_SYSTEM = """你是 Cognia 的 AI 学习导师，负责在学习者掌握当前概念后，自然地过渡到下一个概念。
+
+你会收到结构化信息：下一个要学的概念名、该概念的简要说明、（可选）领域地图。
+
+要求：
+1. 简短、真诚地肯定学习者已掌握当前概念（不要过度吹捧、不要长篇总结）。
+2. 自然引出下一个概念，点明它与已学内容的关系或它要解决的问题。
+3. 抛出一个苏格拉底式提问，引导学习者先表达对下一个概念的已有理解。
+4. 严禁出现「你能用自己的话说说，X 是什么、解决什么问题吗」这种固定句式，用你自己的方式提问。
+5. 直接输出过渡文本，不要任何解释、前缀或 Markdown 标题。
+"""
+
+
+def _intro_with_llm(knowledge: dict, focus: dict) -> Optional[str]:
+    """LLM 生成自然开场白；失败或 AI 不可用返回 None（降级到模板）。"""
+    goal = knowledge.get("goal", "")
+    concepts = knowledge.get("concepts", [])
+    level = cognitive.infer_prior_level(goal)
+    overview = _dag_overview(knowledge, focus.get("id"))
+    user = (
+        f"学习目标：{goal}\n"
+        f"概念总数：{len(concepts)}\n"
+        f"学习者先验水平：{level}\n"
+        f"第一个焦点概念：{focus.get('name', '')}\n"
+    )
+    if overview:
+        user += f"\n领域地图：\n{overview}\n"
+    return chat_text(_INTRO_SYSTEM, user, temperature=0.7, max_tokens=800, trace_label="开场白")
+
+
+def build_transition(
+    next_focus: dict,
+    knowledge: dict | None = None,
+    trace: Optional[list] = None,
+) -> str:
+    """过渡提问：学习者掌握当前概念后，自然过渡到下一个概念。
+
+    LLM 生成自然过渡，失败降级到确定性模板。next_focus 为下一个焦点概念 dict
+    （含 name/summary/id 等字段，即 knowledge["concepts"] 里的元素）。
+    """
+    name = next_focus.get("name", "下一个概念")
+    summary = next_focus.get("summary", "")
+    user = f"下一个概念：{name}\n"
+    if summary:
+        user += f"概念说明：{summary}\n"
+    overview = _dag_overview(knowledge, next_focus.get("id")) if knowledge else ""
+    if overview:
+        user += f"\n领域地图：\n{overview}\n"
+
+    text = chat_text(
+        _TRANSITION_SYSTEM, user, temperature=0.7, max_tokens=500,
+        trace=trace, trace_label="过渡提问",
+    )
+    if text:
+        return text.strip()
+
+    # 降级模板（LLM 不可用/失败时兜底）
+    return (
+        f"好的，这个点你已经掌握了。我们接着看下一个概念：**{name}**。"
+        f"\n\n在讲解之前，先听听你的理解——你能用自己的话说说，"
+        f"「{name}」是什么、解决什么问题吗？"
+    )
+
+
 def build_intro(knowledge: dict, focus: Optional[dict]) -> str:
-    """开场白：说明已建立的知识模型，并抛出第一个诊断问题。
+    """开场白：LLM 生成自然开场，降级到模板。
 
     对 novice（零基础）用户：先给「领域全景」地图再温和引导，而非一上来就提问；
-    对有基础/进阶用户：保持「先问后教」。
+    对有基础/进阶用户：保持「先问后教」。结构化信息（领域地图等）仍由代码提供，
+    只有措辞交给 LLM 生成（需求 #71 需求4）。
     """
     concepts = knowledge["concepts"]
     if focus is None:
@@ -275,6 +356,12 @@ def build_intro(knowledge: dict, focus: Optional[dict]) -> str:
         return "我已经为你的学习目标建立了知识模型，让我们开始吧。"
     goal = knowledge["goal"]
 
+    # LLM 生成路径（AI 不可用或失败时返回 None，降级到模板）
+    text = _intro_with_llm(knowledge, focus)
+    if text:
+        return text
+
+    # 降级模板
     if cognitive.infer_prior_level(goal) == "novice":
         overview = _dag_overview(knowledge, focus["id"] if focus else None)
         lines = [

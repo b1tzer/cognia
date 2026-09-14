@@ -86,6 +86,7 @@ flowchart LR
   - Store 接 Postgres（`("proficiency", user_id)` 存熟练度、`("profile", user_id)` 存画像）
   - 匿名 `user_id` 通过 runtime context 注入，不塞 State
   - 熟练度增量 Delta 写入（append，不覆盖）
+  - ⚠️ 序列化前置约束：当前 `CogniaState` 存了 Pydantic 对象（`KnowledgeModel` / `Diagnosis` / `VerificationState` 等），msgpack checkpoint 序列化当前仅告警、未来会直接 block（实测警告 `Deserializing unregistered type ... will be blocked in a future version`）。任务⑥ 落地持久化 checkpointer 前，必须先把 state 里的 Pydantic 对象改为 `.model_dump()` 存 dict（或改用 TypedDict 定义字段），恢复时 `.model_validate()` 还原。
 - **验收标准**：同一 `user_id` 跨会话能读到历史熟练度；不同 `user_id` 数据隔离；写库走 Delta 追加。
 - **依赖**：① ⑤
 

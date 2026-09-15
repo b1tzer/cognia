@@ -51,6 +51,39 @@ def _model_to_lines(km: KnowledgeModel) -> list[str]:
     """知识模型 → 便于 LLM 阅读的单行描述列表。"""
     return [f"[{p.id}] {p.name}（{p.description}）" for p in km.points]
 
+def _search_web(query: str, max_results: int = 5) -> list[dict]:
+    """调用本地 SearXNG 元搜索引擎，返回 [{title, url, snippet}] 列表。
+
+    这是 web_search 工具与 explain 工具共用的底层检索实现；任何联网搜索都
+    汇聚到这里，保证检索逻辑唯一、可单点加固（超时、限流、域名过滤等）。
+    """
+    max_results = max(1, min(int(max_results), 10))
+    searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
+    params = urllib.parse.urlencode({"q": query, "format": "json"})
+    req = urllib.request.Request(
+        f"{searxng_url}/search?{params}",
+        headers={"User-Agent": "cognia-agent"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        # 检索失败不阻断讲解，返回空列表，由上层决定降级策略。
+        return []
+
+    results = []
+    for item in (data.get("results") or [])[:max_results]:
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        snippet = str(item.get("content") or "").strip()
+        if not title and not url:
+            continue
+        results.append({
+            "title": title,
+            "url": url,
+            "snippet": snippet[:200],
+        })
+    return results
 
 def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, user_id=None):
     """构建认知模型工具集（闭包注入模型与存储依赖）。
@@ -239,6 +272,9 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
     def explain(point_name: str, point_description: str, user_state: str) -> str:
         """针对用户当前认知状态，用通俗方式讲解一个知识点。
 
+        本工具会**先强制联网检索官方 / 权威资料**，再基于检索结果讲解，
+        确保技术事实准确，并在结尾附「参考来源」链接。
+
         Args:
             point_name: 知识点名称。
             point_description: 知识点一句话描述。
@@ -250,12 +286,28 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
             CognitiveState.UNKNOWN.value: "从零建立：先用生活化类比建立直觉",
         }.get(user_state, "自然讲解")
 
+        # 强制检索：用「知识点 + 官方文档」引导优先命中官方 / 权威站点。
+        search_results = _search_web(f"{point_name} 官方文档 official docs", max_results=5)
+        refs = "\n".join(
+            f"- {r['title']}（{r['url']}）" for r in search_results
+        )
+        if not refs:
+            refs = "（本次未检索到外部资料，请仅基于已确定的技术事实谨慎讲解，不确定处明确说明。）"
+
         result = _get_teacher().invoke([
             ("system", (
-                "你是 Cognia 的教学教练。请用通俗、口语化的方式讲解一个知识点。"
-                f"教学策略：{style_hint}。只输出讲给学习者听的内容，不要暴露诊断标准。"
+                "你是 Cognia 的教学教练。下面是联网检索到的官方 / 权威资料。"
+                "请**严格基于这些资料**讲解知识点，确保技术事实准确；"
+                "若资料与你的先验知识冲突，以资料为准。"
+                "优先采信官方文档、权威站点（如 .org、.edu、官方域名等）。"
+                "讲解末尾用「参考来源」列出主要链接。"
+                "只输出讲给学习者听的内容，不要暴露诊断标准。"
             )),
-            ("human", f"知识点：{point_name}（{point_description}）"),
+            ("human", (
+                f"知识点：{point_name}（{point_description}）\n"
+                f"教学策略：{style_hint}\n\n"
+                f"检索资料：\n{refs}"
+            )),
         ])
         content = result.content if hasattr(result, "content") else str(result)
         return content.strip()
@@ -270,29 +322,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
             query: 搜索查询词（支持中文或英文）。
             max_results: 返回结果数量上限（默认 8，范围 1-10）。
         """
-        max_results = max(1, min(int(max_results), 10))
-        searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
-        params = urllib.parse.urlencode({"q": query, "format": "json"})
-        req = urllib.request.Request(
-            f"{searxng_url}/search?{params}",
-            headers={"User-Agent": "cognia-agent"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-
-        results = []
-        for item in (data.get("results") or [])[:max_results]:
-            title = str(item.get("title") or "").strip()
-            url = str(item.get("url") or "").strip()
-            snippet = str(item.get("content") or "").strip()
-            if not title and not url:
-                continue
-            results.append({
-                "title": title,
-                "url": url,
-                "snippet": snippet[:200],
-            })
-
+        results = _search_web(query, max_results)
         return json.dumps({
             "query": query,
             "count": len(results),

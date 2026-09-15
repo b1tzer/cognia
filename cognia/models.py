@@ -22,10 +22,7 @@
 import json
 import os
 
-from langchain_core.runnables import Runnable
 from langchain_deepseek import ChatDeepSeek
-
-from cognia.schemas import Diagnosis
 
 # ---- 默认模型 ID（对齐 plan §7）----
 DEFAULT_PLANNER_MODEL = "deepseek-v4-flash"
@@ -112,25 +109,24 @@ def get_diagnoser_model() -> ChatDeepSeek:
     )
 
 
-def get_structured_diagnoser() -> Runnable:
-    """返回绑定 Diagnosis schema 的结构化诊断模型。
+def _extract_json(text: str):
+    """从模型输出中提取 JSON（容错 markdown 代码块包裹），返回解析后的对象。
 
-    调用后直接返回 Diagnosis 实例（Pydantic），而非 AIMessage。
-    用于 diagnose 节点的结构化输出（plan §4、任务④验收标准）。
+    优先按数组 `[...]` 提取（知识建模场景输出扁平 JSON 数组），否则回退到
+    对象 `{...}`（结构化输出场景）。供本模块的 invoke_structured 与
+    learning_engine.build_knowledge_model 复用，避免重复实现。
     """
-    return get_diagnoser_model().with_structured_output(Diagnosis)
-
-
-def _extract_json(text: str) -> dict:
-    """从模型输出中提取 JSON 对象（容错 markdown 代码块包裹）。"""
     t = text.strip()
     # 去掉 ```json ... ``` 包裹
     if t.startswith("```"):
         t = t.strip("`")
         if t.startswith("json"):
             t = t[4:]
-    start = t.find("{")
-    end = t.rfind("}")
+    start = t.find("[")
+    end = t.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        start = t.find("{")
+        end = t.rfind("}")
     if start != -1 and end != -1 and end > start:
         t = t[start:end + 1]
     return json.loads(t)
@@ -173,50 +169,6 @@ def structured_output(model, schema, messages):
     if result is not None:
         return result
     return invoke_structured(model, schema, messages)
-
-
-def extract_reasoning_from_message(message) -> str:
-    """从 LangChain 消息中提取思考链（reasoning_content）。
-
-    ChatDeepSeek 会把 DeepSeek 的 reasoning_content 放进
-    `message.additional_kwargs["reasoning_content"]`（流式为逐 delta，非流式为完整
-    文本）。此函数统一提取，供 UI 展示「思考过程」。
-    """
-    if message is None:
-        return ""
-    additional = getattr(message, "additional_kwargs", None) or {}
-    return additional.get("reasoning_content") or ""
-
-
-def structured_output_with_reasoning(model, schema, messages):
-    """结构化输出，并尽力提取思考内容（reasoning_content）。
-
-    返回 `(parsed, reasoning_text)`。用于对话 Agent 场景：既要结构化决策结果，
-    又要拿到思考链给用户看（通用 Agent 基座能力）。
-
-    - 真实 ChatDeepSeek：`with_structured_output(include_raw=True)` 返回
-      `{"raw": AIMessage, "parsed": ...}`，从 raw 提取 reasoning_content。
-    - 测试桩：`with_structured_output` 只接受 `schema` 一个位置参数，传
-      `include_raw=True` 会抛 TypeError，此时回退普通结构化输出、reasoning 为空，
-      保证离线测试兼容。
-    """
-    try:
-        bound = model.with_structured_output(schema, include_raw=True)
-    except TypeError:
-        # 测试桩（ScriptedLLM）不支持 include_raw：回退普通结构化输出
-        return structured_output(model, schema, messages), ""
-
-    raw_result = bound.invoke(messages)
-    if isinstance(raw_result, dict):
-        parsed = raw_result.get("parsed")
-        raw = raw_result.get("raw")
-        reasoning = extract_reasoning_from_message(raw)
-        if parsed is not None:
-            return parsed, reasoning
-        # parsed 为 None（模型未调用工具）→ 走降级解析
-        return structured_output(model, schema, messages), ""
-    # 非 dict（如测试桩直接返回 Pydantic 对象）
-    return raw_result, ""
 
 
 def get_conversation_agent_model() -> ChatDeepSeek:

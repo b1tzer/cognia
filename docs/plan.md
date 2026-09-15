@@ -3,15 +3,15 @@
 > 本文档是 Cognia 的「怎么做」方案，将 spec v2.0 与 clarifications 的业务决策翻译为可落地到代码的技术设计。
 > 已确认的关键决策（见 §9）来自产品负责人对 Plan 草案的逐条拍板。
 
-## 1. 核心架构判断：单 Agent + 单 Stateful Graph 多节点
+## 1. 核心架构判断：单 Agent 流式 ReAct + 工具内三层闸门
 
 **Cognia 的探测、诊断、干预、回溯，本质是同一个「教学教练」的不同能力面，而非需要不同专长的独立角色。** 它们共享同一份知识模型、同一份认知状态、同一个聚焦知识点，拆成多 Agent 只会引入协调税与状态同步成本。
 
-因此 MVP 架构 = **单个 LangGraph `StateGraph`，用「多个节点」表达不同职责，而非「多个 Agent」**。
+因此 MVP 架构 = **单个流式 ReAct Agent**（LangGraph 原生 `create_react_agent`，见 `server.py`），而非固定 6 节点的非流式流水线：
 
-- 诊断的确定性靠**独立、更严格的 prompt + 更低的 temperature** 锁死，而非派独立 Agent。
-- 循环控制靠**纯逻辑节点**（`select_next`，非 LLM）完成。
-- 教学职责拆分靠**状态机节点**实现。
+- 诊断的确定性靠**独立、更严格的 diagnoser prompt + 低 temperature** 锁死（`learning_engine.py`）。
+- 认知裁决权**封装在工具 `propose_diagnosis` 内部**（诊断 → 双重验证 → 状态机三层闸门），Agent 只能「提议」，无直写长期状态的权限（宪法 §4 / state-machine §5）。
+- 教学职责拆分靠**认知工具集**（`tools.py`）实现，工具签名只暴露 LLM 能填写的业务参数。
 
 > 这与宪法 §3「能单干就不拆 agent」一致 [[memory:mgd696hp]]。多 Agent 化留待北极星验证通过、出现「需要明显不同专长」的真实需求后再评估。
 
@@ -20,81 +20,92 @@
 ```mermaid
 flowchart TB
     subgraph P["表现层 UI"]
-        UI["Chainlit 对话界面（流式 + HITL 中断）"]
+        FE["Next.js 前端（CopilotKit React）"]
+    end
+    subgraph A["接入层 AG-UI"]
+        API["FastAPI 服务（cognia/server.py，LangGraphAGUIAgent）"]
     end
     subgraph O["编排层 LangGraph"]
-        G["StateGraph（教学核心闭环）"]
+        G["流式 ReAct Agent（create_react_agent）"]
+        T["认知工具集（tools.py，三层闸门）"]
+        LE["学习引擎（learning_engine.py）"]
     end
     subgraph M["记忆层"]
         CP["Checkpointer（短期：会话状态）"]
-        ST["Store（长期：熟练度 JSON + 画像）"]
+        ST["Store（长期：熟练度 + 画像 + 知识模型）"]
     end
     subgraph L["模型层 LLM"]
         LLM["DeepSeek（LangChain 集成，模型无关）"]
     end
-    UI --> G
+    FE -->|AG-UI SSE /api/copilotkit| API
+    API --> G
+    G --> T
+    T --> LE
     G --> CP
-    G --> ST
+    T --> ST
     G --> LLM
+    LE --> LLM
 ```
 
-## 3. LangGraph 状态机设计
+数据流说明：Next.js 前端通过 CopilotKit Runtime（`/api/copilotkit`）以 AG-UI 协议（SSE）
+连到 FastAPI 服务；`LangGraphAGUIAgent` 包装 `create_react_agent` 图，把流式事件映射为
+AG-UI 的 `REASONING_*` / `TOOL_CALL_*` / `TEXT_MESSAGE_*` 事件，前端流式渲染思考链与工具卡片。
 
-### 3.1 核心闭环 → 节点映射
+## 3. Agent 与工具设计
 
-spec 核心闭环「探测 → 表达 → 诊断 → 干预 → 再表达 → 再诊断」映射为 6 个节点：
+### 3.1 流式 ReAct 主循环（server.py）
 
-| 节点 | 职责 | 对应闭环步骤 | 是否 LLM 调用 |
-|------|------|-------------|--------------|
-| `setup_goal` | 接收目标，过大则引导缩小 | 前置 | ✅ 是 |
-| `build_model` | 生成知识模型（5~15 知识点 + 依赖） | 前置 | ✅ 是 |
-| `probe` | 生成探针问题（AI 主动出击） | 探测 | ✅ 是 |
-| `diagnose` | 基于表达判断五态 + 置信度 + 证据 | 诊断 | ✅ 是 |
-| `intervene` | 生成干预动作（追问/解释/纠错/回溯） | 干预 | ✅ 是 |
-| `select_next` | 掌握后选下一个知识点，或结束 | 循环控制 | ⚪ 否（纯逻辑） |
-
-### 3.2 状态机图
+核心闭环由 LangGraph 原生 `create_react_agent`（prebuilt）承载，不再手写 ReAct 循环。
+`build_agent()` 在 `server.py` 中完成组装：`create_react_agent(model=teacher,
+tools=tool_list, prompt=REACT_TEACHER_SYSTEM_PROMPT, checkpointer=...)`，框架内置
+`ToolNode`、`bind_tools`、流式 `tool_call_chunks` 累积、工具执行、消息管理与
+checkpoint 持久化。
 
 ```mermaid
 flowchart TD
-    START([用户输入]) --> A[setup_goal]
-    A -->|目标过大| A
-    A -->|目标合适| B[build_model]
-    B --> C[probe]
-    C --> WAIT{{interrupt：等待用户表达}}
-    WAIT --> D[diagnose]
-    D -->|高置信度·非 mastered| E[intervene]
-    D -->|高置信度·mastered| V[双重验证：概念 + 场景辨析]
-    D -->|中置信度·原地冻结| C
-    D -->|低置信度·不改变状态| C
-    E --> C
-    V -->|通过| S[select_next]
-    V -->|不通过| E
-    S -->|有下一个| C
-    S -->|全部掌握/结束| END([会话结束])
+    START([用户输入]) --> AGENT[create_react_agent 图]
+    AGENT --> LOOP{{ReAct 主循环：LLM ↔ ToolNode}}
+    LOOP -->|有工具调用| TOOL[ToolNode 执行工具]
+    TOOL --> LOOP
+    LOOP -->|无工具调用| END([返回最终回复])
 ```
 
-### 3.3 两个 LangGraph 关键机制
+- **流式**：`graph.astream(...)` 逐事件产出，由 `ag-ui-langgraph` 映射为 AG-UI 的
+  `REASONING_*` / `TOOL_CALL_*` / `TEXT_MESSAGE_*` 事件，前端边生成边渲染思考链与工具卡片。
+- **工具执行**：由框架 `ToolNode` 负责；工具内部可能调用同步 Store，与
+  `AsyncPostgresStore` 的线程模型兼容（见 `memory.py` `get_store` 注释）。
 
-1. **`interrupt()` 处理「等待用户表达」**：`probe` 生成问题后，用 `interrupt({"question": ...})` 暂停图，把问题交给用户；用户回答后 resume，答案作为 state 喂给 `diagnose`。这是 Cognia「AI 主动提问 → 用户回答」节奏的原生支撑，也是 HITL 的正确用法。
+### 3.2 认知工具集（tools.py，5 个工具）
 
-2. **`checkpointer` + `thread_id` 持久化会话**：整个学习会话是长生命周期 thread，每轮对话 resume 同一个 thread，state 自动恢复。**职责边界**：`thread_id` 仅标识「一次会话」，Checkpointer 只负责会话内的状态恢复；跨会话的长期认知状态（Proficiency JSON）必须靠 Store 按 `user_id` 持久化，不能依赖 Checkpointer（呼应 clarifications Q6）。
+| 工具 | 类型 | 职责 | 副作用 |
+|------|------|------|--------|
+| `read_learner_state(point_id)` | 读 | 读取当前用户对某知识点的五态认知状态 | 无 |
+| `build_learning_goal(goal)` | 写 | load-or-build 构建/复用知识模型（`point_id` 跨会话稳定） | 首次构建冻结写 Store |
+| `generate_probe(point_name, point_description)` | 教学 | 生成开放式探针问题，引导学生表达 | 无 |
+| `propose_diagnosis(...)` | 写 | 提议诊断，内部强制三层闸门裁决是否迁移状态 | 迁移则增量写 Store |
+| `explain(point_name, point_description, user_state)` | 教学 | 按认知状态讲解（partial 引导式 / misconception 颠覆式 / unknown 从零建立） | 无 |
 
-### 3.4 循环防失控
+工具由工厂 `build_cognia_tools(diagnoser, planner, teacher, store, user_id)` 构建：
+依赖闭包注入，工具签名只暴露 LLM 能填写的简单参数；`user_id` 由工厂闭包注入，
+**不暴露给 LLM**（宪法 §5：LLM 只能填业务参数，不能伪造身份）。
 
-State 内置两个计数器（呼应 spec §6 硬约束）：
+### 3.3 三层闸门：诊断 ≠ 迁移（安全边界核心）
 
-- `intervention_fail_count`：单知识点干预失败计数，≥3 触发回溯或挂起（spec「干预循环硬性约束」）。
-- `loop_count` + `recursion_limit`：总循环上限，兜底防烧钱。
+`propose_diagnosis` 内部完整复用学习引擎的三层闸门，Agent 无法旁路：
 
-### 3.5 双重验证状态（mastered 判定的状态化）
+1. **诊断**（`run_diagnosis`）：独立严格 diagnoser prompt 判定五态 + 置信度（高/中/低）+ 用户原话证据。
+2. **双重验证**（`run_verification`）：仅当诊断候选为 `mastered` 时触发，要求「概念解释 + 场景辨析」两份独立正向证据全过。
+3. **状态机裁决**（`resolve_migration`）：高置信度是唯一迁移门槛；中/低置信度一律不迁移；拓扑合法性由 `can_transition` 锁定。
 
-mastered 判定必须「概念解释 + 场景辨析」双过（spec US-5），且该验证过程必须被 State 显式记录，而非无状态摆设：
+任何 `proficiency[point_id] = diagnosis.state` 的直写都是旁路，属违规（state-machine §5 规则 1）。
 
-- State 持有 `verification: VerificationState` 字段，记录两类验证分别是否通过、各自证据、以及当前进行到哪一步。
-- `diagnose` 节点只产出「诊断结果」（五态 + 置信度 + 证据）；它可判断「当前表现看起来达到 mastered」，但不能直接完成状态迁移。
-- 「验证是否闭环」由纯逻辑节点判断：`concept == PASSED && scenario == PASSED` 才允许状态迁移到 mastered（见 state-machine.md）。
-- **`mastered` 是「最终状态迁移的结果」，不是单次 `diagnose` 的直接产物**：任何进入 mastered 的迁移都必须完成概念解释 + 场景辨析双重验证，避免出现 `diagnosis.state == MASTERED` 直接写长期状态的旁路。
+### 3.4 会话与身份的持久化边界
+
+- **`thread_id` 标识「一次会话」**：Checkpointer 只负责会话内消息历史的恢复。
+- **`user_id` 标识「一个人」**：跨会话的长期认知状态靠 Store 按 `user_id` 隔离持久化，
+  绝不依赖 Checkpointer（呼应 clarifications Q6）。
+- 前端生成匿名 UUID → localStorage 持久化 → 作为 `threadId` / `user_id` 的来源，
+  后续无缝升级真实身份体系时仅替换标识来源。
 
 ## 4. 数据模型（Pydantic Schema 形状）
 
@@ -141,7 +152,7 @@ class ValidationResult(str, Enum):
     PASSED = "passed"          # 验证通过
     FAILED = "failed"          # 验证失败
 
-# 双重验证状态（plan §3.5：mastered 判定需「概念解释 + 场景辨析」双过）
+# 双重验证状态（mastered 判定需「概念解释 + 场景辨析」双过，见 state-machine.md）
 class VerificationState(BaseModel):
     concept: ValidationResult                            # 概念解释验证结果
     scenario: ValidationResult                           # 场景 / 反例辨析验证结果
@@ -168,21 +179,33 @@ class Intervention(BaseModel):
 | 记忆层 | 技术实现 | 存什么 | namespace |
 |--------|---------|--------|-----------|
 | 短期 | Checkpointer（Supabase Postgres） | 会话 state、消息历史 | 按 `thread_id` |
-| 长期·熟练度 | Store（Supabase Postgres） | Proficiency JSON | `("proficiency", user_id)` |
+| 长期·熟练度 | Store（Supabase Postgres） | Proficiency JSON（增量 Delta） | `("proficiency", user_id)` |
 | 长期·画像 | Store（Supabase Postgres） | 基础偏好（沟通风格/语言） | `("profile", user_id)` |
+| 长期·知识模型 | Store（Supabase Postgres） | 冻结的知识模型（load-or-build） | `("knowledge_model", user_id)` |
 
 **关键落地**：
 
 - **认知 Profile 进化**（宪法 §5）：`("profile", user_id)` 存稳定偏好，`("proficiency", user_id)` 存动态熟练度，两类分开 namespace，均增量 Delta 更新。
+- **知识模型持久化**（Task ⑨）：`("knowledge_model", user_id)` 以归一化 goal 为 key 冻结知识模型，保证 `point_id` 跨会话稳定（否则每会话重生成的 LLM 输出会导致按 `point_id` 读回历史熟练度查空）。
 - **身份注入**（宪法 §5）：`user_id` 通过 runtime context 注入，不塞进 State。
 - **匿名标识**（clarifications Q6）：前端生成 UUID → 客户端持久化 → 后端作为 `user_id` 隔离映射；后续无缝升级 Supabase Auth，仅替换标识来源。
 - **证据链入 Proficiency**：每次状态迁移的 `ProficiencyEntry` 必须携带 `from_state → to_state + evidence + timestamp`，保证「为什么判成 partial」可追溯，支撑诊断准确率审计与认知变化分析。
+- **生产工厂单例 + 共享连接池**：`get_checkpointer()` 返回 `AsyncPostgresSaver`（`server` 用 `astream`，同步 `PostgresSaver` 未实现 `aget_tuple` 会抛 `NotImplementedError`）；Checkpointer 与 Store 复用同一个 `AsyncConnectionPool`，避免多池竞争与连接数随会话数线性增长。
 - **MVP 不引入 pgvector**：Proficiency 是结构化精确读取（`user_id + point_id → 状态`），无需语义向量检索；待需要「从历史学习记录语义召回相关认知证据」时再引入。
 
 ## 6. 接口与前端
 
-- **UI 选型**：Chainlit。原生支持流式对话 + HITL 中断控制（interrupt），不做 Streamlit。
-- **MVP 暂不引入 FastAPI**：Chainlit 直接驱动 LangGraph 运行，砍掉 API 转发层。北极星验证通过后再重构为「FastAPI API 层 + Chainlit 调 API」。
+- **前端**：Next.js（App Router）+ CopilotKit React（`@copilotkit/react-core/v2`），
+  单一入口 `frontend/app/page.tsx`，渲染 `CopilotChat`。
+- **后端**：FastAPI（`cognia/server.py`），用 `LangGraphAGUIAgent` 包装 `create_react_agent`
+  图，通过 `add_langgraph_fastapi_endpoint` 暴露 AG-UI 协议端点（路径 `/`）。
+- **协议**：AG-UI over SSE（`/api/copilotkit`）。前端 CopilotKit Runtime 转发到
+  FastAPI 服务；思考链映射为 `REASONING_*` 事件，工具调用映射为 `TOOL_CALL_*` 事件，
+  前端自动渲染思考过程与工具卡片。
+- **会话持久化**：前端 `localStorage` 持久化 `threadId`，刷新后读回同一 `thread_id`，
+  后端 Checkpointer 按 `thread_id` 恢复历史消息（避免 React remount 后重新 mint 新 UUID）。
+- **对话管理**：CopilotKit 不内置会话列表，多会话切换 / 列表 / 删除需在
+  Next.js 前端自行实现（`threadId` 集合 + Checkpointer 查询），属后续排期项。
 
 ## 7. 模型路由策略
 
@@ -204,9 +227,9 @@ class Intervention(BaseModel):
 
 | # | 决策点 | 结论 |
 |---|--------|------|
-| 1 | 核心架构 | 单 Agent + 单 Stateful Graph 多节点 |
-| 2 | 前端选型 | Chainlit |
-| 3 | FastAPI 时机 | 方案 A：MVP 暂不引入，Chainlit 直接驱动 |
+| 1 | 核心架构 | 单 Agent 流式 ReAct（`bind_tools` + `astream`）+ 工具内三层闸门 |
+| 2 | 前端选型 | CopilotKit（AG-UI）+ Next.js |
+| 3 | 接入层 | FastAPI + `LangGraphAGUIAgent`（AG-UI SSE） |
 | 4 | 标准知识域 | Spring AOP |
-| 5 | 数据模型与长期记忆 | 完全认可（五态 + 置信度分级 + 双 namespace + 匿名标识） |
+| 5 | 数据模型与长期记忆 | 五态 + 置信度分级 + 三 namespace（proficiency / profile / knowledge_model）+ 匿名标识 |
 | 6 | 模型路由 | 默认 deepseek-v4-flash / deepseek-v4-pro，LangChain 抽象留切换护栏 |

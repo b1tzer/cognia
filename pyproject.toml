@@ -29,6 +29,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cognia"]
-
-[tool.pytest.ini_options]
-addopts = "--ignore=tests/_deprecated"

@@ -10,8 +10,6 @@
 「什么状态变化是合法的」以及承载这些状态的读写。
 """
 
-import json
-
 from pydantic import BaseModel, Field
 
 from cognia import models
@@ -154,26 +152,6 @@ def _load_knowledge_model(value: dict | None) -> KnowledgeModel | None:
 
 # ---- 知识模型构建 ----
 
-def _extract_json(text: str):
-    """从模型输出中提取 JSON（容错 markdown 代码块包裹），返回解析后的对象。
-
-    优先按数组 `[...]` 提取（知识建模用扁平数组），否则回退到对象 `{...}`。
-    """
-    t = text.strip()
-    if t.startswith("```"):
-        t = t.strip("`")
-        if t.startswith("json"):
-            t = t[4:]
-    start = t.find("[")
-    end = t.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        start = t.find("{")
-        end = t.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        t = t[start:end + 1]
-    return json.loads(t)
-
-
 def build_knowledge_model(planner, goal: str) -> KnowledgeModel:
     """构建知识模型：普通文本调用 + 扁平 JSON 数组解析。
 
@@ -197,7 +175,7 @@ def build_knowledge_model(planner, goal: str) -> KnowledgeModel:
     if isinstance(result, KnowledgeModel):
         return result
     text = result.content if hasattr(result, "content") else str(result)
-    data = _extract_json(text)
+    data = models._extract_json(text)
     points = [KnowledgePoint.model_validate(p) for p in data]
     return KnowledgeModel(goal=goal, points=points)
 

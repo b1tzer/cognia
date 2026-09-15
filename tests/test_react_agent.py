@@ -1,182 +1,124 @@
-"""cognia.react_agent 共享主循环单元测试。
+"""cognia.server 现役 ReAct 链路（LangGraph create_react_agent）集成测试。
 
-使用假 async-agent（预设 chunk 序列）离线验证：
-1. tool_call_chunks 正确累积为完整 tool_calls；
-2. 思考 / 文本 token 通过统一 emit 事件通道逐块发出；
-3. 工具执行 + 本轮新增消息返回（不原地修改传入 history）；
-4. 最终回复返回与多轮循环终止。
+验证现役接入层 `server.build_agent()` 组装的标准 ReAct agent：
+1. 无工具调用时正常返回文本回复；
+2. 有工具调用时 ToolNode 正确执行工具并进入下一轮；
+3. checkpointer 按 thread_id 持久化，重编译后同 thread_id 仍能恢复历史。
+
+全部使用继承 BaseChatModel 的 fake 模型离线运行，不依赖 DeepSeek API。
 """
 
-import asyncio
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import PrivateAttr
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
-
-from cognia.react_agent import (
-    _accumulate_tool_calls,
-    _parse_tool_calls,
-    _run_agent_loop,
-)
+from cognia import models
+from cognia.server import build_agent
 
 
-class _Chunk:
-    """模拟 AIMessageChunk：content / additional_kwargs.reasoning_content / tool_call_chunks。"""
+class _FakeModel(BaseChatModel):
+    """按预设 AIMessage 序列依次返回的假模型。
 
-    def __init__(self, content="", reasoning="", tool_call_chunks=None):
-        self.content = content
-        self.additional_kwargs = {"reasoning_content": reasoning} if reasoning else {}
-        self.tool_call_chunks = tool_call_chunks or []
+    create_react_agent 会调用 `model.bind_tools(tools)` 再同步 `invoke`；
+    这里 bind_tools 记录工具并返回 self，`_generate` 弹出预设脚本。
+    """
 
+    @property
+    def _llm_type(self) -> str:
+        return "fake-chat-model"
 
-class _FakeAgent:
-    """按预设 chunk 轮次返回的假 bind_tools 模型。"""
+    _script: list = PrivateAttr(default_factory=list)
+    _bound_tools: list | None = PrivateAttr(default=None)
+    invocations: int = 0
 
-    def __init__(self, rounds):
-        self._rounds = list(rounds)
-        self.messages_seen = []
+    def __init__(self, script):
+        super().__init__()
+        self._script = list(script)
 
-    async def astream(self, messages):
-        self.messages_seen.append(messages)
-        assert self._rounds, "fake agent rounds exhausted"
-        for chunk in self._rounds.pop(0):
-            yield chunk
+    def bind_tools(self, tools, **kwargs):
+        self._bound_tools = list(tools)
+        return self
 
-
-@tool
-def read_learner_state(point_id: str) -> str:
-    """读取当前用户对某知识点的认知状态。"""
-    return "partial"
-
-
-# ---- 纯函数：tool_call_chunks 累积与解析 ----
-
-def test_accumulate_and_parse_tool_calls():
-    acc = {}
-    chunks = [
-        {"index": 0, "name": "read_learner_state", "args": "", "id": "call_1", "type": "tool_call_chunk"},
-        {"index": 0, "name": None, "args": '{"point_id": ', "id": None, "type": "tool_call_chunk"},
-        {"index": 0, "name": None, "args": '"aop-concept"}', "id": None, "type": "tool_call_chunk"},
-    ]
-    _accumulate_tool_calls(acc, chunks)
-    calls = _parse_tool_calls(acc)
-
-    assert len(calls) == 1
-    assert calls[0]["name"] == "read_learner_state"
-    assert calls[0]["id"] == "call_1"
-    assert calls[0]["args"] == {"point_id": "aop-concept"}
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.invocations += 1
+        msg = self._script.pop(0) if self._script else AIMessage(content="")
+        return ChatResult(generations=[ChatGeneration(message=msg)])
 
 
-def test_parse_tool_calls_bad_json_tolerated():
-    """args 非法 JSON 时降级为空 dict，不抛异常。"""
-    acc = {0: {"id": "call_1", "name": "x", "args": "{bad json"}}
-    calls = _parse_tool_calls(acc)
-    assert calls == [{"id": "call_1", "name": "x", "args": {}}]
+def _install_fake_model(monkeypatch, script):
+    model = _FakeModel(script)
+    monkeypatch.setattr(models, "get_conversation_agent_model", lambda: model)
+    return model
 
 
-# ---- 集成：两轮 ReAct（工具轮 + 最终回复轮）----
+def test_plain_reply(monkeypatch):
+    """无工具调用：直接返回文本回复。"""
+    model = _install_fake_model(monkeypatch, [AIMessage(content="你好，我是 Cognia")])
 
-def test_run_agent_loop_two_rounds():
-    rounds = [
-        # 第一轮：思考 → 文本 → 工具调用
+    graph = build_agent()
+    result = graph.invoke(
+        {"messages": [HumanMessage(content="hi")]},
+        {"configurable": {"thread_id": "t1"}},
+    )
+
+    assert result["messages"][-1].content == "你好，我是 Cognia"
+    assert model.invocations == 1
+
+
+def test_executes_tool(monkeypatch):
+    """有工具调用：ToolNode 执行 read_learner_state，再进入最终回复轮。"""
+    model = _install_fake_model(
+        monkeypatch,
         [
-            _Chunk(reasoning="先查学生状态"),
-            _Chunk(content="我查一下你的状态"),
-            _Chunk(tool_call_chunks=[
-                {"index": 0, "name": "read_learner_state", "args": "", "id": "call_1", "type": "tool_call_chunk"},
-            ]),
-            _Chunk(tool_call_chunks=[
-                {"index": 0, "name": None, "args": '{"point_id": "aop-concept"}', "id": None, "type": "tool_call_chunk"},
-            ]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_learner_state",
+                        "args": {"point_id": "aop-concept"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="你目前是部分掌握"),
         ],
-        # 第二轮：思考 → 最终回复（无工具）
-        [
-            _Chunk(reasoning="状态是 partial"),
-            _Chunk(content="你目前对 AOP 是部分掌握"),
-        ],
-    ]
-    agent = _FakeAgent(rounds)
-    tools_by_name = {"read_learner_state": read_learner_state}
-    messages = [HumanMessage(content="我 AOP 掌握得怎么样？")]
+    )
 
-    events = []
+    graph = build_agent()
+    result = graph.invoke(
+        {"messages": [HumanMessage(content="我 AOP 掌握得怎么样")]},
+        {"configurable": {"thread_id": "t1"}},
+    )
 
-    def emit(event_type, payload):
-        events.append((event_type, payload))
-
-    async def collect():
-        final, new_messages = await _run_agent_loop(agent, tools_by_name, messages, emit)
-        return final, new_messages
-
-    final, new_messages = asyncio.run(collect())
-
-    reasoning_parts = []
-    text_parts = []
-    tool_starts = []
-    tool_results = []
-    turn_ends = []
-    for event_type, payload in events:
-        if event_type == "reasoning":
-            reasoning_parts.append(payload["text"])
-        elif event_type == "text":
-            text_parts.append(payload["text"])
-        elif event_type == "tool_start":
-            tool_starts.append((payload["name"], payload["args"]))
-        elif event_type == "tool_result":
-            tool_results.append((payload["name"], payload["result"]))
-        elif event_type == "turn_end":
-            turn_ends.append(payload["has_tool_calls"])
-
-    assert final == "你目前对 AOP 是部分掌握"
-    assert "".join(reasoning_parts) == "先查学生状态状态是 partial"
-    assert "".join(text_parts) == "我查一下你的状态你目前对 AOP 是部分掌握"
-
-    assert tool_starts == [("read_learner_state", {"point_id": "aop-concept"})]
-    assert tool_results == [("read_learner_state", "partial")]
-
-    # 轮次边界：第一轮（工具轮）True，第二轮（最终回答轮）False
-    assert turn_ends == [True, False]
-
-    # 本轮新增消息：AI(带 tool_calls) + Tool + AI(最终)
-    assert len(new_messages) == 3
-    assert isinstance(new_messages[0], AIMessage)
-    assert new_messages[0].tool_calls[0]["name"] == "read_learner_state"
-    assert isinstance(new_messages[1], ToolMessage)
-    assert new_messages[1].content == "partial"
-    assert isinstance(new_messages[2], AIMessage)
-    assert new_messages[2].content == "你目前对 AOP 是部分掌握"
-
-    # 传入 history 不被原地修改（共享主循环的工作副本语义）
-    assert len(messages) == 1
-    assert isinstance(messages[0], HumanMessage)
+    messages = result["messages"]
+    tool_msgs = [m for m in messages if m.type == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].name == "read_learner_state"
+    assert "unassessed" in tool_msgs[0].content
+    assert messages[-1].content == "你目前是部分掌握"
+    assert model.invocations == 2
 
 
-def test_run_agent_loop_unknown_tool_returns_error_text():
-    """未知工具名：执行事件收到错误文本，会话不崩。"""
-    rounds = [
-        [
-            _Chunk(tool_call_chunks=[
-                {"index": 0, "name": "no_such_tool", "args": '{}', "id": "call_x", "type": "tool_call_chunk"},
-            ]),
-        ],
-        [
-            _Chunk(content="查完了"),
-        ],
-    ]
-    agent = _FakeAgent(rounds)
-    tools_by_name = {}
-    messages = [HumanMessage(content="hi")]
+def test_checkpointer_recovers_history(monkeypatch):
+    """同 saver + 同 thread_id：重编译 graph 后仍能恢复历史消息。"""
+    model = _install_fake_model(
+        monkeypatch,
+        [AIMessage(content="第一次回复"), AIMessage(content="第二次回复")],
+    )
 
-    tool_results = []
+    saver = InMemorySaver()
+    config = {"configurable": {"thread_id": "t1"}}
 
-    def emit(event_type, payload):
-        if event_type == "tool_result":
-            tool_results.append((payload["name"], payload["result"]))
+    graph = build_agent(checkpointer=saver)
+    graph.invoke({"messages": [HumanMessage(content="你好")]}, config)
 
-    async def collect():
-        final, _ = await _run_agent_loop(agent, tools_by_name, messages, emit)
-        return final
+    # 模拟前端刷新：重编译 graph，但复用同一 saver 实例与 thread_id
+    graph2 = build_agent(checkpointer=saver)
+    result = graph2.invoke({"messages": [HumanMessage(content="继续")]}, config)
 
-    final = asyncio.run(collect())
-    assert final == "查完了"
-    assert tool_results[0][0] == "no_such_tool"
-    assert "未知工具" in tool_results[0][1]
+    human_texts = [m.content for m in result["messages"] if m.type == "human"]
+    assert human_texts == ["你好", "继续"]
+    assert result["messages"][-1].content == "第二次回复"

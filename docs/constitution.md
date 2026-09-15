@@ -26,7 +26,7 @@
 | 数据库 | **Supabase 托管**（底层 Postgres + pgvector） | 用空间换时间，优先保证「快」；一个库同时承担 Checkpointer + Store + 向量检索 |
 | 向量检索 | pgvector（Supabase 内嵌） | 避免引入独立向量库的运维成本 |
 | Web 框架 | FastAPI | 异步、快、现代、生态好 |
-| 前端（MVP） | **Chainlit 或 Streamlit** | Python 极速 UI 验证，确保能体验真实流式对话体感，不走纯脚本 |
+| 前端（MVP） | **CopilotKit（AG-UI）+ Next.js** | 流式 ReAct 对话 + 工具卡片渲染 + 会话管理可自控 |
 | 可观测 | Langfuse（开源）优先，LangSmith 备选 | 符合开源偏好；LangSmith 付费层后续再上 |
 | 评估 | 自建金标集 + 脚本，可借用 LangChain evals | 北极星要求专家标注集，自建最贴合 |
 

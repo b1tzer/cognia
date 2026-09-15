@@ -20,7 +20,7 @@ flowchart LR
     T3 --> T5[⑤ 核心图]
     T4 --> T5
     T5 --> T6[⑥ 记忆层]
-    T6 --> T7[⑦ Chainlit UI]
+    T6 --> T7[⑦ CopilotKit UI]
     T5 --> T8[⑧ 评估 harness]
     T7 --> T8
     T6 --> T9[⑨ 知识模型持久化 + 读回闭环]
@@ -36,7 +36,7 @@ flowchart LR
   - `pyproject.toml`（uv 管理）
   - `.env.example`：`DEEPSEEK_API_KEY`、`DATABASE_URL`、`LANGFUSE_*`、模型 ID
   - `.gitignore`
-- **依赖清单**（已查证官方最新稳定版）：`langgraph>=1.2.0`、`langgraph-checkpoint-postgres>=3.1.0`、`langgraph-checkpoint-sqlite>=3.1.0`、`langchain-core>=1.3.0`、`langchain-deepseek>=1.1.0`、`pydantic>=2.7.4`、`chainlit`、`python-dotenv`
+- **依赖清单**（已查证官方最新稳定版）：`langgraph>=1.2.0`、`langgraph-checkpoint-postgres>=3.1.0`、`langgraph-checkpoint-sqlite>=3.1.0`、`langchain-core>=1.3.0`、`langchain-deepseek>=1.1.0`、`pydantic>=2.7.4`、`python-dotenv`、`copilotkit`、`ag-ui-langgraph`、`fastapi`、`uvicorn`
 - **验收标准**：`uv sync` 成功；`.env.example` 字段齐全；`.gitignore` 已排除 `.env`、`.venv`、`__pycache__`。
 - **依赖**：无
 
@@ -65,20 +65,23 @@ flowchart LR
 - **验收标准**：三个模型能初始化；`diagnoser_model` 能返回结构化诊断（绑定 `Diagnosis` schema）；mock 输入跑通一次。
 - **依赖**：②
 
-### 任务⑤ LangGraph 核心图（6 节点 + interrupt + 防失控）
+### 任务⑤ LangGraph 核心图（流式 ReAct + 三层闸门）
 
-- **做什么**：`cognia/graph.py`，实现 plan §3 的完整 StateGraph：
-  - State（TypedDict）：消息、`knowledge_model`、`current_point_id`、`diagnosis`、`verification`、`intervention_fail_count`、`loop_count`
-  - 6 节点：`setup_goal`、`build_model`、`probe`、`diagnose`、`intervene`、`select_next`
-  - `diagnose` 节点：独立严格 system prompt（引用知识模型 + 当前知识点 + 五态定义 + 置信度分级标准，锁死诊断确定性，plan §1/§7）
-  - 条件边严格按 state-machine 转移矩阵 + 置信度分级路由
-  - `interrupt()` 在 `probe` 后暂停等待用户表达
-  - 防失控：`intervention_fail_count ≥ 3` 回溯/挂起 + `recursion_limit`
-  - **干预失败定义**：一次失败 = 完成「干预 → 探测 → 用户表达 → 诊断」完整闭环后，当前知识点状态**未改善**（仍 misconception / partial 无提升 / 或降级）。用户说「我不懂」只是情绪表达，不经诊断不计数。
+- **做什么**：`cognia/server.py` 用 LangGraph 原生 `create_react_agent` 组装流式
+  ReAct 教学 Agent；`cognia/tools.py` 的 `propose_diagnosis` 工具封装「诊断 →
+  双重验证 → 状态机」三层闸门（学习引擎 `learning_engine.py` + 状态机
+  `state_machine.py` 被复用）。
+  - `diagnose` 逻辑：独立严格 system prompt（引用知识模型 + 当前知识点 + 五态定义 +
+    置信度分级标准，锁死诊断确定性）
+  - 条件路由严格按 state-machine 转移矩阵 + 置信度分级
+  - 防失控：中/低置信度不迁移，mastered 必须双重验证全过
+  - **干预失败定义**：一次失败 = 完成「干预 → 探测 → 用户表达 → 诊断」完整闭环后，
+    当前知识点状态**未改善**（仍 misconception / partial 无提升 / 或降级）。
 - **验收标准**：
   - 用假 LLM（mock）跑通「设目标 → 建模型 → 探测 → 诊断 → 干预 → 掌握 → 结束」最小闭环
   - 中/低置信度路径、3 轮失败回溯路径均有测试覆盖
-  - **诊断 ≠ 迁移测试**：必须证明中/低置信度诊断不会修改长期认知状态；只有满足状态机迁移条件的高置信度诊断才能产生 Proficiency Delta（对应 state-machine §5 通用规则 1）
+  - **诊断 ≠ 迁移测试**：中/低置信度诊断不修改长期认知状态；只有满足状态机迁移条件的
+    高置信度诊断才能产生 Proficiency Delta
 - **依赖**：② ③ ④
 
 ### 任务⑥ 记忆层（Supabase Checkpointer + Store）
@@ -88,17 +91,18 @@ flowchart LR
   - Store 接 Postgres（`("proficiency", user_id)` 存熟练度、`("profile", user_id)` 存画像）
   - 匿名 `user_id` 通过 runtime context 注入，不塞 State
   - 熟练度增量 Delta 写入（append，不覆盖）
-  - ⚠️ 序列化前置约束：当前 `CogniaState` 存了 Pydantic 对象（`KnowledgeModel` / `Diagnosis` / `VerificationState` 等），msgpack checkpoint 序列化当前仅告警、未来会直接 block（实测警告 `Deserializing unregistered type ... will be blocked in a future version`）。任务⑥ 落地持久化 checkpointer 前，必须先把 state 里的 Pydantic 对象改为 `.model_dump()` 存 dict（或改用 TypedDict 定义字段），恢复时 `.model_validate()` 还原。
 - **验收标准**：同一 `user_id` 跨会话能读到历史熟练度；不同 `user_id` 数据隔离；写库走 Delta 追加。
 - **依赖**：① ⑤
 
-### 任务⑦ Chainlit UI（流式 + HITL）
+### 任务⑦ CopilotKit UI（流式 + AG-UI）
 
-- **做什么**：`cognia/app.py`（Chainlit）：
-  - 流式对话，对接 LangGraph 图
-  - HITL：`interrupt` 抛出的问题渲染给用户，用户回答后 resume
+- **做什么**：`cognia/server.py`（FastAPI + AG-UI，`LangGraphAGUIAgent`）+
+  `frontend/`（Next.js + CopilotKit）：
+  - 流式对话，`LangGraphAGUIAgent` 包装 `create_react_agent` 图
+  - 思考链映射为 `REASONING_*` 事件，工具调用映射为 `TOOL_CALL_*` 事件
   - 前端生成匿名 UUID → 客户端持久化 → 传后端作为 `user_id`
-- **验收标准**：浏览器里能体验「AI 主动提问 → 我回答 → AI 诊断 → 主动干预」的真实流式对话体感（宪法 §2）。
+- **验收标准**：浏览器里能体验「AI 主动提问 → 我回答 → AI 诊断 → 主动干预」的
+  真实流式对话体感（宪法 §2）。
 - **依赖**：⑤ ⑥
 
 ### 任务⑧ 评估 harness（Spring AOP 金标集 + 打分脚本）
@@ -113,10 +117,12 @@ flowchart LR
 
 ### 任务⑨ 知识模型持久化 + 跨会话读回闭环
 
-- **背景**：任务⑥ 做了 Store 读写函数，任务⑦⑧ 接上了写侧（`_persist_deltas`），但读侧闭环未真正闭合——根因是 `KnowledgePoint.id` 由 LLM 每会话现生成、跨会话不稳定，按 `point_id` 精确匹配读回历史熟练度会查空。详见 `clarifications.md`「实现阶段新增遗留项」。
+- **背景**：`KnowledgePoint.id` 若由 LLM 每会话现生成、跨会话不稳定，按 `point_id`
+  精确匹配读回历史熟练度会查空，读侧闭环无法闭合。
 - **做什么**：
   - 知识模型持久化：首次会话生成的 `KnowledgeModel` 按 `(user_id, 归一化 goal)` 冻结持久化到 Store，后续同目标 load-or-build（复用同一 km，`point_id` 跨会话天然稳定）
-  - 读侧补全：`build_model` 读回第一个点历史态（已做），`select_next` 切点时读回后续每个知识点的历史态（当前切点处重置为 None，需改为读回该点历史）
+  - 读侧补全：工具 `read_learner_state(point_id)` 读回某知识点历史态；知识模型
+    load-or-build 复用同一 `point_id`，保证跨会话稳定
   - 归一化 goal 的锚定策略（同义目标的归一，如去空白/小写/同义映射），作为知识模型持久化的 key
 - **验收标准**：同一 `user_id` + 同一 goal，第二次会话能按知识点读回历史熟练度（`point_id` 跨会话稳定）；不同 goal / 不同 user 数据隔离；单会话内多知识点切换也能读回各自历史态。
 - **依赖**：⑥ ⑦

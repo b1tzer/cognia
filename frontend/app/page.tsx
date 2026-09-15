@@ -202,7 +202,11 @@ function ChatApp() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // 滚动容器 ref 与「用户是否手动上滚」状态：用于在思考中/回答流式输出时
+  // 自动跟随滚动，且不打断用户主动向上翻阅。
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isUserScrollUpRef = useRef(false);
+  const isProgrammaticScrollRef = useRef(false);
 
   const persistCurrentThreadId = useCallback((id: string) => {
     window.localStorage.setItem(THREAD_ID_KEY, id);
@@ -277,10 +281,57 @@ function ChatApp() {
     };
   }, [ready, currentThreadId, agent]);
 
-  // 自动滚动到底部
+  // 滚动到底部（瞬时，避免流式输出时 smooth 滚动卡顿）。
+  const scrollToBottom = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    isProgrammaticScrollRef.current = true;
+    container.scrollTop = container.scrollHeight;
+  }, []);
+
+  // 用户手动滚动时记录是否已上滚；程序滚动产生的 scroll 事件则忽略。
+  const handleScroll = useCallback(() => {
+    if (isProgrammaticScrollRef.current) {
+      isProgrammaticScrollRef.current = false;
+      return;
+    }
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    isUserScrollUpRef.current = scrollTop + clientHeight < scrollHeight;
+  }, []);
+
+  // 监听消息容器 DOM 变化：新消息（childList）与流式文本增长（characterData）
+  // 都会触发，用户未上滚时自动滚到底部。characterData 是关键——它让
+  // 「思考中…」在同一 DOM 节点内不断追加文字时也能跟随滚动。
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [agent?.messages.length]);
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    container.addEventListener("scroll", handleScroll);
+    const observer = new MutationObserver(() => {
+      if (!isUserScrollUpRef.current) {
+        scrollToBottom();
+      }
+    });
+    observer.observe(container, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      observer.disconnect();
+    };
+  }, [handleScroll, scrollToBottom]);
+
+  // 用户发送新消息时，重置「上滚」状态并强制滚到底部。
+  const userMessageCount = (agent?.messages ?? []).filter(
+    (m) => m.role === "user",
+  ).length;
+  useEffect(() => {
+    isUserScrollUpRef.current = false;
+    scrollToBottom();
+  }, [userMessageCount, scrollToBottom]);
 
   const handleSelect = (threadId: string) => {
     switchThread(threadId);
@@ -378,7 +429,10 @@ function ChatApp() {
           </p>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto bg-white">
+        <div
+          ref={scrollContainerRef}
+          className="min-h-0 flex-1 overflow-y-auto bg-white"
+        >
           {!isReady || !ready || loadingThread ? (
             <div className="flex h-full items-center justify-center text-sm text-zinc-400">
               加载中…
@@ -419,7 +473,6 @@ function ChatApp() {
               );
             })
           )}
-          <div ref={bottomRef} />
         </div>
 
         <div className="border-t border-zinc-200 bg-white p-4">

@@ -1,3 +1,5 @@
+import type { Message } from "@copilotkit/react-core/v2";
+
 export type Thread = {
   thread_id: string;
   title: string | null;
@@ -41,26 +43,13 @@ export async function deleteThread(threadId: string): Promise<void> {
   }
 }
 
-export type HistoryMessage = {
-  id: string;
-  role: "user" | "assistant" | "tool" | "system";
-  content?: string;
-  name?: string;
-  toolCalls?: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-  }>;
-  toolCallId?: string;
-};
-
 export async function getThreadMessages(
   threadId: string,
-): Promise<HistoryMessage[]> {
+): Promise<Message[]> {
   const resp = await fetch(`/api/threads/${threadId}/messages`);
   if (!resp.ok) {
     throw new Error(`读取会话消息失败（HTTP ${resp.status}）`);
   }
-  const data = (await resp.json()) as { messages: HistoryMessage[] };
+  const data = (await resp.json()) as { messages: Message[] };
   return data.messages ?? [];
 }

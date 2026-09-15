@@ -49,6 +49,11 @@ from cognia.state_machine import (
 
 MAX_INTERVENTION_FAILS = 3  # 单知识点失败轮次上限（含干预失败与 verify 失败），达此值触发回溯（spec §6）
 
+# 低/中置信度 re-probe 兜底：用户反复答不出（诊断一直 low/medium）时，
+# 不能无限追问，应改为教学干预，再不行则放弃该知识点。
+PROBE_STALL_TEACH_AT = 2   # 连续 low/medium 达到 2 次后，改走教学干预（解释概念）
+MAX_PROBE_STALLS = 3       # 连续 low/medium 达到 3 次后，放弃该知识点（回溯）
+
 DIAGNOSER_SYSTEM_PROMPT = """你是 Cognia 的认知诊断器。你的唯一职责是：基于用户对当前知识点的表达，判定其认知状态（五态之一）与置信度（三级之一），并给出支撑判定的用户原话证据。
 
 ## 五态定义（spec v2.0）
@@ -120,6 +125,7 @@ class CogniaState(TypedDict, total=False):
     verification: dict  # VerificationState.model_dump(mode="json")
     last_intervention: str
     intervention_fail_count: int
+    probe_stall_count: int
     loop_count: int
     current_long_state: str | None  # CognitiveState.value
     state_before_intervention: str | None  # CognitiveState.value
@@ -264,7 +270,13 @@ def route_after_diagnose(state: CogniaState) -> str:
         if diagnosis.state == CognitiveState.MASTERED:
             return "verify"  # 高置信度 mastered → 双重验证
         return "intervene"   # 高置信度非 mastered → 干预
-    # 中/低置信度：不改变状态，重新探测
+    # 中/低置信度：不改变状态，默认重新探测；但连续追问不出结果时兜底
+    # 「连续追问 → 教学干预 → 放弃该知识点」，防止无限 re-probe 循环。
+    stall = state.get("probe_stall_count", 0)
+    if stall >= MAX_PROBE_STALLS:
+        return "select_next"   # 追问不出结果 → 放弃该知识点
+    if stall >= PROBE_STALL_TEACH_AT:
+        return "intervene"     # 追问两次仍无进展 → 改为讲解概念
     return "probe"
 
 
@@ -389,6 +401,7 @@ def build_graph(
         updates: dict = {
             "loop_count": 0,
             "intervention_fail_count": 0,
+            "probe_stall_count": 0,
             "point_index": 0,
             "verification": _dump(VerificationState()),
             "current_long_state": None,
@@ -423,15 +436,31 @@ def build_graph(
         return updates
 
     def probe(state: CogniaState) -> dict:
-        """生成探针问题（针对当前知识点）。"""
+        """生成探针问题（针对当前知识点）。
+
+        只面向学习者输出「一个简短探针问题」，严禁泄漏任何内部诊断信息：
+        此前的 prompt 里带「区分 partial / misconception / unknown / mastered」，
+        会让 teacher 把「诊断标准 / 状态判断 / 教练提示 / 答案表格」一并写进
+        pending_question，直接暴露给用户（实测为一大段内部评分标准）。探针的职责
+        是「让用户用自己的话表达理解」，诊断由 diagnose 节点独立完成，两者必须隔离。
+        """
         km = _load_knowledge_model(state["knowledge_model"])
         idx = state.get("point_index", 0)
         point = km.points[idx]
         last_intervention = state.get("last_intervention")
         context = f"\n上一轮干预：{last_intervention}" if last_intervention else ""
         result = teacher.invoke([
-            ("system", "你是 Cognia 教学教练。生成一个探针问题，探测用户对当前知识点的真实认知状态（区分 partial / misconception / unknown / mastered）。"),
-            ("human", f"知识点：{point.name}（{point.description}）{context}\n请生成探针问题。"),
+            ("system", (
+                "你是 Cognia 教学教练。向学习者提出一个简短、具体、自然的探针问题，"
+                "引导 TA 用自己的话表达对当前知识点的理解（不要出选择题）。"
+                "你只负责提问，不负责判断对错或讲解。"
+            )),
+            ("human", (
+                f"知识点：{point.name}（{point.description}）{context}\n"
+                "请只输出一个面向学习者的探针问题（一句话或一小段话即可）。"
+                "严禁输出任何答案解析、诊断标准、状态判断、教练提示、教学建议、"
+                "代码答案或 Markdown 表格。"
+            )),
         ])
         return {"pending_question": _extract_text(result), "user_answer": None}
 
@@ -461,6 +490,10 @@ def build_graph(
         updates: dict = {
             "diagnosis": _dump(diagnosis),
             "loop_count": state.get("loop_count", 0) + 1,
+            # 高置信度=有进展，清零 stall；低/中置信度=无进展，累加 stall。
+            # 该计数驱动 route_after_diagnose 的「连续追问 → 教学 → 放弃」兜底。
+            "probe_stall_count": 0 if diagnosis.confidence == Confidence.HIGH
+            else state.get("probe_stall_count", 0) + 1,
         }
 
         # 非 mastered 高置信度：立即尝试迁移（诊断≠迁移的唯一落地处）
@@ -553,9 +586,18 @@ def build_graph(
             elif scenario_failed:
                 gap_hint = "\n验证缺口：场景/边界辨析未通过，请针对场景/边界/反例做辨析训练。"
 
+        # 低/中置信度兜底触发本节点时（probe_stall_count 达标），用户尚未被成功评估；
+        # 此时应先「讲解概念」帮 TA 建立基础理解，而非继续追问/纠错。
+        teach_hint = ""
+        if diagnosis.state in (CognitiveState.UNASSESSED, CognitiveState.UNKNOWN):
+            teach_hint = (
+                "\n教学提示：用户目前无法清晰表达该知识点（证据不足/未评估），"
+                "请用通俗的语言讲解该知识点的核心概念，并配一个具体例子，帮助 TA 建立基础理解。"
+            )
+
         result = teacher.invoke([
-            ("system", "你是 Cognia 教学教练。针对用户的认知问题生成干预动作（追问/解释/纠错）。"),
-            ("human", f"知识点：{point.name}\n诊断状态：{diagnosis.state.value}（置信度 {diagnosis.confidence.value}）{gap_hint}\n请生成干预内容。"),
+            ("system", "你是 Cognia 教学教练。针对用户当前的认知状态，生成一段直接讲给学习者听的教学内容（解释概念、纠正错误或引导思考）。只输出给学习者看的内容，不要输出任何诊断标注、内部提示或 Markdown 表格。"),
+            ("human", f"知识点：{point.name}\n诊断状态：{diagnosis.state.value}（置信度 {diagnosis.confidence.value}）{gap_hint}{teach_hint}\n请生成干预内容。"),
         ])
         return {
             "last_intervention": _extract_text(result),
@@ -589,6 +631,7 @@ def build_graph(
             updates["current_point_id"] = km.points[idx + 1].id
             updates["verification"] = _dump(VerificationState())
             updates["intervention_fail_count"] = 0
+            updates["probe_stall_count"] = 0
             updates["state_before_intervention"] = None
             # 切到新知识点：重置长期状态为 None（新点从未评估）。
             # 否则会继承上一个点的 mastered，导致伪造「mastered→partial」降级 Delta，
@@ -597,6 +640,23 @@ def build_graph(
             updates["current_long_state"] = None
         else:
             updates["ended"] = True
+            # 区分「真正掌握后结束」与「回溯放弃后结束」：
+            # 只有「diagnose=mastered 且双重验证全过」才是真正掌握；
+            # 其余（干预失败 / 连续低置信度追问无果 / verify 反复失败）都是放弃，
+            # 需给诚实收尾文案，避免 app.py 误报「目标已达成」。
+            verification = _load_verification(state.get("verification"))
+            genuinely_mastered = (
+                diagnosis is not None
+                and diagnosis.state == CognitiveState.MASTERED
+                and diagnosis.confidence == Confidence.HIGH
+                and verification is not None
+                and is_mastered_migration_allowed(verification)
+            )
+            if not genuinely_mastered:
+                updates["goal_feedback"] = (
+                    "这个知识点我们暂时先告一段落。你可以稍后再试，"
+                    "或换一个更具体、更聚焦的学习目标继续。"
+                )
         return updates
 
     # ---- 组装图 ----

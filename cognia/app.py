@@ -17,6 +17,7 @@ Delta 写入 `("proficiency", user_id)` 命名空间，使「graph → Store →
 """
 
 import os
+import pathlib
 import uuid
 
 import chainlit as cl
@@ -29,6 +30,124 @@ from cognia.schemas import ProficiencyEntry
 
 # .env 加载由应用入口负责（models.py 约定，任务⑦ 落地）
 load_dotenv()
+
+# ---- 登录认证（Chainlit 用户身份）----
+# Chainlit 在匿名模式（无认证回调）下 session.user 恒为 None：
+#   1) thread 无法关联 userId / userIdentifier，历史对话无法按人归属；
+#   2) 刷新后 resume_thread 因 session.user 为空直接拒绝恢复历史对话。
+# 因此引入最轻量的固定账号密码认证，登录一次后由 cookie 自动保持。
+# 账号密码从 .env 读取（CHAINLIT_AUTH_USERNAME / CHAINLIT_AUTH_PASSWORD），
+# 未配置时回退 admin/admin，仅用于本地教学环境。
+CHAINLIT_AUTH_USERNAME = os.getenv("CHAINLIT_AUTH_USERNAME", "admin")
+CHAINLIT_AUTH_PASSWORD = os.getenv("CHAINLIT_AUTH_PASSWORD", "admin")
+
+
+@cl.password_auth_callback
+async def password_auth_callback(username: str, password: str) -> cl.User | None:
+    if (username, password) == (CHAINLIT_AUTH_USERNAME, CHAINLIT_AUTH_PASSWORD):
+        return cl.User(identifier=username, metadata={"role": "admin"})
+    return None
+
+
+# ---- 对话持久化（Chainlit DataLayer → 本地 SQLite）----
+# 默认 Chainlit 的 BaseDataLayer 只存内存、刷新即丢。这里接入 SQLAlchemyDataLayer，
+# 把所有会话、消息、反馈持久化到 data/chainlit.db，便于事后查询与分析历史对话。
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+CHAINLIT_DB_PATH = PROJECT_ROOT / "data" / "chainlit.db"
+
+# Chainlit SQLAlchemyDataLayer 要求的表结构（SQLite 兼容版）。
+# 字段名必须与 chainlit/data/sql_alchemy.py 中 SQL 语句使用的列名完全一致；
+# 类型统一简化为 TEXT（SQLite 弱类型，JSON/数组均以 TEXT 存储）。
+_CHAINLIT_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS users (
+        "id" TEXT PRIMARY KEY,
+        "identifier" TEXT NOT NULL UNIQUE,
+        "metadata" TEXT,
+        "createdAt" TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS threads (
+        "id" TEXT PRIMARY KEY,
+        "createdAt" TEXT,
+        "name" TEXT,
+        "userId" TEXT,
+        "userIdentifier" TEXT,
+        "tags" TEXT,
+        "metadata" TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS steps (
+        "id" TEXT PRIMARY KEY,
+        "name" TEXT,
+        "type" TEXT,
+        "threadId" TEXT,
+        "parentId" TEXT,
+        "disableFeedback" TEXT,
+        "streaming" TEXT,
+        "waitForAnswer" TEXT,
+        "isError" TEXT,
+        "metadata" TEXT,
+        "tags" TEXT,
+        "input" TEXT,
+        "output" TEXT,
+        "createdAt" TEXT,
+        "start" TEXT,
+        "end" TEXT,
+        "generation" TEXT,
+        "showInput" TEXT,
+        "defaultOpen" TEXT,
+        "autoCollapse" TEXT,
+        "command" TEXT,
+        "modes" TEXT,
+        "icon" TEXT,
+        "language" TEXT,
+        "indent" INTEGER
+    )""",
+    """CREATE TABLE IF NOT EXISTS elements (
+        "id" TEXT PRIMARY KEY,
+        "threadId" TEXT,
+        "type" TEXT,
+        "url" TEXT,
+        "chainlitKey" TEXT,
+        "name" TEXT,
+        "display" TEXT,
+        "objectKey" TEXT,
+        "size" TEXT,
+        "page" INTEGER,
+        "language" TEXT,
+        "forId" TEXT,
+        "mime" TEXT,
+        "props" TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS feedbacks (
+        "id" TEXT PRIMARY KEY,
+        "forId" TEXT,
+        "threadId" TEXT,
+        "value" INTEGER,
+        "comment" TEXT
+    )""",
+]
+
+
+@cl.data_layer
+def get_data_layer():
+    """返回 Chainlit 对话持久化层（SQLite）。
+
+    每次 Chainlit 需要数据层时调用（首条消息前）。先用同步 engine 幂等建表，
+    再返回异步 SQLAlchemyDataLayer 供运行时读写。
+    """
+    from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+    from sqlalchemy import create_engine, text
+
+    CHAINLIT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    sync_engine = create_engine(f"sqlite:///{CHAINLIT_DB_PATH}")
+    with sync_engine.begin() as conn:
+        for stmt in _CHAINLIT_SCHEMA:
+            conn.execute(text(stmt))
+    sync_engine.dispose()
+
+    return SQLAlchemyDataLayer(
+        conninfo=f"sqlite+aiosqlite:///{CHAINLIT_DB_PATH}",
+        show_logger=True,
+    )
 
 
 def _build_config(thread_id: str, user_id: str) -> dict:

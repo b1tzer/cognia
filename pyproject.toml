@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.7.4",
     "chainlit>=1.0.0",
     "python-dotenv>=1.0.0",
+    "sqlalchemy>=2.0.52",
 ]
 
 [dependency-groups]

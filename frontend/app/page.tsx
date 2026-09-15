@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CopilotKit,
   useAgent,
   useCopilotKit,
 } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
+import { Markdown } from "@copilotkit/react-ui";
+import "@copilotkit/react-ui/styles.css";
 import ThreadSidebar from "./components/thread-sidebar";
 import {
   createThread,
@@ -21,12 +23,22 @@ import {
 // 都在服务端 PostgreSQL；localStorage 不保存线程列表。
 const THREAD_ID_KEY = "cognia:threadId";
 
-function MessageBubble({ message }: { message: any }) {
+function MessageBubble({
+  message,
+  toolName,
+  isActiveReasoning,
+}: {
+  message: any;
+  toolName?: string;
+  isActiveReasoning?: boolean;
+}) {
   const role = message.role as string;
   if (role === "tool") {
     return (
       <div className="px-4 py-1 text-xs text-zinc-400">
-        <span className="rounded bg-zinc-100 px-2 py-1">🔧 工具调用完成</span>
+        <span className="rounded bg-zinc-100 px-2 py-1">
+          🔧 {toolName || "工具"} 调用完成
+        </span>
       </div>
     );
   }
@@ -34,9 +46,9 @@ function MessageBubble({ message }: { message: any }) {
     const text = typeof message.content === "string" ? message.content : "";
     return (
       <div className="px-4 py-1">
-        <details className="text-xs text-zinc-500" open>
+        <details className="text-xs text-zinc-500" open={isActiveReasoning}>
           <summary className="cursor-pointer select-none italic">
-            思考过程
+            {isActiveReasoning ? "思考中…" : "思考过程"}
           </summary>
           <div className="mt-1 whitespace-pre-wrap rounded-lg bg-zinc-50 p-2 text-zinc-500">
             {text || "思考中…"}
@@ -53,15 +65,119 @@ function MessageBubble({ message }: { message: any }) {
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-4 py-2`}>
-      <div
-        className={`max-w-[75%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm ${
-          isUser ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-800"
-        }`}
-      >
-        {text}
-      </div>
+      {isUser ? (
+        <div className="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-zinc-900 px-4 py-2 text-sm text-white">
+          {text}
+        </div>
+      ) : (
+        <div className="max-w-[85%] rounded-2xl bg-zinc-100 px-4 py-2 text-sm text-zinc-800">
+          <Markdown content={text} />
+        </div>
+      )}
     </div>
   );
+}
+
+// 把 agent.messages 重排为「显示顺序」，并补出工具名称 / reasoning 活跃状态。
+//
+// 三个目标：
+// 1. 工具调用结果（role=tool）应显示在其对应 assistant 工具调用之后、最终回答之前，
+//    而不是出现在最终回答下面。根源是 CopilotKit 里同一个 assistant 消息可能同时
+//    携带 toolCalls 和 content，直接按数组顺序渲染会让 content 排在 tool 结果前面。
+// 2. tool 消息本身没有工具名，需从 assistant.toolCalls[].function.name 映射。
+// 3. reasoning 只有在「agent 仍在运行且后面还没有正式回答」时展开，其余默认折叠。
+function buildDisplayMessages(messages: any[], isRunning: boolean) {
+  // toolCallId -> 工具名
+  const toolNames = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role === "assistant" && Array.isArray(m.toolCalls)) {
+      for (const tc of m.toolCalls) {
+        if (tc?.id && tc?.function?.name) {
+          toolNames.set(tc.id, tc.function.name);
+        }
+      }
+    }
+  }
+
+  // toolCallId -> tool 结果消息
+  const toolResultByCallId = new Map<string, any>();
+  for (const m of messages) {
+    if (m.role === "tool" && m.toolCallId) {
+      toolResultByCallId.set(m.toolCallId, m);
+    }
+  }
+
+  const display: Array<{
+    message: any;
+    toolName?: string;
+    isActiveReasoning?: boolean;
+  }> = [];
+  const consumedToolCallIds = new Set<string>();
+
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+
+    // tool 结果不在此处输出，由对应的 assistant 工具调用消息统一插入，
+    // 以保证它位于最终回答之前。
+    if (m.role === "tool") continue;
+
+    if (
+      m.role === "assistant" &&
+      Array.isArray(m.toolCalls) &&
+      m.toolCalls.length > 0
+    ) {
+      // 先插入对应的工具调用结果
+      for (const tc of m.toolCalls) {
+        const result = toolResultByCallId.get(tc.id);
+        if (result && !consumedToolCallIds.has(tc.id)) {
+          display.push({
+            message: result,
+            toolName: toolNames.get(tc.id),
+          });
+          consumedToolCallIds.add(tc.id);
+        }
+      }
+
+      // 再输出该 assistant 的正式回答（如有文本）
+      const content =
+        typeof m.content === "string" && m.content.trim() ? m.content : "";
+      if (content) {
+        display.push({ message: { ...m, content } });
+      }
+      // 纯工具调用（无文本）不额外输出空气泡
+    } else if (m.role === "reasoning") {
+      // 该 reasoning 之后是否已经出现 assistant 正式回答
+      const hasAnswerAfter = messages.slice(i + 1).some(
+        (x) =>
+          x.role === "assistant" &&
+          typeof x.content === "string" &&
+          x.content.trim(),
+      );
+      display.push({
+        message: m,
+        isActiveReasoning: !hasAnswerAfter && isRunning,
+      });
+    } else {
+      display.push({ message: m });
+    }
+  }
+
+  // 兜底：没有对应 assistant 工具调用的 tool 结果（历史数据异常等）
+  for (const m of messages) {
+    if (
+      m.role === "tool" &&
+      m.toolCallId &&
+      !consumedToolCallIds.has(m.toolCallId)
+    ) {
+      display.push({
+        message: m,
+        toolName: toolNames.get(m.toolCallId),
+      });
+      consumedToolCallIds.add(m.toolCallId);
+    }
+  }
+
+  return display;
 }
 
 // 聊天主体：必须在 <CopilotKit> 内部，才能使用 useAgent / useCopilotKit。
@@ -199,6 +315,10 @@ function ChatApp() {
   };
 
   const messages = agent?.messages ?? [];
+  const displayMessages = useMemo(
+    () => buildDisplayMessages(messages, agent?.isRunning ?? false),
+    [messages, agent?.isRunning],
+  );
 
   return (
     <div className="flex h-screen w-full">
@@ -231,8 +351,13 @@ function ChatApp() {
               开始一段新对话吧
             </div>
           ) : (
-            messages.map((m: any) => (
-              <MessageBubble key={m.id ?? crypto.randomUUID()} message={m} />
+            displayMessages.map((item) => (
+              <MessageBubble
+                key={item.message.id ?? crypto.randomUUID()}
+                message={item.message}
+                toolName={item.toolName}
+                isActiveReasoning={item.isActiveReasoning}
+              />
             ))
           )}
           <div ref={bottomRef} />

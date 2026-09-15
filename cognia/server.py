@@ -35,14 +35,14 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from langchain.agents import create_agent
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.prebuilt import create_react_agent
 
 from ag_ui.core.types import RunAgentInput
 from ag_ui.encoder import EventEncoder
 from ag_ui_langgraph.utils import langchain_messages_to_agui
-from copilotkit import LangGraphAGUIAgent
+from copilotkit import CopilotKitMiddleware, CopilotKitState, LangGraphAGUIAgent
 
 from cognia import memory, models, threads
 from cognia.react_agent import REACT_TEACHER_SYSTEM_PROMPT
@@ -74,10 +74,18 @@ def build_agent(checkpointer=None, user_id: str = "local-user"):
     )
     tool_list = list(tools.values())
 
-    graph = create_react_agent(
+    # 用 langchain.agents.create_agent（create_react_agent 已废弃）组装标准
+    # ReAct agent，并挂上 CopilotKitMiddleware：它负责把前端通过 useFrontendTool
+    # 注册的「前端工具」注入到 LLM 可用工具集，并在 LLM 调用前端工具时拦截、
+    # 转发为 AG-UI 的 TOOL_CALL_* 事件给前端执行（前端渲染 Generative UI /
+    # 执行 handler 后把结果回流）。state_schema 必须含 copilotkit 字段
+    # （CopilotKitState），middleware 才能读回前端注册的工具清单。
+    graph = create_agent(
         model=teacher,
         tools=tool_list,
-        prompt=REACT_TEACHER_SYSTEM_PROMPT,
+        system_prompt=REACT_TEACHER_SYSTEM_PROMPT,
+        middleware=[CopilotKitMiddleware()],
+        state_schema=CopilotKitState,
         checkpointer=checkpointer if checkpointer is not None else InMemorySaver(),
     )
     return graph

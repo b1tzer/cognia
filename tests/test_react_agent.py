@@ -122,3 +122,76 @@ def test_checkpointer_recovers_history(monkeypatch):
     human_texts = [m.content for m in result["messages"] if m.type == "human"]
     assert human_texts == ["你好", "继续"]
     assert result["messages"][-1].content == "第二次回复"
+
+
+def test_frontend_tool_interception(monkeypatch):
+    """前端工具经 CopilotKitMiddleware 注入后，调用时被拦截转发而非后端执行。
+
+    验证「三 / 五」（前端工具 + Generative UI）的后端关键闭环：
+    1. 前端注册的工具被注入 LLM 的可用工具集（bind_tools 能看到它）；
+    2. LLM 调用该前端工具时，不落 ToolNode 执行（无对应 tool 消息），
+       而是被 middleware 拦截、记录到 copilotkit.intercepted_tool_calls，
+       由接入层转成 AG-UI TOOL_CALL 事件交给前端渲染。
+    """
+    model = _install_fake_model(
+        monkeypatch,
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "practice_choice",
+                        "args": {"question": "Spring AOP 的核心是什么？"},
+                        "id": "call_fe_1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="请在卡片上作答"),
+        ],
+    )
+
+    frontend_tool = {
+        "name": "practice_choice",
+        "description": "出一道交互式选择题，收集学生的答案",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    }
+
+    graph = build_agent()
+    result = graph.invoke(
+        {
+            "messages": [HumanMessage(content="给我出个选择题")],
+            "copilotkit": {"actions": [frontend_tool]},
+        },
+        {"configurable": {"thread_id": "t1"}},
+    )
+
+    # 1. 注入：bind_tools 收到的工具集合包含前端工具名。
+    def _tool_name(t):
+        if isinstance(t, dict):
+            return t.get("name") or (t.get("function") or {}).get("name")
+        return getattr(t, "name", None)
+
+    bound_names = {_tool_name(t) for t in (model._bound_tools or [])}
+    assert "practice_choice" in bound_names
+
+    # 2. 拦截：不产生 practice_choice 的后端 tool 消息（不执行 ToolNode）。
+    tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+    assert all(m.name != "practice_choice" for m in tool_msgs)
+
+    # 3. 前端工具调用被拦截后保留在 AIMessage.tool_calls（等待前端渲染并把
+    #    结果回流），而不是被 ToolNode 消费掉。after_agent 会把 intercepted
+    #    的 tool_call 恢复到原 assistant 消息上。
+    ai_tool_calls = [
+        tc.get("name")
+        for m in result["messages"]
+        if m.type == "ai"
+        for tc in (getattr(m, "tool_calls", None) or [])
+    ]
+    assert "practice_choice" in ai_tool_calls

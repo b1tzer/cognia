@@ -5,11 +5,16 @@ import {
   CopilotKit,
   useAgent,
   useCopilotKit,
+  useRenderToolCall,
 } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
 import { Markdown } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
 import ThreadSidebar from "./components/thread-sidebar";
+import {
+  cogniaToolRenderers,
+  useCogniaFrontendTools,
+} from "./components/cognia-frontend-tools";
 import {
   createThread,
   deleteThread,
@@ -111,6 +116,8 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
     message: any;
     toolName?: string;
     isActiveReasoning?: boolean;
+    toolCall?: any;
+    toolMessage?: any;
   }> = [];
   const consumedToolCallIds = new Set<string>();
 
@@ -128,14 +135,15 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
     ) {
       // 先插入对应的工具调用结果
       for (const tc of m.toolCalls) {
+        if (consumedToolCallIds.has(tc.id)) continue;
         const result = toolResultByCallId.get(tc.id);
-        if (result && !consumedToolCallIds.has(tc.id)) {
-          display.push({
-            message: result,
-            toolName: toolNames.get(tc.id),
-          });
-          consumedToolCallIds.add(tc.id);
-        }
+        display.push({
+          message: result,
+          toolName: toolNames.get(tc.id),
+          toolCall: tc,
+          toolMessage: result,
+        });
+        consumedToolCallIds.add(tc.id);
       }
 
       // 再输出该 assistant 的正式回答（如有文本）
@@ -184,6 +192,9 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
 function ChatApp() {
   const { agent, isReady } = useAgent({ agentId: "default" });
   const { copilotkit } = useCopilotKit();
+  // 注册 Cognia 前端交互工具（三），并获取 Generative UI 渲染函数（五）。
+  useCogniaFrontendTools();
+  const renderToolCall = useRenderToolCall();
 
   const [threads, setThreads] = useState<Thread[]>([]);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(null);
@@ -377,14 +388,36 @@ function ChatApp() {
               开始一段新对话吧
             </div>
           ) : (
-            displayMessages.map((item, idx) => (
-              <MessageBubble
-                key={item.message.id ?? `msg-${idx}`}
-                message={item.message}
-                toolName={item.toolName}
-                isActiveReasoning={item.isActiveReasoning}
-              />
-            ))
+            displayMessages.map((item, idx) => {
+              if (item.toolCall) {
+                const rendered = renderToolCall({
+                  toolCall: item.toolCall,
+                  toolMessage: item.toolMessage,
+                });
+                if (rendered) {
+                  return (
+                    <div key={item.toolCall.id ?? `tool-${idx}`}>{rendered}</div>
+                  );
+                }
+              }
+              if (!item.message) {
+                return (
+                  <div key={`tool-${idx}`} className="px-4 py-1 text-xs text-zinc-400">
+                    <span className="rounded bg-zinc-100 px-2 py-1">
+                      🔧 {item.toolName || "工具"} 调用中…
+                    </span>
+                  </div>
+                );
+              }
+              return (
+                <MessageBubble
+                  key={item.message.id ?? `msg-${idx}`}
+                  message={item.message}
+                  toolName={item.toolName}
+                  isActiveReasoning={item.isActiveReasoning}
+                />
+              );
+            })
           )}
           <div ref={bottomRef} />
         </div>
@@ -419,7 +452,7 @@ function ChatApp() {
 
 export default function Home() {
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit">
+    <CopilotKit runtimeUrl="/api/copilotkit" renderToolCalls={cogniaToolRenderers}>
       <ChatApp />
     </CopilotKit>
   );

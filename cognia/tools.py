@@ -19,6 +19,9 @@
 """
 
 import json
+import os
+import urllib.parse
+import urllib.request
 
 from langchain_core.tools import tool
 
@@ -257,10 +260,50 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
         content = result.content if hasattr(result, "content") else str(result)
         return content.strip()
 
+    @tool
+    def web_search(query: str, max_results: int = 8) -> str:
+        """通过本地 SearXNG 元搜索引擎联网搜索，返回相关网页的标题、链接与摘要。
+
+        当需要获取最新信息、事实核查、外部资料，或教学讲解需要补充实时内容时使用。
+
+        Args:
+            query: 搜索查询词（支持中文或英文）。
+            max_results: 返回结果数量上限（默认 8，范围 1-10）。
+        """
+        max_results = max(1, min(int(max_results), 10))
+        searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
+        params = urllib.parse.urlencode({"q": query, "format": "json"})
+        req = urllib.request.Request(
+            f"{searxng_url}/search?{params}",
+            headers={"User-Agent": "cognia-agent"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        results = []
+        for item in (data.get("results") or [])[:max_results]:
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            snippet = str(item.get("content") or "").strip()
+            if not title and not url:
+                continue
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": snippet[:200],
+            })
+
+        return json.dumps({
+            "query": query,
+            "count": len(results),
+            "results": results,
+        }, ensure_ascii=False)
+
     return {
         "read_learner_state": read_learner_state,
         "build_learning_goal": build_learning_goal,
         "propose_diagnosis": propose_diagnosis,
         "generate_probe": generate_probe,
         "explain": explain,
+        "web_search": web_search,
     }

@@ -96,7 +96,8 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
             if (store and user_id)
             else None
         )
-        return state or "unassessed"
+        # 返回 JSON 结构（而非纯文本），便于 CopilotKit Inspector 解析工具结果展示
+        return json.dumps({"state": state or "unassessed"}, ensure_ascii=False)
 
     @tool
     def build_learning_goal(goal: str) -> str:

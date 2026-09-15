@@ -117,8 +117,8 @@ def test_read_learner_state():
     ))
     tools = build_cognia_tools(store=store, user_id="u1")
 
-    assert tools["read_learner_state"].invoke({"point_id": "aop-concept"}) == "partial"
-    assert tools["read_learner_state"].invoke({"point_id": "unknown-point"}) == "unassessed"
+    assert tools["read_learner_state"].invoke({"point_id": "aop-concept"}) == '{"state": "partial"}'
+    assert tools["read_learner_state"].invoke({"point_id": "unknown-point"}) == '{"state": "unassessed"}'
 
 
 # ---- 写工具：三层闸门 ----

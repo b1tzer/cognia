@@ -72,6 +72,24 @@ RETURNING thread_id, title, created_at, updated_at
 
 _DELETE_THREAD_META_SQL = "DELETE FROM cognia_threads WHERE thread_id = %s"
 
+# 自动标题 UPSERT：仅在 title 为空（NULL 或 ''）时才写入，用户手动重命名后
+# 保持不被覆盖。旧会话（升级前只有 checkpoint）首次进来也会补建元数据记录。
+_AUTO_TITLE_SQL = """
+INSERT INTO cognia_threads (thread_id, title, created_at, updated_at)
+VALUES (%s, %s, now(), now())
+ON CONFLICT (thread_id) DO UPDATE SET
+    title = CASE
+        WHEN cognia_threads.title IS NULL OR cognia_threads.title = ''
+        THEN EXCLUDED.title
+        ELSE cognia_threads.title
+    END,
+    updated_at = CASE
+        WHEN cognia_threads.title IS NULL OR cognia_threads.title = ''
+        THEN now()
+        ELSE cognia_threads.updated_at
+    END
+"""
+
 
 def _iso(value: Any) -> str | None:
     """把 psycopg 返回的 datetime / None / str 统一为 ISO 字符串。"""
@@ -136,3 +154,14 @@ async def delete_thread(pool, checkpointer, thread_id: str) -> None:
         async with conn.cursor() as cur:
             await cur.execute(_DELETE_THREAD_META_SQL, (thread_id,))
     await checkpointer.adelete_thread(thread_id)
+
+
+async def auto_title_if_empty(pool, thread_id: str, title: str) -> None:
+    """仅当会话尚无 title 时设置自动标题（首条用户消息截断）。
+
+    - title 已存在（用户手动命名过）时保持不变，不会被覆盖。
+    - 升级前只有 checkpoint 的旧会话首次进来会补建元数据记录。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_AUTO_TITLE_SQL, (thread_id, title))

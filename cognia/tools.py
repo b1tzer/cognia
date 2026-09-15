@@ -11,7 +11,7 @@
 工具通过工厂 `build_cognia_tools()` 构建，依赖（diagnoser / planner / teacher / store）
 以闭包注入，工具签名只暴露 LLM 能填写的简单参数（str / list / dict）。
 
-安全边界（不可破坏，对齐 graph.py 原架构）：
+安全边界（不可破坏）：
 - `propose_diagnosis` 内部完整复用 `run_diagnosis` → `run_verification` →
   `resolve_migration` 三层闸门；中 / 低置信度一律不迁移；mastered 必须双重验证全过。
 - 产生的 Proficiency Delta 直接增量写入 store（副作用隔离在 tool），幂等

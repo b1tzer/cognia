@@ -12,11 +12,11 @@
 注意：
 - deepseek-chat / deepseek-reasoner 已于 2026-07-24 退役，本模块不再使用。
 - LLM_API_BASE / LLM_API_KEY 由本模块从环境变量读取，指向本地 OpenAI 兼容 adapter。
-- .env 的加载（load_dotenv）由应用入口负责（任务⑦ app.py），本模块保持纯净、
-  只从 os.getenv 读取，便于测试与复用。
-- 「独立严格 prompt」不在此层实现：诊断 system prompt 需引用知识模型、
-  当前知识点与运行时上下文，属 `diagnose` 节点的职责，由任务⑤ graph.py 构建。
-  本层只负责模型实例化（model / temperature / timeout）与结构化输出绑定。
+- .env 的加载（load_dotenv）由应用入口负责，本模块保持纯净、只从 os.getenv
+  读取，便于测试与复用。
+- 「独立严格 prompt」不在此层实现：诊断 system prompt 需引用知识模型、当前
+  知识点与运行时上下文，属诊断逻辑的职责。本层只负责模型实例化
+  （model / temperature / timeout）与结构化输出绑定。
 """
 
 import json
@@ -163,7 +163,7 @@ def structured_output(model, schema, messages):
     背景见 invoke_structured：本地 adapter（工蜂 Gateway）对模糊/非常规输入可能
     不调用工具（finish_reason=stop），导致 with_structured_output 返回 None。此函数
     把「先尝试 function calling、失败再降级普通 invoke + 手动 JSON 解析」封装为单一
-    入口，供 graph / learning_engine / conversation_agent 各处复用，避免重复实现。
+    入口，供 learning_engine 等处复用，避免重复实现。
     """
     result = model.with_structured_output(schema).invoke(messages)
     if result is not None:

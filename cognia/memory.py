@@ -26,8 +26,8 @@ PROFILE_NS = "profile"
 KNOWLEDGE_MODEL_NS = "knowledge_model"
 
 # 模块级单例缓存：生产环境整个进程只建一个共享 AsyncConnectionPool，并让
-# Checkpointer 与 Store 复用同一个池。否则 Chainlit 每次 on_chat_start 都新建
-# ConnectionPool 会导致连接数随会话数线性增长、耗尽 Supabase session pool
+# Checkpointer 与 Store 复用同一个池。否则每次请求都新建 ConnectionPool 会导致
+# 连接数随会话数线性增长、耗尽 Supabase session pool
 # （pool_size=15，报 EMAXCONNSESSION）；同时多个 AsyncConnectionPool 并存会互相
 # 竞争，偶发卡死在 pool.open()/setup()。
 _pool_cache = None
@@ -51,8 +51,7 @@ async def aappend_proficiency_delta(store, user_id: str, entry: ProficiencyEntry
     """append_proficiency_delta 的异步版本（供 AsyncPostgresStore 在事件循环内调用）。
 
     同步 `store.put` 在 AsyncPostgresStore 上会因 @_check_loop 装饰器在主事件循环
-    线程里抛 InvalidStateError，因此 `_persist_deltas`（Chainlit on_message，主线程）
-    必须改用 `await store.aput`。
+    线程里抛 InvalidStateError，因此在主事件循环线程内必须改用 `await store.aput`。
     """
     key = f"{entry.point_id}:{entry.timestamp.isoformat()}"
     await store.aput((PROFICIENCY_NS, user_id), key, entry.model_dump(mode="json"))
@@ -108,7 +107,7 @@ def get_profile_dict(store: BaseStore, user_id: str) -> dict:
 
 
 async def aput_profile(store, user_id: str, key: str, value: dict) -> None:
-    """put_profile 的异步版本（供 Chainlit 主事件循环内调用）。
+    """put_profile 的异步版本（供主事件循环内调用）。
 
     与 aappend_proficiency_delta 同理：AsyncPostgresStore 在主事件循环线程里
     必须用 `await store.aput`，同步 `store.put` 会抛 InvalidStateError。
@@ -209,7 +208,7 @@ async def get_pool():
 async def get_checkpointer():
     """生产 Postgres Checkpointer（按 thread_id 恢复会话）。
 
-    **必须返回 AsyncPostgresSaver**：`app.py` 用 `graph.astream()` 异步执行，
+    **必须返回 AsyncPostgresSaver**：服务端用 `graph.astream()` 异步执行，
     LangGraph 的 AsyncPregelLoop 会调用 `checkpointer.aget_tuple()`；而同步的
     `PostgresSaver` 只实现了同步 `get_tuple`、未实现 `aget_tuple`（基类直接抛
     `NotImplementedError`，且 str 为空），这正是「每次都报错、从未正常对话」的根因。

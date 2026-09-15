@@ -33,11 +33,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
-from ag_ui_langgraph import add_langgraph_fastapi_endpoint
+from ag_ui.core.types import RunAgentInput
+from ag_ui.encoder import EventEncoder
+from ag_ui_langgraph.utils import langchain_messages_to_agui
 from copilotkit import LangGraphAGUIAgent
 
 from cognia import memory, models, threads
@@ -120,12 +124,74 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Cognia AG-UI Agent Server", lifespan=lifespan)
 
-# 暴露为 AG-UI 端点（path="/"）
-add_langgraph_fastapi_endpoint(
-    app,
-    agent=_agent,
-    path="/",
-)
+
+def _extract_first_user_text(input_data: RunAgentInput) -> str | None:
+    """从 AG-UI 输入中提取首条用户文本消息，用于生成会话标题。"""
+    for msg in input_data.messages or []:
+        role = getattr(msg, "role", None)
+        if role != "user":
+            continue
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            text = content.strip()
+            if text:
+                return text
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = str(part.get("text", "")).strip()
+                    if text:
+                        return text
+    return None
+
+
+async def _auto_title_thread(request: Request, input_data: RunAgentInput) -> None:
+    """thread title 为空时，用首条用户消息截断作为临时标题。
+
+    只调用一次即可：auto_title_if_empty 在 SQL 层保证 title 非空时不覆盖，
+    用户手动重命名后保持不被改写。
+    """
+    app_state = request.app.state
+    if not getattr(app_state, "threads_available", False):
+        return
+    thread_id = getattr(input_data, "thread_id", None)
+    if not thread_id:
+        return
+    text = _extract_first_user_text(input_data)
+    if not text:
+        return
+    title = text[:30] + ("…" if len(text) > 30 else "")
+    await threads.auto_title_if_empty(app_state.pool, thread_id, title)
+
+
+# AG-UI 端点（path="/"）。与 ag_ui_langgraph.add_langgraph_fastapi_endpoint
+# 等价，但多了「进入时自动生成会话标题」这一步；健康检查端点一并保留。
+@app.post("/")
+async def cognia_agent_endpoint(input_data: RunAgentInput, request: Request):
+    await _auto_title_thread(request, input_data)
+
+    accept_header = request.headers.get("accept")
+    encoder = EventEncoder(accept=accept_header)
+
+    # 每个请求 clone 独立 agent，避免并发请求共享 active_run 状态。
+    request_agent = _agent.clone()
+
+    async def event_generator():
+        async for event in request_agent.run(input_data):
+            yield encoder.encode(event)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type=encoder.get_content_type(),
+    )
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "agent": {"name": _agent.name},
+    }
 
 
 # ---- 会话管理端点（多会话列表 / 新建 / 重命名 / 删除）----
@@ -137,12 +203,68 @@ def _threads_available(request: Request) -> bool:
     return bool(getattr(request.app.state, "threads_available", False))
 
 
+def _history_to_agui(messages) -> list:
+    """把 checkpoint 历史消息转换为 AG-UI 消息，并补出思考过程。
+
+    ag-ui-langgraph 的 ``langchain_messages_to_agui`` 只处理 AIMessage 的
+    ``content`` 列表里的 reasoning block；而 DeepSeek 的思考链存放在
+    ``additional_kwargs.reasoning_content``，不在这里补出来的话，刷新页面
+    回填历史时就看不到思考过程。这里在每个 AIMessage 之前插入一条
+    role="reasoning" 的 dict（与前端 AG-UI 消息结构一致）。
+    """
+    out = []
+    for raw in messages:
+        if isinstance(raw, AIMessage):
+            reasoning = (raw.additional_kwargs or {}).get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                out.append({
+                    "id": f"{raw.id}-reasoning",
+                    "role": "reasoning",
+                    "content": reasoning,
+                })
+        out.extend(langchain_messages_to_agui([raw]))
+    return out
+
+
 @app.get("/threads")
 async def list_threads_endpoint(request: Request):
     """列出当前用户全部会话（按最近活动时间降序）。"""
     if not _threads_available(request):
         return []
     return await threads.list_threads(request.app.state.pool)
+
+
+@app.get("/threads/{thread_id}/messages")
+async def get_thread_messages_endpoint(thread_id: str, request: Request):
+    """读取某会话的历史消息（权威数据在 PostgreSQL checkpointer）。
+
+    供前端切换会话时回填聊天记录：CopilotKit 的 connect 走进程内存回放，
+    对连接外部 LangGraph 后端的场景拿不到 checkpointer 历史，因此前端
+    主动调用本端点读取并注入。返回 AG-UI 消息格式（user/assistant/tool）。
+    """
+    if not _threads_available(request):
+        return {"messages": []}
+
+    try:
+        graph = _agent.graph
+        config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        state = await graph.aget_state(config)
+        messages = (state.values or {}).get("messages", [])
+        agui_messages = _history_to_agui(messages)
+    except Exception as exc:
+        # 单个会话 checkpoint 数据异常 / 转换失败不应拖垮整个端点。
+        print(f"[Cognia] 读取会话 {thread_id} 历史失败：{exc}")
+        return {"messages": []}
+
+    # 过滤掉 system 消息（系统提示词无需回显），并以 camelCase alias 序列化
+    # （AG-UI 前端消息字段为 toolCalls / toolCallId 等 camelCase）。
+    # reasoning 消息是我们手工构造的 dict，没有 model_dump，直接透传。
+    result = []
+    for m in agui_messages:
+        if getattr(m, "role", None) == "system":
+            continue
+        result.append(m.model_dump(by_alias=True, mode="json") if hasattr(m, "model_dump") else m)
+    return {"messages": result}
 
 
 @app.post("/threads")

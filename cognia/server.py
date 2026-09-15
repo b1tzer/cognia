@@ -32,16 +32,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
 from ag_ui_langgraph import add_langgraph_fastapi_endpoint
 from copilotkit import LangGraphAGUIAgent
 
-from cognia import memory, models
+from cognia import memory, models, threads
 from cognia.react_agent import REACT_TEACHER_SYSTEM_PROMPT
 from cognia.tools import build_cognia_tools
+
+
+class RenameThreadRequest(BaseModel):
+    """重命名会话请求体。"""
+
+    title: str
 
 
 def build_agent(checkpointer=None, user_id: str = "local-user"):
@@ -89,13 +96,24 @@ async def lifespan(app: FastAPI):
     对话历史跨「浏览器刷新 / 服务 reload / 服务重启」持久化的关键：
     checkpointer 必须是 Postgres（进程外）。InMemorySaver 只活在进程内存里，
     --reload 或重启即全丢。
+
+    同时把 checkpointer 与连接池挂到 app.state，供 /threads 会话管理端点复用；
+    Postgres 不可用时降级为内存 checkpointer，并关闭会话管理能力。
     """
     try:
+        pool = await memory.get_pool()
         checkpointer = await memory.get_checkpointer()
+        await threads.ensure_schema(pool)
+        app.state.pool = pool
+        app.state.checkpointer = checkpointer
+        app.state.threads_available = True
         print("[Cognia] 使用 Postgres checkpointer 持久化会话状态")
     except Exception as exc:  # Postgres 不可用 / 缺依赖等，降级保体验
         print(f"[Cognia] Postgres 不可用，降级到内存 checkpointer：{exc}")
         checkpointer = InMemorySaver()
+        app.state.checkpointer = checkpointer
+        app.state.pool = None
+        app.state.threads_available = False
     _agent.graph = build_agent(checkpointer=checkpointer)
     yield
 
@@ -108,6 +126,54 @@ add_langgraph_fastapi_endpoint(
     agent=_agent,
     path="/",
 )
+
+
+# ---- 会话管理端点（多会话列表 / 新建 / 重命名 / 删除）----
+# 权威数据在服务端 PostgreSQL：会话列表 = cognia_threads 元数据 ∪ checkpoints
+# 真实会话；删除会话会同时清理 checkpointer 里的 checkpoint / blobs / writes。
+
+def _threads_available(request: Request) -> bool:
+    """Postgres 降级为 InMemorySaver 时关闭会话管理，返回 False。"""
+    return bool(getattr(request.app.state, "threads_available", False))
+
+
+@app.get("/threads")
+async def list_threads_endpoint(request: Request):
+    """列出当前用户全部会话（按最近活动时间降序）。"""
+    if not _threads_available(request):
+        return []
+    return await threads.list_threads(request.app.state.pool)
+
+
+@app.post("/threads")
+async def create_thread_endpoint(request: Request):
+    """创建新会话，返回后端生成的 thread_id（元数据先落库）。"""
+    if not _threads_available(request):
+        raise HTTPException(status_code=503, detail="会话管理暂不可用（Postgres 未连接）")
+    return await threads.create_thread(request.app.state.pool)
+
+
+@app.patch("/threads/{thread_id}")
+async def rename_thread_endpoint(
+    thread_id: str, payload: RenameThreadRequest, request: Request
+):
+    """重命名会话（title 持久化到 cognia_threads 表）。"""
+    if not _threads_available(request):
+        raise HTTPException(status_code=503, detail="会话管理暂不可用（Postgres 未连接）")
+    return await threads.rename_thread(request.app.state.pool, thread_id, payload.title)
+
+
+@app.delete("/threads/{thread_id}")
+async def delete_thread_endpoint(thread_id: str, request: Request):
+    """删除会话及其 checkpoint（含 blobs / writes）。"""
+    if not _threads_available(request):
+        raise HTTPException(status_code=503, detail="会话管理暂不可用（Postgres 未连接）")
+    await threads.delete_thread(
+        request.app.state.pool,
+        request.app.state.checkpointer,
+        thread_id,
+    )
+    return {"deleted": True, "thread_id": thread_id}
 
 
 def main() -> None:

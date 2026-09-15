@@ -197,6 +197,15 @@ async def _get_pool():
     return pool
 
 
+async def get_pool():
+    """公开的进程级 AsyncConnectionPool 访问（线程元数据层复用同一连接池）。
+
+    与 checkpointer / store 共享同一个池（见 _get_pool 说明），避免多池竞争。
+    线程元数据（cognia_threads 表）也走这个池，保证与会话 checkpoint 同库同池。
+    """
+    return await _get_pool()
+
+
 async def get_checkpointer():
     """生产 Postgres Checkpointer（按 thread_id 恢复会话）。
 

@@ -18,16 +18,15 @@
 """
 
 import asyncio
+import json
 import os
 import pathlib
 import uuid
 
 import chainlit as cl
 from dotenv import load_dotenv
-from langgraph.types import Command
 
 from cognia import memory
-from cognia.graph import build_graph
 from cognia.schemas import ProficiencyEntry
 
 # .env 加载由应用入口负责（models.py 约定，任务⑦ 落地）
@@ -193,26 +192,6 @@ async def _persist_deltas(store, user_id: str, state: dict) -> None:
         await memory.aappend_proficiency_delta(store, user_id, entry)
 
 
-async def _send_thinking(reasoning_trace: list) -> None:
-    """把对话 Agent 的思考链渲染为折叠 Step（通用 Agent 的「思考过程」展示）。"""
-    reasoning_text = "\n\n".join(r for r in (reasoning_trace or []) if r)
-    if not reasoning_text:
-        return
-    async with cl.Step(name="思考过程", type="run") as step:
-        step.output = reasoning_text
-
-
-async def _send_streaming(content: str, author: str | None = None) -> None:
-    """逐字打印回复（打字机效果），贴近 token 级流式输出体验。"""
-    if not content:
-        return
-    msg = cl.Message(content="", author=author)
-    await msg.send()
-    for ch in content:
-        msg.stream_token(ch)
-    await msg.update()
-
-
 async def _remember_profile(store, user_id: str, user_text: str) -> None:
     """后台提取用户画像偏好并写入长期 Store（记忆功能，不阻塞主对话）。
 
@@ -268,14 +247,26 @@ async def _init_memory():
 
 @cl.on_chat_start
 async def on_chat_start():
-    checkpointer, store = await _init_memory()
-    graph = build_graph(checkpointer=checkpointer, store=store)
+    _, store = await _init_memory()
+    user_id = _resolve_user_id()
 
-    cl.user_session.set("graph", graph)
+    from langchain_core.messages import SystemMessage
+
+    from cognia import models
+    from cognia.react_agent import REACT_TEACHER_SYSTEM_PROMPT
+    from cognia.tools import build_cognia_tools
+
+    teacher_model = models.get_conversation_agent_model()
+    tools = build_cognia_tools(store=store, user_id=user_id, teacher=teacher_model)
+    agent = teacher_model.bind_tools(list(tools.values()))
+    tools_by_name = {t.name: t for t in tools.values()}
+
     cl.user_session.set("store", store)
-    cl.user_session.set("checkpointer", checkpointer)
-    cl.user_session.set("user_id", _resolve_user_id())  # 匿名 UUID（cookie/localStorage 持久化）
-    cl.user_session.set("resume_ready", False)  # 上一轮图是否停在 interrupt、可 resume
+    cl.user_session.set("user_id", user_id)
+    cl.user_session.set("agent", agent)
+    cl.user_session.set("tools_by_name", tools_by_name)
+    # 会话消息历史：SystemPrompt + 之后的 Human / AI / Tool 消息（ReAct 上下文）
+    cl.user_session.set("messages", [SystemMessage(content=REACT_TEACHER_SYSTEM_PROMPT)])
 
     await cl.Message(
         content="你好！我是 Cognia，你的 AI 学习教练。\n请告诉我你想学什么（例如「Spring AOP」），也可以随便聊聊。"
@@ -284,57 +275,61 @@ async def on_chat_start():
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    graph = cl.user_session.get("graph")
+    from langchain_core.messages import HumanMessage
+
+    from cognia.react_agent import stream_agent_turn
+
     store = cl.user_session.get("store")
     user_id = cl.user_session.get("user_id")
-    thread_id = cl.context.session.thread_id
-    config = _build_config(thread_id, user_id)
-    resume_ready = cl.user_session.get("resume_ready", False)
+    agent = cl.user_session.get("agent")
+    tools_by_name = cl.user_session.get("tools_by_name")
+    messages = cl.user_session.get("messages") or []
 
-    # resume_ready=True：上一轮图停在 await_user interrupt，用 Command(resume) 续跑；
-    # 否则开始新会话（清空旧 checkpoint，用原始用户输入作为初始输入）。
-    # 注意：首条消息不再被强制解释为「学习目标」——问候、闲聊、提问等都由
-    # 对话 Agent 自行理解，Agent 判定为学习目标时才会触发学习引擎建模。
-    if resume_ready:
-        input_data = Command(resume=message.content)
-    else:
-        checkpointer = cl.user_session.get("checkpointer")
-        if checkpointer is not None:
-            await checkpointer.adelete_thread(thread_id)
-        input_data = {"user_message": message.content}
-
-    stream = graph.astream(input_data, config, stream_mode="updates")
-    interrupted = False
-    pending_reply = ""
-    try:
-        async for chunk in stream:
-            # await_user 的 interrupt：对话 Agent 已生成回复，暂停等待下一条输入。
-            if "__interrupt__" in chunk:
-                interrupted = True
-                interrupt_obj = chunk["__interrupt__"][0]
-                value = interrupt_obj.value
-                pending_reply = value.get("message") if isinstance(value, dict) else str(value)
-                break
-    except Exception as exc:  # LLM 调用失败等，给用户友好提示而非堆栈
-        await cl.Message(content=f"抱歉，处理时出错了：{exc}").send()
-        return
-    finally:
-        # 收到 __interrupt__ 后 break 会提前退出 async for，显式 aclose() 让生成器
-        # 正确走完清理逻辑，消除「async generator ignored GeneratorExit」与资源泄漏。
-        await stream.aclose()
-
-    cl.user_session.set("resume_ready", interrupted)
-
-    # 持久化 proficiency_deltas 到 Store，并读取最终 state（含思考链 reasoning_trace）
-    snapshot = await graph.aget_state(config)
-    state = snapshot.values
-    await _persist_deltas(store, user_id, state)
+    messages.append(HumanMessage(content=message.content))
 
     # 后台记忆：从用户本轮表达中提取稳定偏好写 profile（不阻塞主流程）
     asyncio.create_task(_remember_profile(store, user_id, message.content))
 
-    # 通用 Agent 基座：先展示「思考过程」，再逐字流式输出最终回复。
-    await _send_thinking(state.get("reasoning_trace"))
+    # 思考过程 Step：流式接收思考 token，边思考边显示
+    async with cl.Step(name="思考过程", type="run") as thinking_step:
+        # 回复消息：流式接收回答 token，边生成边显示（行业标准 SSE 流式）
+        reply_msg = cl.Message(content="")
+        await reply_msg.send()
 
-    reply = pending_reply or state.get("agent_reply") or state.get("goal_feedback")
-    await _send_streaming(reply)
+        tool_steps: dict = {}
+
+        async def on_reasoning(text: str) -> None:
+            await thinking_step.stream_token(text)
+
+        async def on_text(text: str) -> None:
+            await reply_msg.stream_token(text)
+
+        async def on_tool_start(name: str, args: dict) -> None:
+            step = cl.Step(name=f"工具 · {name}", type="tool")
+            step.input = json.dumps(args, ensure_ascii=False)
+            await step.send()
+            tool_steps[name] = step
+
+        async def on_tool_result(name: str, result: str) -> None:
+            step = tool_steps.get(name)
+            if step is not None:
+                step.output = result
+                await step.update()
+
+        try:
+            await stream_agent_turn(
+                agent,
+                tools_by_name,
+                messages,
+                on_reasoning=on_reasoning,
+                on_text=on_text,
+                on_tool_start=on_tool_start,
+                on_tool_result=on_tool_result,
+            )
+        except Exception as exc:  # LLM 调用失败等，给用户友好提示而非堆栈
+            await reply_msg.stream_token(f"\n\n抱歉，处理时出错了：{exc}")
+        finally:
+            await reply_msg.update()
+
+        if not thinking_step.output:
+            thinking_step.output = "（本轮未生成思考过程）"

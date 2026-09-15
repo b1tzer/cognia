@@ -41,24 +41,21 @@ PLANNER_TEMPERATURE = 0.3   # 知识模型构建：需一定创造性，但整�
 DIAGNOSER_TEMPERATURE = 0.0  # 诊断：锁死确定性（plan §1）
 TEACHER_TEMPERATURE = 0.5   # 干预/探测：需自然的教学语言
 
-# ---- 思考模式（DeepSeek V4 thinking）----
-# deepseek-v4-flash / deepseek-v4-pro 均支持思考模式，通过顶层参数开启：
-#   thinking={"type": "enabled"} + reasoning_effort="low|high|max"
-# 思考链经响应里的 reasoning_content 字段返回（与最终 content 分离）。
-# thinking 是 DeepSeek 非标准参数，OpenAI SDK 下须经 extra_body 传入；
-# reasoning_effort 是标准顶层参数，直接用显式字段传递。
-# 环境变量便于本地 adapter / 上游网关不支持时快速开关与调档。
+# ---- 思考模式（工蜂 Gateway external 模型默认返回 reasoning_content）----
+# 实测（.cache/debug_thinking_matrix.py）：工蜂 Gateway 的 external 模型
+# （deepseek-v4-flash-external / deepseek-v4-pro）不传任何 thinking 参数时，
+# 默认就在响应的 reasoning_content 字段返回完整思考链；而显式传
+# thinking={"type":"enabled"} 反而会抑制 reasoning_content（pro 直接变 None，
+# flash-external 变超短）。internal 版 deepseek-v4-flash 则不返回思考链。
+# 因此本函数返回空 dict：不额外传 thinking / reasoning_effort，让 external
+# 模型的默认行为生效。THINKING_ENABLED / THINKING_EFFORT 环境变量已废弃，
+# 仅保留定义以兼容旧 .env，不再被读取。
 THINKING_ENABLED = os.getenv("THINKING_ENABLED", "true").lower() not in ("0", "false", "no")
 THINKING_EFFORT = os.getenv("THINKING_EFFORT", "high")  # low / high / max
 
 def _thinking_kwargs() -> dict:
-    """构造 ChatDeepSeek 的思考模式参数（thinking 开关 + 推理力度）。"""
-    return {
-        "reasoning_effort": THINKING_EFFORT,
-        "extra_body": {
-            "thinking": {"type": "enabled" if THINKING_ENABLED else "disabled"}
-        },
-    }
+    """返回空参数（不显式传 thinking），让 external 模型默认返回 reasoning_content。"""
+    return {}
 
 
 def _model_id(env_var: str, default: str) -> str:

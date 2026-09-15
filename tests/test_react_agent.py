@@ -1,9 +1,9 @@
-"""cognia.react_agent 流式 ReAct 循环单元测试。
+"""cognia.react_agent 共享主循环单元测试。
 
 使用假 async-agent（预设 chunk 序列）离线验证：
-1. 思考 / 文本 token 逐块回调；
-2. tool_call_chunks 正确累积为完整 tool_calls；
-3. 工具执行 + ToolMessage 回填历史；
+1. tool_call_chunks 正确累积为完整 tool_calls；
+2. 思考 / 文本 token 通过统一 emit 事件通道逐块发出；
+3. 工具执行 + 本轮新增消息返回（不原地修改传入 history）；
 4. 最终回复返回与多轮循环终止。
 """
 
@@ -15,7 +15,7 @@ from langchain_core.tools import tool
 from cognia.react_agent import (
     _accumulate_tool_calls,
     _parse_tool_calls,
-    stream_agent_turn,
+    _run_agent_loop,
 )
 
 
@@ -75,7 +75,7 @@ def test_parse_tool_calls_bad_json_tolerated():
 
 # ---- 集成：两轮 ReAct（工具轮 + 最终回复轮）----
 
-def test_stream_agent_turn_two_rounds():
+def test_run_agent_loop_two_rounds():
     rounds = [
         # 第一轮：思考 → 文本 → 工具调用
         [
@@ -98,26 +98,33 @@ def test_stream_agent_turn_two_rounds():
     tools_by_name = {"read_learner_state": read_learner_state}
     messages = [HumanMessage(content="我 AOP 掌握得怎么样？")]
 
+    events = []
+
+    def emit(event_type, payload):
+        events.append((event_type, payload))
+
+    async def collect():
+        final, new_messages = await _run_agent_loop(agent, tools_by_name, messages, emit)
+        return final, new_messages
+
+    final, new_messages = asyncio.run(collect())
+
     reasoning_parts = []
     text_parts = []
     tool_starts = []
     tool_results = []
     turn_ends = []
-
-    async def collect():
-        final = await stream_agent_turn(
-            agent,
-            tools_by_name,
-            messages,
-            on_reasoning=lambda t: reasoning_parts.append(t),
-            on_text=lambda t: text_parts.append(t),
-            on_tool_start=lambda call_id, name, args: tool_starts.append((name, args)),
-            on_tool_result=lambda call_id, name, result: tool_results.append((name, result)),
-            on_llm_turn_end=lambda has_tool_calls: turn_ends.append(has_tool_calls),
-        )
-        return final
-
-    final = asyncio.run(collect())
+    for event_type, payload in events:
+        if event_type == "reasoning":
+            reasoning_parts.append(payload["text"])
+        elif event_type == "text":
+            text_parts.append(payload["text"])
+        elif event_type == "tool_start":
+            tool_starts.append((payload["name"], payload["args"]))
+        elif event_type == "tool_result":
+            tool_results.append((payload["name"], payload["result"]))
+        elif event_type == "turn_end":
+            turn_ends.append(payload["has_tool_calls"])
 
     assert final == "你目前对 AOP 是部分掌握"
     assert "".join(reasoning_parts) == "先查学生状态状态是 partial"
@@ -129,18 +136,22 @@ def test_stream_agent_turn_two_rounds():
     # 轮次边界：第一轮（工具轮）True，第二轮（最终回答轮）False
     assert turn_ends == [True, False]
 
-    # 历史回填：Human + AI(带 tool_calls) + Tool + AI(最终)
-    assert len(messages) == 4
-    assert isinstance(messages[1], AIMessage)
-    assert messages[1].tool_calls[0]["name"] == "read_learner_state"
-    assert isinstance(messages[2], ToolMessage)
-    assert messages[2].content == "partial"
-    assert isinstance(messages[3], AIMessage)
-    assert messages[3].content == "你目前对 AOP 是部分掌握"
+    # 本轮新增消息：AI(带 tool_calls) + Tool + AI(最终)
+    assert len(new_messages) == 3
+    assert isinstance(new_messages[0], AIMessage)
+    assert new_messages[0].tool_calls[0]["name"] == "read_learner_state"
+    assert isinstance(new_messages[1], ToolMessage)
+    assert new_messages[1].content == "partial"
+    assert isinstance(new_messages[2], AIMessage)
+    assert new_messages[2].content == "你目前对 AOP 是部分掌握"
+
+    # 传入 history 不被原地修改（共享主循环的工作副本语义）
+    assert len(messages) == 1
+    assert isinstance(messages[0], HumanMessage)
 
 
-def test_stream_agent_turn_unknown_tool_returns_error_text():
-    """未知工具名：执行回调收到错误文本，会话不崩。"""
+def test_run_agent_loop_unknown_tool_returns_error_text():
+    """未知工具名：执行事件收到错误文本，会话不崩。"""
     rounds = [
         [
             _Chunk(tool_call_chunks=[
@@ -157,13 +168,13 @@ def test_stream_agent_turn_unknown_tool_returns_error_text():
 
     tool_results = []
 
+    def emit(event_type, payload):
+        if event_type == "tool_result":
+            tool_results.append((payload["name"], payload["result"]))
+
     async def collect():
-        return await stream_agent_turn(
-            agent,
-            tools_by_name,
-            messages,
-            on_tool_result=lambda call_id, name, result: tool_results.append((name, result)),
-        )
+        final, _ = await _run_agent_loop(agent, tools_by_name, messages, emit)
+        return final
 
     final = asyncio.run(collect())
     assert final == "查完了"

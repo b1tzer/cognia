@@ -223,6 +223,13 @@ async def _remember_profile(store, user_id: str, user_text: str) -> None:
         print(f"[Cognia] 画像提取失败（忽略）：{exc}")
 
 
+# ---- 内存记忆层进程级单例（本地无 Postgres 时的 fallback）----
+# 关键：InMemorySaver / InMemoryStore 必须是进程级单例。若每次 on_chat_start /
+# on_chat_resume 都新建，则刷新后新 saver 里没有旧 checkpoint，会话恢复（本次修复
+# 的核心目标）在本地会静默失效——checkpoint 只在同一个 saver 实例内可见。
+_inmemory_checkpointer = None
+_inmemory_store = None
+
 async def _init_memory():
     """初始化记忆层；Postgres 不可用时降级到内存（本地开发体验）。
 
@@ -232,7 +239,11 @@ async def _init_memory():
     get_checkpointer() 返回 AsyncPostgresSaver，必须在事件循环里 await 创建；
     get_store() 保持同步 PostgresStore（graph 同步节点在 executor 线程里调用
     同步 store.search，天然线程安全）。
+
+    InMemory 分支同样走进程级单例（见上方 _inmemory_* 变量），否则「刷新恢复」
+    在本地环境因 saver 重建而失效。
     """
+    global _inmemory_checkpointer, _inmemory_store
     if os.getenv("LANGGRAPH_DATABASE_URL"):
         try:
             checkpointer = await memory.get_checkpointer()
@@ -240,52 +251,73 @@ async def _init_memory():
             return checkpointer, store
         except Exception as exc:  # 连接失败 / 缺依赖等，降级保体验
             print(f"[Cognia] Postgres 不可用，降级到内存记忆层：{exc}")
-    from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.store.memory import InMemoryStore
-    return InMemorySaver(), InMemoryStore()
+    if _inmemory_checkpointer is None:
+        from langgraph.checkpoint.memory import InMemorySaver
+        _inmemory_checkpointer = InMemorySaver()
+    if _inmemory_store is None:
+        from langgraph.store.memory import InMemoryStore
+        _inmemory_store = InMemoryStore()
+    return _inmemory_checkpointer, _inmemory_store
 
 
-@cl.on_chat_start
-async def on_chat_start():
-    _, store = await _init_memory()
+async def _init_session() -> None:
+    """初始化运行时上下文（新对话与恢复对话共用）。
+
+    每次 on_chat_start / on_chat_resume 都重新编译图（agent / tools 依赖本会话的
+    user_id 与 store），但 checkpointer / store 是进程级单例——LangGraph 会按
+    config 里的 thread_id 从同一个 checkpointer 实例读回历史 messages，因此
+    「重编译 + 同 thread_id」能正确恢复对话。
+    """
+    checkpointer, store = await _init_memory()
     user_id = _resolve_user_id()
 
-    from langchain_core.messages import SystemMessage
-
     from cognia import models
-    from cognia.react_agent import REACT_TEACHER_SYSTEM_PROMPT
+    from cognia.react_agent import build_react_graph
     from cognia.tools import build_cognia_tools
 
     teacher_model = models.get_conversation_agent_model()
     tools = build_cognia_tools(store=store, user_id=user_id, teacher=teacher_model)
     agent = teacher_model.bind_tools(list(tools.values()))
     tools_by_name = {t.name: t for t in tools.values()}
+    graph = build_react_graph(agent, tools_by_name, checkpointer=checkpointer)
 
     cl.user_session.set("store", store)
     cl.user_session.set("user_id", user_id)
-    cl.user_session.set("agent", agent)
-    cl.user_session.set("tools_by_name", tools_by_name)
-    # 会话消息历史：SystemPrompt + 之后的 Human / AI / Tool 消息（ReAct 上下文）
-    cl.user_session.set("messages", [SystemMessage(content=REACT_TEACHER_SYSTEM_PROMPT)])
+    cl.user_session.set("graph", graph)
+
+
+@cl.on_chat_start
+async def on_chat_start():
+    await _init_session()
+    # 新会话：thread_id 即当前 session 的 thread id
+    cl.user_session.set("thread_id", cl.context.session.thread_id)
 
     await cl.Message(
         content="你好！我是 Cognia，你的 AI 学习教练。\n请告诉我你想学什么（例如「Spring AOP」），也可以随便聊聊。"
     ).send()
 
 
+@cl.on_chat_resume
+async def on_chat_resume(thread: dict):
+    """恢复历史会话：重建运行时上下文，messages 由 checkpointer 按 thread_id
+    自动读回，无需手动恢复。
+
+    thread_id 的权威来源是 thread["id"]（Chainlit 回调传入的历史 thread id）。
+    """
+    await _init_session()
+    cl.user_session.set("thread_id", thread["id"])
+
+
 @cl.on_message
 async def on_message(message: cl.Message):
     from langchain_core.messages import HumanMessage
 
-    from cognia.react_agent import stream_agent_turn
-
     store = cl.user_session.get("store")
     user_id = cl.user_session.get("user_id")
-    agent = cl.user_session.get("agent")
-    tools_by_name = cl.user_session.get("tools_by_name")
-    messages = cl.user_session.get("messages") or []
+    graph = cl.user_session.get("graph")
 
-    messages.append(HumanMessage(content=message.content))
+    thread_id = cl.context.session.thread_id
+    config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
 
     # 后台记忆：从用户本轮表达中提取稳定偏好写 profile（不阻塞主流程）
     asyncio.create_task(_remember_profile(store, user_id, message.content))
@@ -334,21 +366,37 @@ async def on_message(message: cl.Message):
             step.output = result
             await step.update()
 
-    async def on_llm_turn_end(has_tool_calls: bool) -> None:
-        # 一轮 LLM 生成结束：收起当前思考块；有工具则随后展示工具卡片，无工具则回答已流完
-        await _close_thinking()
+    async def _dispatch(event: str, payload: dict) -> None:
+        """把图节点发来的 custom 事件分发到 UI 回调。"""
+        if event == "reasoning":
+            await on_reasoning(payload.get("text", ""))
+        elif event == "text":
+            await on_text(payload.get("text", ""))
+        elif event == "tool_start":
+            await on_tool_start(
+                payload.get("call_id", ""),
+                payload.get("name", ""),
+                payload.get("args", {}),
+            )
+        elif event == "tool_result":
+            await on_tool_result(
+                payload.get("call_id", ""),
+                payload.get("name", ""),
+                payload.get("result", ""),
+            )
+        elif event == "turn_end":
+            # 一轮 LLM 生成结束：收起当前思考块
+            await _close_thinking()
 
     try:
-        await stream_agent_turn(
-            agent,
-            tools_by_name,
-            messages,
-            on_reasoning=on_reasoning,
-            on_text=on_text,
-            on_tool_start=on_tool_start,
-            on_tool_result=on_tool_result,
-            on_llm_turn_end=on_llm_turn_end,
-        )
+        async for chunk in graph.astream(
+            {"messages": [HumanMessage(content=message.content)]},
+            config=config,
+            stream_mode="custom",
+        ):
+            # custom 模式下 chunk 即节点 writer 发出的 {"event": ..., ...}
+            if isinstance(chunk, dict) and "event" in chunk:
+                await _dispatch(chunk["event"], chunk)
     except Exception as exc:  # LLM 调用失败等，给用户友好提示而非堆栈
         await reply_msg.stream_token(f"\n\n抱歉，处理时出错了：{exc}")
     finally:

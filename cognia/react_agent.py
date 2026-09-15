@@ -1,10 +1,16 @@
-"""Cognia 流式 ReAct 教学 Agent（行业标准：bind_tools + astream）。
+"""Cognia 流式 ReAct 教学 Agent（行业标准：bind_tools + astream + LangGraph 持久化）。
 
 这是 P2 工具化改造的第二里程碑，替代旧的 `graph.py` 结构化决策循环
 （`with_structured_output` + 一次性 `invoke`）。
 
 核心价值：**一问完立即开始流式输出**。模型边思考边吐 token，前端边收边渲染；
 工具调用作为流中的 `tool_call_chunks` 累积执行，可渲染成工具过程卡片。
+
+与旧版的区别：主循环 `_run_agent_loop` 被封装进一个极简 LangGraph 图
+（`build_react_graph`），`messages` 交给 checkpointer 按 `thread_id` 持久化，
+使「刷新后恢复对话上下文」成为可能（否则消息只存在 `cl.user_session` 内存里，
+刷新即丢）。流式 token 通过 `get_stream_writer()` 走 `stream_mode="custom"`
+通道实时透出，前端体验不变。
 
 安全边界（不因流式而放松）：
 - 工具由 `build_cognia_tools(user_id=...)` 闭包注入 user_id，LLM 只填写业务参数，
@@ -19,15 +25,13 @@ import inspect
 import json
 from typing import Awaitable, Callable
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langgraph.config import get_stream_writer
+from langgraph.graph import END, START, MessagesState, StateGraph
 
-# 回调类型：都是 async 可等待函数
-ReasoningCallback = Callable[[str], Awaitable[None]]
-TextCallback = Callable[[str], Awaitable[None]]
-ToolStartCallback = Callable[[str, str, dict], Awaitable[None]]  # (call_id, name, args)
-ToolResultCallback = Callable[[str, str, str], Awaitable[None]]  # (call_id, name, result)
-TurnEndCallback = Callable[[bool], Awaitable[None]]  # has_tool_calls：一轮 LLM 生成结束
-
+# 事件发射回调：emit(event_type, payload) -> awaitable 或 None。
+# 统一事件通道：图节点里用 get_stream_writer() 包装，测试里用普通 lambda 收集。
+EmitCallback = Callable[[str, dict], Awaitable[None] | None]
 
 async def _maybe_await(callback, *args) -> None:
     """调用回调并兼容同步 / 异步两种签名（测试桩常用同步 lambda）。"""
@@ -72,12 +76,12 @@ def _parse_tool_calls(acc: dict) -> list[dict]:
     return calls
 
 
-async def _execute_tool(tools_by_name: dict, call: dict, on_start, on_result) -> str:
+async def _execute_tool(tools_by_name: dict, call: dict, emit: EmitCallback) -> str:
     """执行单个工具调用；工具执行放 executor 线程，避免阻塞事件循环。"""
     call_id = call["id"]
     name = call["name"]
     args = call["args"]
-    await _maybe_await(on_start, call_id, name, args)
+    await _maybe_await(emit, "tool_start", {"call_id": call_id, "name": name, "args": args})
 
     tool = tools_by_name.get(name)
     if tool is None:
@@ -91,49 +95,51 @@ async def _execute_tool(tools_by_name: dict, call: dict, on_start, on_result) ->
         except Exception as exc:  # 工具执行失败返回错误文本，不让整个会话崩掉
             result = f"工具执行错误：{exc}"
 
-    await _maybe_await(on_result, call_id, name, result)
+    await _maybe_await(emit, "tool_result", {"call_id": call_id, "name": name, "result": result})
     return result
 
 
-async def stream_agent_turn(
+async def _run_agent_loop(
     agent_with_tools,
     tools_by_name: dict,
     messages: list,
-    *,
-    on_reasoning: ReasoningCallback | None = None,
-    on_text: TextCallback | None = None,
-    on_tool_start: ToolStartCallback | None = None,
-    on_tool_result: ToolResultCallback | None = None,
-    on_llm_turn_end: TurnEndCallback | None = None,
-) -> str:
-    """执行一轮 ReAct：LLM ↔ 工具，直到 LLM 不再发起工具调用。
+    emit: EmitCallback,
+) -> tuple[str, list]:
+    """执行一轮 ReAct：LLM ↔ 工具，直到 LLM 不再发起工具调用（共享主循环）。
 
-    流式消费 `agent_with_tools.astream(messages)`，把三类增量实时回调出去：
-    - reasoning_content（思考链）→ on_reasoning
-    - content（回复文本）→ on_text
-    - tool_call_chunks（工具调用）→ 累积后执行，触发 on_tool_start / on_tool_result
-    - 每轮 LLM 生成结束 → on_llm_turn_end(has_tool_calls)，供 UI 区分「思考 / 工具 /
-      最终回答」的轮次边界（行业标准 Agent 的节奏感）
+    `messages` 是「system 提示 + 历史消息」的完整上下文（调用方负责前置
+    SystemMessage）。本函数在内部工作副本上累积本轮新增消息，**不原地修改
+    传入的 messages**，最后返回 `(final_text, new_messages)`：
+    - final_text：最后一轮（无工具调用）的完整回复文本；
+    - new_messages：本轮新增的 AIMessage / ToolMessage 列表（供 graph 节点写回
+      state，交由 add_messages reducer 合并）。
 
-    返回：最后一轮（无工具调用）的完整回复文本；纯工具轮返回空串。
+    事件通过 `emit(event_type, payload)` 统一发出：
+    - ("reasoning", {"text": ...})   思考链增量
+    - ("text", {"text": ...})        回复 token
+    - ("tool_start", {...}) / ("tool_result", {...})
+    - ("turn_end", {"has_tool_calls": bool})  一轮 LLM 生成结束
     """
+    work = list(messages)       # 工作副本：含 system + 历史
+    new_messages: list = []     # 本轮新增（返回给 state）
+
     while True:
         reasoning_parts: list[str] = []
         text_parts: list[str] = []
         tool_acc: dict = {}
 
-        async for chunk in agent_with_tools.astream(messages):
+        async for chunk in agent_with_tools.astream(work):
             # 1) 思考链：DeepSeek reasoning_content 逐 delta 返回
             reasoning = (chunk.additional_kwargs or {}).get("reasoning_content")
             if reasoning:
                 reasoning_parts.append(reasoning)
-                await _maybe_await(on_reasoning, reasoning)
+                await _maybe_await(emit, "reasoning", {"text": reasoning})
 
             # 2) 回复文本：逐 token 返回
             content = getattr(chunk, "content", None)
             if content:
                 text_parts.append(content)
-                await _maybe_await(on_text, content)
+                await _maybe_await(emit, "text", {"text": content})
 
             # 3) 工具调用：累积 tool_call_chunks
             tool_call_chunks = getattr(chunk, "tool_call_chunks", None) or []
@@ -143,12 +149,12 @@ async def stream_agent_turn(
         tool_calls = _parse_tool_calls(tool_acc)
 
         # 一轮 LLM 生成结束：通知 UI 关闭当前思考块（有工具则随后展示工具卡片）
-        await _maybe_await(on_llm_turn_end, bool(tool_calls))
+        await _maybe_await(emit, "turn_end", {"has_tool_calls": bool(tool_calls)})
 
         if tool_calls:
-            # 本轮是工具轮：把 assistant 消息（带 tool_calls）追加进历史，
+            # 本轮是工具轮：把 assistant 消息（带 tool_calls）追加进工作副本，
             # 执行工具后追加 ToolMessage，继续下一轮 LLM 生成。
-            messages.append(AIMessage(
+            assistant_msg = AIMessage(
                 content="".join(text_parts),
                 tool_calls=[
                     {
@@ -159,22 +165,57 @@ async def stream_agent_turn(
                     }
                     for c in tool_calls
                 ],
-            ))
+            )
+            work.append(assistant_msg)
+            new_messages.append(assistant_msg)
             for call in tool_calls:
-                result = await _execute_tool(
-                    tools_by_name, call, on_tool_start, on_tool_result
-                )
-                messages.append(ToolMessage(
+                result = await _execute_tool(tools_by_name, call, emit)
+                tool_msg = ToolMessage(
                     content=result,
                     tool_call_id=call["id"],
                     name=call["name"],
-                ))
+                )
+                work.append(tool_msg)
+                new_messages.append(tool_msg)
             continue
 
-        # 本轮无工具调用：回复文本就是最终回复，追加进历史后返回
+        # 本轮无工具调用：回复文本就是最终回复，追加进工作副本与返回值后结束
         final_text = "".join(text_parts)
-        messages.append(AIMessage(content=final_text))
-        return final_text
+        final_msg = AIMessage(content=final_text)
+        work.append(final_msg)
+        new_messages.append(final_msg)
+        return final_text, new_messages
+
+
+def build_react_graph(agent_with_tools, tools_by_name: dict, checkpointer=None):
+    """把流式 ReAct 主循环装进极简 LangGraph 图（仅一个节点）。
+
+    state 用 `MessagesState`（即 `messages: Annotated[list, add_messages]`），
+    `messages` 由 checkpointer 按 `config["configurable"]["thread_id"]` 持久化，
+    刷新后同一 thread_id 自动恢复历史对话。
+
+    流式输出：节点内通过 `get_stream_writer()` 把事件写进 `stream_mode="custom"`
+    通道；调用方用 `graph.astream(input, config, stream_mode="custom")` 消费
+    `{"event": ..., ...}` 增量并透传给前端。
+    """
+    async def react_agent_node(state: MessagesState) -> dict:
+        """单节点：前置 system 提示，执行共享主循环，返回本轮新增消息。"""
+        writer = get_stream_writer()
+
+        def emit(event_type: str, payload: dict) -> None:
+            writer({"event": event_type, **payload})
+
+        base = [SystemMessage(content=REACT_TEACHER_SYSTEM_PROMPT), *state["messages"]]
+        _, new_messages = await _run_agent_loop(
+            agent_with_tools, tools_by_name, base, emit
+        )
+        return {"messages": new_messages}
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("react_agent", react_agent_node)
+    builder.add_edge(START, "react_agent")
+    builder.add_edge("react_agent", END)
+    return builder.compile(checkpointer=checkpointer)
 
 
 # ---- 教学 Agent system prompt ----

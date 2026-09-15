@@ -11,7 +11,6 @@ set -euo pipefail
 #   scripts/start.sh            默认：AG-UI 后端(后台) + Next.js 前端(前台, 3000)
 #   scripts/start.sh frontend   仅启动 Next.js 前端（3000）
 #   scripts/start.sh agui       仅启动 AG-UI 后端（8123）
-#   scripts/start.sh chainlit   仅启动 Chainlit UI（旧教学界面）
 #
 # 启动前会自动检查同名服务是否已有进程在运行，有则先 kill 掉，避免端口冲突
 # 或重复实例抢占资源。
@@ -86,13 +85,8 @@ case "$SERVICE" in
         exec uv run python -m uvicorn cognia.server:app \
             --host 0.0.0.0 --port "${AGUI_PORT:-8123}" --reload
         ;;
-    chainlit)
-        kill_duplicates "chainlit run cognia/app.py" "Chainlit UI"
-        echo "[Cognia] 启动 Chainlit UI ..."
-        exec uv run chainlit run cognia/app.py 2>&1 | tee -a logs/cognia.log
-        ;;
     *)
-        echo "用法: $0 [all|frontend|agui|chainlit]" >&2
+        echo "用法: $0 [all|frontend|agui]" >&2
         exit 1
         ;;
 esac

@@ -162,7 +162,7 @@ def build_knowledge_model(planner, goal: str) -> KnowledgeModel:
     兼容测试桩：ScriptedLLM 的 invoke 直接返回 KnowledgeModel 对象（而非字符串），
     isinstance 命中后原样返回。
     """
-    result = planner.invoke([
+    messages = [
         ("system", "你是 Cognia 的知识建模器。将学习目标拆解为知识点。"),
         ("human", (
             f"学习目标：{goal}\n\n"
@@ -171,11 +171,27 @@ def build_knowledge_model(planner, goal: str) -> KnowledgeModel:
             '[{"id": "唯一标识", "name": "知识点名称", "description": "一句话描述", '
             '"prerequisites": ["依赖的知识点id"]}]'
         )),
-    ])
+    ]
+    result = planner.invoke(messages)
     if isinstance(result, KnowledgeModel):
         return result
     text = result.content if hasattr(result, "content") else str(result)
-    data = models._extract_json(text)
+    try:
+        data = models._extract_json(text)
+    except ValueError as exc:
+        # 解析失败（截断 / 语法错误等）：把错误回喂给模型，让其修正后重试一次，
+        # 避免一次坏 JSON 直接让 LangGraph 工具节点抛错、终止整个 agent 运行。
+        retry_result = planner.invoke([
+            *messages,
+            ("human", (
+                f"你上一次的输出无法解析为合法 JSON，错误信息：{exc}\n"
+                "请重新只输出一个合法 JSON 数组，不要输出任何解释、注释或 markdown 代码块。"
+            )),
+        ])
+        if isinstance(retry_result, KnowledgeModel):
+            return retry_result
+        retry_text = retry_result.content if hasattr(retry_result, "content") else str(retry_result)
+        data = models._extract_json(retry_text)
     points = [KnowledgePoint.model_validate(p) for p in data]
     return KnowledgeModel(goal=goal, points=points)
 

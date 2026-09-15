@@ -109,12 +109,98 @@ def get_diagnoser_model() -> ChatDeepSeek:
     )
 
 
+def _strip_trailing_commas(t: str) -> str:
+    """移除 JSON 结构中的尾逗号（`[...,]` / `{...,}`），字符串内的逗号不受影响。
+
+    用逐字符扫描跟踪是否处于字符串内，只跳过「非字符串内、且下一个非空白字符
+    是 `}` 或 `]`」的逗号，避免误删字符串内容里的逗号。
+    """
+    out = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(t)
+    while i < n:
+        ch = t[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+            out.append(ch)
+        elif ch == ",":
+            j = i + 1
+            while j < n and t[j] in " \t\r\n":
+                j += 1
+            if j < n and t[j] in "}]":
+                # 尾逗号：跳过不输出
+                i += 1
+                continue
+            out.append(ch)
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _insert_missing_commas(t: str) -> str:
+    """补齐 JSON 中「相邻值之间漏写逗号」的错误（对应 "Expecting ',' delimiter"）。
+
+    同样跟踪字符串状态，仅在非字符串内发现闭合括号 `}` / `]` 后紧跟新值开头
+    （`{` / `[` / `"`）时插入逗号，避免破坏字符串内容。
+    """
+    out = []
+    in_string = False
+    escape = False
+    i = 0
+    n = len(t)
+    while i < n:
+        ch = t[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        if ch in "}]":
+            j = i + 1
+            while j < n and t[j] in " \t\r\n":
+                j += 1
+            if j < n and t[j] in '{"[':
+                out.append(",")
+        i += 1
+    return "".join(out)
+
+
+def _repair_json(t: str) -> str:
+    """对 LLM 输出 JSON 做低风险自动修复（尾逗号 / 缺失逗号），返回修复文本。"""
+    return _insert_missing_commas(_strip_trailing_commas(t))
+
+
 def _extract_json(text: str):
     """从模型输出中提取 JSON（容错 markdown 代码块包裹），返回解析后的对象。
 
     优先按数组 `[...]` 提取（知识建模场景输出扁平 JSON 数组），否则回退到
     对象 `{...}`（结构化输出场景）。供本模块的 invoke_structured 与
     learning_engine.build_knowledge_model 复用，避免重复实现。
+
+    解析失败时先做一次低风险自动修复（尾逗号 / 缺失逗号），仍失败则抛出
+    JSONDecodeError，交由调用方决定是否重试（见 learning_engine.build_knowledge_model）。
     """
     t = text.strip()
     # 去掉 ```json ... ``` 包裹
@@ -129,7 +215,10 @@ def _extract_json(text: str):
         end = t.rfind("}")
     if start != -1 and end != -1 and end > start:
         t = t[start:end + 1]
-    return json.loads(t)
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        return json.loads(_repair_json(t))
 
 
 def invoke_structured(model, schema, messages):

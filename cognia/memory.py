@@ -23,6 +23,7 @@ from cognia.schemas import ProficiencyEntry
 # namespace 第一段（Store 的 namespace 是 tuple：类别 + user_id）
 PROFICIENCY_NS = "proficiency"
 PROFILE_NS = "profile"
+KNOWLEDGE_MODEL_NS = "knowledge_model"
 
 # 模块级单例缓存：生产环境整个进程只建一个共享 AsyncConnectionPool，并让
 # Checkpointer 与 Store 复用同一个池。否则 Chainlit 每次 on_chat_start 都新建
@@ -84,6 +85,65 @@ def put_profile(store: BaseStore, user_id: str, key: str, value: dict) -> None:
 def get_profile(store: BaseStore, user_id: str, key: str) -> dict | None:
     """读取画像字段，不存在返回 None。"""
     item = store.get((PROFILE_NS, user_id), key)
+    return item.value if item else None
+
+
+def get_profile_dict(store: BaseStore, user_id: str) -> dict:
+    """读取某 user 的全部画像字段，合并为扁平 dict。
+
+    用于对话 Agent 注入 system prompt（沟通风格 / 语言偏好 / 学习偏好等）。
+    各字段值约定为 `{"value": ...}` 结构，这里取 `value` 便于直接拼接。
+    """
+    if store is None or not user_id:
+        return {}
+    items = store.search((PROFILE_NS, user_id))
+    profile: dict = {}
+    for item in items:
+        value = item.value
+        if isinstance(value, dict):
+            profile[item.key] = value.get("value", value)
+        else:
+            profile[item.key] = value
+    return profile
+
+
+async def aput_profile(store, user_id: str, key: str, value: dict) -> None:
+    """put_profile 的异步版本（供 Chainlit 主事件循环内调用）。
+
+    与 aappend_proficiency_delta 同理：AsyncPostgresStore 在主事件循环线程里
+    必须用 `await store.aput`，同步 `store.put` 会抛 InvalidStateError。
+    """
+    await store.aput((PROFILE_NS, user_id), key, value)
+
+
+# ---- 知识模型（knowledge_model）：load-or-build 冻结持久化 ----
+
+def normalize_goal(goal: str) -> str:
+    """归一化学习目标，作为知识模型持久化 key（Task ⑨）。
+
+    MVP 只做「去首尾空白 + 折叠内部空白 + 统一小写」，不做语义同义映射
+    （同义映射需向量 / 词典，误合并风险高，留待后续）。归一化后等价目标
+    （如「Spring AOP」「spring  aop」「SPRING AOP」）映射到同一 key，
+    保证知识点 identity（point_id）跨会话稳定。
+    """
+    import re
+    return re.sub(r"\s+", " ", goal.strip().lower())
+
+
+def put_knowledge_model(store: BaseStore, user_id: str, goal_key: str, km: dict) -> None:
+    """冻结持久化某 user 的知识模型（首次构建后不再重生成）。
+
+    namespace = ("knowledge_model", user_id)，key = 归一化 goal，天然按 user 隔离。
+    知识模型是「领域模型」，与熟练度（proficiency）/ 偏好（profile）分 namespace。
+    只有 graph 节点（executor 线程）调用，故用同步 store.put 即可（AsyncPostgresStore
+    会在 executor 线程内桥接，见 get_store 说明）。
+    """
+    store.put((KNOWLEDGE_MODEL_NS, user_id), goal_key, km)
+
+
+def get_knowledge_model(store: BaseStore, user_id: str, goal_key: str) -> dict | None:
+    """读取已冻结的知识模型，不存在返回 None（触发重新构建）。"""
+    item = store.get((KNOWLEDGE_MODEL_NS, user_id), goal_key)
     return item.value if item else None
 
 

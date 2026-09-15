@@ -93,3 +93,63 @@ def test_structured_diagnoser_mock_invoke(monkeypatch):
     assert result.state == CognitiveState.PARTIAL
     assert result.confidence == Confidence.MEDIUM
     assert result.evidence == ["用户说 AOP 就是切面，但说不清代理机制"]
+
+
+# ---- 思考链提取（基座能力）----
+
+class _FakeAIMessage:
+    def __init__(self, additional_kwargs):
+        self.additional_kwargs = additional_kwargs
+
+
+def test_extract_reasoning_from_message():
+    """从 AIMessage.additional_kwargs 提取 reasoning_content。"""
+    assert models.extract_reasoning_from_message(
+        _FakeAIMessage({"reasoning_content": "先判断用户意图……"})
+    ) == "先判断用户意图……"
+    assert models.extract_reasoning_from_message(_FakeAIMessage({})) == ""
+    assert models.extract_reasoning_from_message(None) == ""
+
+
+def test_structured_output_with_reasoning_fallback_for_stub():
+    """测试桩不支持 include_raw 时回退普通结构化输出，reasoning 为空（兼容）。"""
+
+    class StubNoRaw:
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, _messages):
+            return "parsed-object"
+
+    result, reasoning = models.structured_output_with_reasoning(
+        StubNoRaw(), str, [("human", "hi")]
+    )
+    assert result == "parsed-object"
+    assert reasoning == ""
+
+
+def test_structured_output_with_reasoning_include_raw():
+    """真实模型 include_raw=True 返回 dict 时，能同时拿到 parsed 与思考链。"""
+
+    class StubRaw:
+        def __init__(self):
+            self._include_raw = False
+
+        def with_structured_output(self, schema, include_raw=False):
+            self._include_raw = include_raw
+            return self
+
+        def invoke(self, _messages):
+            if self._include_raw:
+                return {
+                    "parsed": "parsed-object",
+                    "raw": _FakeAIMessage({"reasoning_content": "思考……"}),
+                    "parsing_error": None,
+                }
+            return "parsed-object"
+
+    result, reasoning = models.structured_output_with_reasoning(
+        StubRaw(), str, [("human", "hi")]
+    )
+    assert result == "parsed-object"
+    assert reasoning == "思考……"

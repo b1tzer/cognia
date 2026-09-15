@@ -14,12 +14,17 @@ from langgraph.store.memory import InMemoryStore
 from cognia import memory as memory_mod
 from cognia.memory import (
     append_proficiency_delta,
+    aput_profile,
     get_checkpointer,
     get_current_proficiency,
+    get_knowledge_model,
     get_profile,
+    get_profile_dict,
     get_proficiency_history,
     get_store,
     get_user_id,
+    normalize_goal,
+    put_knowledge_model,
     put_profile,
 )
 from cognia.schemas import CognitiveState, ProficiencyEntry
@@ -96,6 +101,25 @@ def test_profile_read_write():
     assert get_profile(store, "u2", "language") is None  # 画像同样按 user 隔离
 
 
+def test_get_profile_dict_merges_fields():
+    """get_profile_dict 读取某 user 全部画像字段并拍平成 dict。"""
+    store = InMemoryStore()
+    put_profile(store, "u1", "language", {"value": "zh"})
+    put_profile(store, "u1", "communication_style", {"value": "简洁"})
+    assert get_profile_dict(store, "u1") == {
+        "language": "zh",
+        "communication_style": "简洁",
+    }
+    assert get_profile_dict(store, "u2") == {}  # 不同 user 隔离
+
+
+def test_aput_profile_writes():
+    """aput_profile 异步写入，读回一致（供 Chainlit 主事件循环调用）。"""
+    store = InMemoryStore()
+    asyncio.run(memory_mod.aput_profile(store, "u1", "language", {"value": "zh"}))
+    assert get_profile(store, "u1", "language") == {"value": "zh"}
+
+
 def test_factory_pool_has_autocommit(monkeypatch):
     """工厂函数的 ConnectionPool 必须带 autocommit=True。
 
@@ -152,3 +176,32 @@ def test_factory_pool_has_autocommit(monkeypatch):
     assert len(captured["kwargs_list"]) == 1
     for kwargs in captured["kwargs_list"]:
         assert kwargs["autocommit"] is True
+
+
+# ---- 知识模型持久化（Task ⑨）----
+
+def test_normalize_goal():
+    """归一化目标：去空白 + 统一小写，等价目标映射到同一 key。"""
+    assert normalize_goal("Spring AOP") == "spring aop"
+    assert normalize_goal("  Spring   AOP  ") == "spring aop"
+    assert normalize_goal("SPRING AOP") == "spring aop"
+    assert normalize_goal("spring\taop") == "spring aop"  # tab 折叠为空格
+
+
+def test_knowledge_model_read_write():
+    """知识模型可写可读，缺失返回 None。"""
+    store = InMemoryStore()
+    km = {"goal": "Spring AOP", "points": [{"id": "aop-concept", "name": "AOP 概念"}]}
+    goal_key = normalize_goal("Spring AOP")
+
+    put_knowledge_model(store, "u1", goal_key, km)
+    assert get_knowledge_model(store, "u1", goal_key) == km
+    assert get_knowledge_model(store, "u1", "other-goal") is None
+
+
+def test_knowledge_model_user_isolation():
+    """知识模型按 user 隔离。"""
+    store = InMemoryStore()
+    km = {"goal": "Spring AOP", "points": []}
+    put_knowledge_model(store, "u1", "spring aop", km)
+    assert get_knowledge_model(store, "u2", "spring aop") is None

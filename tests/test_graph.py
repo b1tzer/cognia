@@ -1,10 +1,13 @@
-"""cognia.graph 教学核心图单元测试。
+"""cognia.graph 编排层单元测试（重构后：对话 Agent ⇄ 学习引擎循环）。
 
 全部使用 ScriptedLLM 假模型，离线、快速、不依赖 DEEPSEEK_API_KEY。
-重点验证三类验收标准：
-1. mock 跑通最小闭环（mastered 闭环）
-2. 中/低置信度诊断不修改长期认知状态（诊断 ≠ 迁移）
-3. 3 轮失败回溯 + mastered 双重验证闸门
+
+重点验证新架构的四类不变量：
+1. **对话自主权与认知裁决权解耦**：Agent 可自由决定怎么聊 / 怎么教，
+   但 ConversationTurn 里没有认知状态字段；状态只能经 Learning Engine 变更。
+2. **诊断 ≠ 迁移**：中 / 低置信度诊断不修改长期认知状态；迁移必须经状态机裁决。
+3. **掌握双重验证**：diagnose 判 mastered 只是候选，必须概念 + 场景双过才迁移。
+4. **防失控**：3 轮干预失败 / 连续无进展触发放弃（回溯），跨会话读回历史熟练度。
 """
 
 from datetime import datetime, timezone
@@ -13,6 +16,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 
+from cognia.conversation_agent import (
+    ConversationAction,
+    ConversationIntent,
+    ConversationTurn,
+)
 from cognia.graph import build_graph, resolve_migration
 from cognia.memory import append_proficiency_delta
 from cognia.schemas import (
@@ -22,15 +30,15 @@ from cognia.schemas import (
     KnowledgeModel,
     KnowledgePoint,
     ProficiencyEntry,
-    ValidationResult,
-    VerificationState,
 )
 
 
 class ScriptedLLM:
     """按脚本队列返回预设响应的假模型。
 
-    支持 with_structured_output（返回 self）与 invoke（按队列弹出响应）。
+    支持 with_structured_output（返回 self）与 invoke（按队列弹出响应），
+    覆盖三种角色：对话 Agent（返回 ConversationTurn）、planner（返回 KnowledgeModel）、
+    diagnoser（返回 Diagnosis / 验证桩对象）。
     """
 
     def __init__(self, responses):
@@ -46,6 +54,19 @@ class ScriptedLLM:
         return self._responses.pop(0)
 
 
+# ---- 测试桩 / 助手 ----
+
+def _turn(intent, action, reply="", proposed_goal=None, target_point_id=None):
+    """构造一轮对话 Agent 的结构化决策。"""
+    return ConversationTurn(
+        intent=intent,
+        action=action,
+        reply=reply,
+        proposed_goal=proposed_goal,
+        target_point_id=target_point_id,
+    )
+
+
 def _point(point_id="aop-concept", name="AOP 概念"):
     return KnowledgePoint(id=point_id, name=name, description="面向切面编程")
 
@@ -55,36 +76,54 @@ def _single_point_model():
 
 
 def _two_point_model():
-    """两个知识点：用于验证 select_next 切点后 current_long_state 正确重置。"""
     return KnowledgeModel(goal="Spring AOP", points=[
         _point("aop-concept", "AOP 概念"),
         _point("aop-proxy", "AOP 代理"),
     ])
 
 
+class _ConceptAssessmentStub:
+    def __init__(self, passed, evidence=""):
+        self.passed = passed
+        self.evidence = evidence
+
+
+class _ScenarioAssessmentStub:
+    def __init__(self, passed, evidence=""):
+        self.passed = passed
+        self.evidence = evidence
+
+
+def _mastered_diagnosis(point_id="aop-concept"):
+    return Diagnosis(
+        point_id=point_id,
+        state=CognitiveState.MASTERED,
+        confidence=Confidence.HIGH,
+        evidence=["用户准确解释了切面与连接点"],
+    )
+
+
 # ---- 纯函数：resolve_migration（诊断 ≠ 迁移 的核心）----
 
 def test_resolve_migration_medium_confidence_no_migration():
-    """中置信度诊断不产生迁移。"""
     d = Diagnosis(point_id="p", state=CognitiveState.PARTIAL, confidence=Confidence.MEDIUM, evidence=["x"])
     assert resolve_migration(d, None, None) is None
 
 
 def test_resolve_migration_low_confidence_no_migration():
-    """低置信度诊断不产生迁移。"""
     d = Diagnosis(point_id="p", state=CognitiveState.PARTIAL, confidence=Confidence.LOW, evidence=["x"])
     assert resolve_migration(d, None, None) is None
 
 
 def test_resolve_migration_mastered_requires_verification():
-    """高置信度 mastered 候选，但双重验证未过 → 不迁移。"""
+    from cognia.schemas import ValidationResult, VerificationState
     d = Diagnosis(point_id="p", state=CognitiveState.MASTERED, confidence=Confidence.HIGH, evidence=["x"])
     v = VerificationState(concept=ValidationResult.PASSED, scenario=ValidationResult.UNASSESSED)
     assert resolve_migration(d, CognitiveState.PARTIAL, v) is None
 
 
 def test_resolve_migration_mastered_with_verification():
-    """高置信度 mastered + 双重验证全过 → 迁移。"""
+    from cognia.schemas import ValidationResult, VerificationState
     d = Diagnosis(point_id="p", state=CognitiveState.MASTERED, confidence=Confidence.HIGH, evidence=["x"])
     v = VerificationState(concept=ValidationResult.PASSED, scenario=ValidationResult.PASSED)
     entry = resolve_migration(d, CognitiveState.PARTIAL, v)
@@ -94,13 +133,11 @@ def test_resolve_migration_mastered_with_verification():
 
 
 def test_resolve_migration_self_transition_forbidden():
-    """自我迁移（partial→partial）被拓扑禁止 → 不迁移。"""
     d = Diagnosis(point_id="p", state=CognitiveState.PARTIAL, confidence=Confidence.HIGH, evidence=["x"])
     assert resolve_migration(d, CognitiveState.PARTIAL, None) is None
 
 
 def test_resolve_migration_first_diagnosis_partial_allowed():
-    """首次诊断（from=None）partial 高置信度 → 迁移（unassessed→partial）。"""
     d = Diagnosis(point_id="p", state=CognitiveState.PARTIAL, confidence=Confidence.HIGH, evidence=["x"])
     entry = resolve_migration(d, None, None)
     assert entry is not None
@@ -108,38 +145,104 @@ def test_resolve_migration_first_diagnosis_partial_allowed():
     assert entry.to_state == CognitiveState.PARTIAL
 
 
-# ---- 图集成测试 ----
+# ---- 结构不变量：Agent 无认知裁决权 ----
 
-def _resume_times(graph, config, answers):
-    """按顺序 resume，返回最后一次结果。"""
-    result = None
-    for ans in answers:
-        result = graph.invoke(Command(resume=ans), config=config)
-    return result
+def test_agent_turn_has_no_cognitive_state_field():
+    """ConversationTurn 不得包含任何认知状态字段（Agent 只能请求诊断，不能直写）。"""
+    fields = set(ConversationTurn.model_fields.keys())
+    assert "state" not in fields
+    assert "mastery" not in fields
+    assert "cognitive_state" not in fields
+    assert "proficiency" not in fields
 
 
-def test_minimal_closed_loop_mastered():
-    """单知识点 mastered 最小闭环：设目标→建模型→探测→诊断→验证→掌握→结束。"""
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),   # setup_goal：目标不过大
-        _single_point_model(),        # build_model：单知识点
+# ---- 图集成：对话自主权（不把输入强行解释成节点要求的格式）----
+
+def test_greeting_not_forced_as_goal():
+    """用户「你好」→ Agent 自然回应，不建知识模型、不设学习目标。"""
+    agent = ScriptedLLM([
+        _turn(ConversationIntent.GREETING, ConversationAction.RESPOND,
+              reply="你好！今天想学点什么？"),
     ])
-    teacher = ScriptedLLM(["请解释 AOP 是什么？"])  # probe
+    graph = build_graph(
+        planner_model=ScriptedLLM([]),
+        teacher_model=agent,
+        diagnoser_model=ScriptedLLM([]),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "t-greet"}}
+
+    result = graph.invoke({"user_message": "你好"}, config=config)
+
+    assert "__interrupt__" in result
+    interrupt_value = result["__interrupt__"][0].value
+    assert interrupt_value["message"] == "你好！今天想学点什么？"
+
+    state = graph.get_state(config).values
+    assert state.get("knowledge_model") is None
+    assert state.get("goal") is None
+
+
+def test_set_goal_builds_model_and_probes():
+    """用户「Spring AOP」→ Agent 判为 SET_GOAL → 引擎建模 → Agent 提出探针问题。"""
+    planner = ScriptedLLM([_single_point_model()])
+    agent = ScriptedLLM([
+        _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+              proposed_goal="Spring AOP"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="请解释一下 AOP 是什么？"),
+    ])
+    graph = build_graph(
+        planner_model=planner,
+        teacher_model=agent,
+        diagnoser_model=ScriptedLLM([]),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "t-goal"}}
+
+    result = graph.invoke({"user_message": "Spring AOP"}, config=config)
+
+    assert "__interrupt__" in result
+    assert result["__interrupt__"][0].value["message"] == "请解释一下 AOP 是什么？"
+
+    state = graph.get_state(config).values
+    assert state["goal"] == "Spring AOP"
+    assert state["current_point_id"] == "aop-concept"
+    assert state["knowledge_model"]["points"][0]["id"] == "aop-concept"
+
+
+# ---- 图集成：mastered 闭环与诊断 ≠ 迁移 ----
+
+def test_mastered_closed_loop():
+    """单知识点 mastered 最小闭环：设目标 → 建模 → 探测 → 诊断 → 双重验证 → 掌握 → 结束。"""
+    planner = ScriptedLLM([_single_point_model()])
+    agent = ScriptedLLM([
+        _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+              proposed_goal="Spring AOP"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="请解释 AOP 是什么？"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+        _turn(ConversationIntent.ANSWER, ConversationAction.RESPOND, reply="恭喜你掌握了 AOP！"),
+    ])
     diagnoser = ScriptedLLM([
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
-                  confidence=Confidence.HIGH, evidence=["用户准确解释了切面与连接点"]),
+        _mastered_diagnosis(),
         _ConceptAssessmentStub(True, "概念解释正确"),
         _ScenarioAssessmentStub(True, "用户能辨析动态代理与 CGLIB 的边界"),
     ])
 
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "t1"}}
+    graph = build_graph(
+        planner_model=planner,
+        teacher_model=agent,
+        diagnoser_model=diagnoser,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "t-mastered"}}
 
-    first = graph.invoke({"goal": "Spring AOP"}, config=config)
-    assert "__interrupt__" in first  # 第一次中断在 await_answer
+    first = graph.invoke({"user_message": "Spring AOP"}, config=config)
+    assert "__interrupt__" in first
 
-    final = _resume_times(graph, config, ["AOP 是面向切面编程，通过切面拦截方法调用……"])
+    final = graph.invoke(
+        Command(resume="AOP 是面向切面编程，通过切面拦截方法调用……"),
+        config=config,
+    )
 
     assert final["ended"] is True
     assert len(final["proficiency_deltas"]) == 1
@@ -148,58 +251,105 @@ def test_minimal_closed_loop_mastered():
 
 
 def test_medium_confidence_no_delta():
-    """中置信度诊断不产生迁移（诊断 ≠ 迁移，图集成验证）。"""
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),
-        _single_point_model(),
+    """中置信度诊断不产生迁移（诊断 ≠ 迁移），Agent 重新探测。"""
+    planner = ScriptedLLM([_single_point_model()])
+    agent = ScriptedLLM([
+        _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+              proposed_goal="Spring AOP"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="q1"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="q2"),
     ])
-    teacher = ScriptedLLM(["q1", "q2"])  # 两轮 probe
     diagnoser = ScriptedLLM([
         Diagnosis(point_id="aop-concept", state=CognitiveState.PARTIAL,
                   confidence=Confidence.MEDIUM, evidence=["说得有点模糊"]),
-        Diagnosis(point_id="aop-concept", state=CognitiveState.PARTIAL,
-                  confidence=Confidence.HIGH, evidence=["说清楚了部分"]),
     ])
 
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "t2"}}
+    graph = build_graph(
+        planner_model=planner,
+        teacher_model=agent,
+        diagnoser_model=diagnoser,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "t-medium"}}
 
-    graph.invoke({"goal": "Spring AOP"}, config=config)  # 中断在第一次 await
-    graph.invoke(Command(resume="AOP 就是切面"), config=config)  # 中置信度 → 路由回 probe → 再次中断
+    graph.invoke({"user_message": "Spring AOP"}, config=config)
+    graph.invoke(Command(resume="AOP 就是切面"), config=config)
 
-    snapshot = graph.get_state(config)
-    state = snapshot.values
+    state = graph.get_state(config).values
     assert state["diagnosis"]["confidence"] == "medium"
     assert state.get("proficiency_deltas", []) == []  # 中置信度不迁移
 
 
-def test_three_failures_backtrack():
-    """3 轮干预失败（仍 misconception）触发回溯，放弃当前知识点。"""
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),
-        _single_point_model(),
+def test_verify_failure_downgrades_diagnosis():
+    """伪 mastered（diagnose 判 mastered 但验证失败）→ 降级 partial，零 mastered Delta。"""
+    planner = ScriptedLLM([_single_point_model()])
+    agent = ScriptedLLM([
+        _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+              proposed_goal="Spring AOP"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="q1"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+        _turn(ConversationIntent.ANSWER, ConversationAction.EXPLAIN, reply="我再讲讲概念"),
     ])
-    teacher = ScriptedLLM([
-        "q1", "i1", "q2", "i2", "q3", "i3", "q4",  # 4 次 probe + 3 次 intervene
+    diagnoser = ScriptedLLM([
+        _mastered_diagnosis(),
+        _ConceptAssessmentStub(False, ""),
+        _ScenarioAssessmentStub(False, ""),
+    ])
+
+    graph = build_graph(
+        planner_model=planner,
+        teacher_model=agent,
+        diagnoser_model=diagnoser,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "t-verify-fail"}}
+
+    graph.invoke({"user_message": "Spring AOP"}, config=config)
+    graph.invoke(Command(resume="AOP 就是切面"), config=config)
+
+    state = graph.get_state(config).values
+    assert state["diagnosis"]["state"] == "partial"      # 已降级
+    assert state["verification"]["concept"] == "failed"
+    assert state["verification"]["scenario"] == "failed"
+    assert state.get("proficiency_deltas", []) == []      # 未通过验证，零 mastered Delta
+
+
+# ---- 图集成：防失控（3 轮失败回溯）----
+
+def test_three_failures_backtrack():
+    """3 轮干预失败（仍 misconception）触发放弃，且仅首次产生 1 个 Delta。"""
+    planner = ScriptedLLM([_single_point_model()])
+    agent = ScriptedLLM([
+        _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+              proposed_goal="Spring AOP"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="q1"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+        _turn(ConversationIntent.ANSWER, ConversationAction.EXPLAIN, reply="纠正一下"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+        _turn(ConversationIntent.ANSWER, ConversationAction.EXPLAIN, reply="再纠正"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+        _turn(ConversationIntent.ANSWER, ConversationAction.EXPLAIN, reply="再纠正"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+        _turn(ConversationIntent.ANSWER, ConversationAction.RESPOND, reply="暂时告一段落"),
     ])
     diagnoser = ScriptedLLM([
         Diagnosis(point_id="aop-concept", state=CognitiveState.MISCONCEPTION,
-                  confidence=Confidence.HIGH, evidence=["错误"]),
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MISCONCEPTION,
-                  confidence=Confidence.HIGH, evidence=["错误"]),
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MISCONCEPTION,
-                  confidence=Confidence.HIGH, evidence=["错误"]),
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MISCONCEPTION,
-                  confidence=Confidence.HIGH, evidence=["错误"]),
+                  confidence=Confidence.HIGH, evidence=["错误"]) for _ in range(4)
     ])
 
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "t3"}}
+    graph = build_graph(
+        planner_model=planner,
+        teacher_model=agent,
+        diagnoser_model=diagnoser,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "t-backtrack"}}
 
-    graph.invoke({"goal": "Spring AOP"}, config=config)
-    final = _resume_times(graph, config, ["答1", "答2", "答3", "答4"])
+    graph.invoke({"user_message": "Spring AOP"}, config=config)
+    final = None
+    for ans in ["答1", "答2", "答3", "答4"]:
+        final = graph.invoke(Command(resume=ans), config=config)
 
     assert final["ended"] is True
     assert final["intervention_fail_count"] == 3
@@ -208,161 +358,10 @@ def test_three_failures_backtrack():
     assert final["proficiency_deltas"][0]["to_state"] == "misconception"
 
 
-def test_verify_failure_backtrack():
-    """伪 mastered（diagnose 判 mastered 但 verify 反复失败）→ 3 次后回溯，防无限循环。
-
-    这是反馈发现的核心 bug：若 verify 失败不计数，_improved(mastered, ...) 恒 True
-    会导致「diagnose→verify 失败→intervene→probe→diagnose」无限循环。
-    """
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),
-        _single_point_model(),
-    ])
-    teacher = ScriptedLLM([
-        "q1", "i1", "q2", "i2", "q3", "i3", "q4",
-    ])
-    # 4 次 diagnose 均判 mastered；前 3 次 verify（concept+scenario）均失败；
-    # 第 4 次 resume 时 fail_count=3 命中闸门 → 直接 select_next，不再 verify。
-    diagnoser = ScriptedLLM([
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
-                  confidence=Confidence.HIGH, evidence=["说得对"]),
-        _ConceptAssessmentStub(False, "概念不清"),
-        _ScenarioAssessmentStub(False, "场景错误"),
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
-                  confidence=Confidence.HIGH, evidence=["说得对"]),
-        _ConceptAssessmentStub(False, "概念不清"),
-        _ScenarioAssessmentStub(False, "场景错误"),
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
-                  confidence=Confidence.HIGH, evidence=["说得对"]),
-        _ConceptAssessmentStub(False, "概念不清"),
-        _ScenarioAssessmentStub(False, "场景错误"),
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
-                  confidence=Confidence.HIGH, evidence=["说得对"]),
-    ])
-
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "t4"}}
-
-    graph.invoke({"goal": "Spring AOP"}, config=config)
-    final = _resume_times(graph, config, ["答1", "答2", "答3", "答4"])
-
-    assert final["ended"] is True
-    assert final["intervention_fail_count"] == 3
-    # mastered 从未通过双重验证，故零 Delta
-    assert final.get("proficiency_deltas", []) == []
-
-
-def test_verify_failure_downgrades_diagnosis():
-    """verify 失败后 diagnosis.state 降级到 partial，且 concept_evidence 不回填 mastered 证据。
-
-    反馈发现的遗留问题：verify 失败若不改 diagnosis，intervene 会拿到「已 mastered +
-    请干预」的自相矛盾状态；同时 concept 失败时 concept_evidence 曾错误回填
-    diagnosis.evidence（支持「判 mastered」的正面证据）。
-    """
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),
-        _single_point_model(),
-    ])
-    teacher = ScriptedLLM([
-        "q1",  # 第一次 probe
-        "i1",  # intervene（verify 失败后）
-        "q2",  # 第二次 probe
-    ])
-    diagnoser = ScriptedLLM([
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
-                  confidence=Confidence.HIGH, evidence=["正面证据"]),
-        _ConceptAssessmentStub(False, ""),   # concept 失败 + 空 evidence
-        _ScenarioAssessmentStub(False, ""),  # scenario 失败 + 空 evidence
-    ])
-
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "t5"}}
-
-    graph.invoke({"goal": "Spring AOP"}, config=config)  # 中断在第一次 await
-    graph.invoke(Command(resume="答案"), config=config)  # diagnose→verify失败→intervene→probe→中断
-
-    snapshot = graph.get_state(config)
-    state = snapshot.values
-    assert state["diagnosis"]["state"] == "partial"      # 已降级
-    assert state["diagnosis"]["confidence"] == "high"    # 置信度不变
-    assert state["verification"]["concept"] == "failed"
-    assert state["verification"]["scenario"] == "failed"
-    assert state["intervention_fail_count"] == 1
-    assert state["verification"]["concept_evidence"] == []  # 不回填 mastered 正面证据
-
-
-def test_intervene_reads_verification_gap():
-    """intervene 消费 verification 结果，针对「场景薄弱」做针对性纠错（而非笼统干预）。
-
-    反馈的可选改进：verify 失败后应让 intervene 知道「概念 vs 场景」哪块没过，
-    才能针对性纠错。此测试用 scenario 失败 + concept 通过的组合验证区分能力。
-    """
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),
-        _single_point_model(),
-    ])
-    teacher = ScriptedLLM([
-        "q1",  # 第一次 probe
-        "i1",  # intervene（verify 失败后）
-        "q2",  # 第二次 probe
-    ])
-    diagnoser = ScriptedLLM([
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
-                  confidence=Confidence.HIGH, evidence=["正面证据"]),
-        _ConceptAssessmentStub(True, "概念正确"),   # concept 通过
-        _ScenarioAssessmentStub(False, ""),        # scenario 失败
-    ])
-
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "t6"}}
-
-    graph.invoke({"goal": "Spring AOP"}, config=config)  # 中断在第一次 await
-    graph.invoke(Command(resume="答案"), config=config)  # diagnose→verify失败→intervene→probe→中断
-
-    # teacher.calls[1] 是 intervene 的 prompt（list of (role, content)）
-    intervene_messages = teacher.calls[1]
-    human_content = intervene_messages[1][1]
-    assert "场景/边界辨析未通过" in human_content
-    assert "概念解释未通过" not in human_content  # 概念已通过，不应提示概念薄弱
-
-
-# ---- 测试内部桩对象（代替真实 Pydantic 私有模型，避免 import 私有类）----
-
-class _GoalAssessmentStub:
-    """setup_goal 用 planner.with_structured_output 返回的桩对象。"""
-
-    def __init__(self, too_broad, feedback=""):
-        self.too_broad = too_broad
-        self.feedback = feedback
-
-
-class _ScenarioAssessmentStub:
-    """verify 用 diagnoser.with_structured_output 返回的桩对象。"""
-
-    def __init__(self, passed, evidence=""):
-        self.passed = passed
-        self.evidence = evidence
-
-
-class _ConceptAssessmentStub:
-    """verify 的概念验证用 diagnoser.with_structured_output 返回的桩对象。"""
-
-    def __init__(self, passed, evidence=""):
-        self.passed = passed
-        self.evidence = evidence
-
-
-# ---- 读侧闭环（任务⑧：跨会话认知状态恢复）----
+# ---- 跨会话读侧闭环 ----
 
 def test_cross_session_reads_historical_proficiency():
-    """跨会话读侧闭环（Q6）：同一 user_id + 同一 point_id，build_model 读回历史态。
-
-    模拟「第二次打开 Cognia」：store 里已有 u1 学 aop-concept 到 partial 的历史，
-    第二次会话 build_model 应把 current_long_state 初始化为 partial（而非 unassessed）。
-    """
+    """同一 user_id + 同一 point_id，SET_GOAL 建模时读回历史熟练度（而非 unassessed）。"""
     store = InMemoryStore()
     append_proficiency_delta(store, "u1", ProficiencyEntry(
         point_id="aop-concept",
@@ -372,87 +371,174 @@ def test_cross_session_reads_historical_proficiency():
         timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
     ))
 
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),
-        _single_point_model(),  # 返回 point_id="aop-concept"
+    planner = ScriptedLLM([_single_point_model()])
+    agent = ScriptedLLM([
+        _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+              proposed_goal="Spring AOP"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="请解释 AOP"),
     ])
-    teacher = ScriptedLLM(["请解释 AOP"])
-    diagnoser = ScriptedLLM([])  # 跑到 await_answer 即中断，不触发 diagnose
+    diagnoser = ScriptedLLM([])
 
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver(),
-                        store=store)
+    graph = build_graph(
+        planner_model=planner,
+        teacher_model=agent,
+        diagnoser_model=diagnoser,
+        checkpointer=InMemorySaver(),
+        store=store,
+    )
     config = {"configurable": {"thread_id": "t-new", "user_id": "u1"}}
 
-    graph.invoke({"goal": "Spring AOP"}, config=config)  # 跑到 await_answer interrupt
+    graph.invoke({"user_message": "Spring AOP"}, config=config)
 
     state = graph.get_state(config).values
-    assert state["current_long_state"] == "partial"  # 读回历史熟练度，而非 unassessed
+    assert state["current_long_state"] == "partial"  # 读回历史，而非 unassessed
 
 
-def test_cross_session_user_isolation():
-    """不同 user_id 读不到对方的历史熟练度（Store 隔离）。"""
+def test_select_next_reads_historical_for_new_point():
+    """掌握第一个点后切到第二个点，应读回该点历史态（而非硬置 None）。"""
     store = InMemoryStore()
     append_proficiency_delta(store, "u1", ProficiencyEntry(
-        point_id="aop-concept",
+        point_id="aop-proxy",
         from_state=None,
-        to_state=CognitiveState.MASTERED,
-        evidence=["u1 的证据"],
+        to_state=CognitiveState.PARTIAL,
+        evidence=["第二点历史"],
         timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
     ))
 
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),
-        _single_point_model(),
-    ])
-    teacher = ScriptedLLM(["请解释 AOP"])
-    diagnoser = ScriptedLLM([])
-
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver(),
-                        store=store)
-    config = {"configurable": {"thread_id": "t-u2", "user_id": "u2"}}  # 不同 user
-
-    graph.invoke({"goal": "Spring AOP"}, config=config)
-
-    state = graph.get_state(config).values
-    assert state["current_long_state"] is None  # u2 无历史，保持 unassessed
-
-
-def test_select_next_resets_long_state_for_new_point():
-    """切到下一个知识点时，current_long_state 应重置为 None（新点从未评估）。
-
-    回归场景：否则第二个点会错误继承第一个点的 mastered，导致：
-    - 伪造「mastered→partial」降级 Delta（can_transition 允许 mastered 降级）
-    - 或 mastered 自我迁移被拒、新点永远无法 mastered
-    """
-    planner = ScriptedLLM([
-        _GoalAssessmentStub(False),
-        _two_point_model(),
-    ])
-    teacher = ScriptedLLM([
-        "q1",  # 第一个点 probe
-        "q2",  # 第二个点 probe（select_next 后）
+    planner = ScriptedLLM([_two_point_model()])
+    agent = ScriptedLLM([
+        _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+              proposed_goal="Spring AOP"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="请解释 AOP 概念"),
+        _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+        _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="请解释 AOP 代理"),
     ])
     diagnoser = ScriptedLLM([
-        Diagnosis(point_id="aop-concept", state=CognitiveState.MASTERED,
-                  confidence=Confidence.HIGH, evidence=["解释正确"]),
+        _mastered_diagnosis("aop-concept"),
         _ConceptAssessmentStub(True, "概念对"),
         _ScenarioAssessmentStub(True, "场景对"),
     ])
 
-    graph = build_graph(planner_model=planner, teacher_model=teacher,
-                        diagnoser_model=diagnoser, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "t-select"}}
+    graph = build_graph(
+        planner_model=planner,
+        teacher_model=agent,
+        diagnoser_model=diagnoser,
+        checkpointer=InMemorySaver(),
+        store=store,
+    )
+    config = {"configurable": {"thread_id": "t-select", "user_id": "u1"}}
 
-    graph.invoke({"goal": "Spring AOP"}, config=config)  # 中断在第一个点
-    graph.invoke(Command(resume="AOP 是面向切面"), config=config)  # mastered→select_next→第二个点 probe→中断
+    graph.invoke({"user_message": "Spring AOP"}, config=config)
+    graph.invoke(Command(resume="AOP 是面向切面"), config=config)
 
     state = graph.get_state(config).values
-    # 已切到第二个点，且 current_long_state 重置为 None（而非继承第一个点的 mastered）
     assert state["current_point_id"] == "aop-proxy"
-    assert state["current_long_state"] is None
-    # 第一个点产生 1 个 mastered Delta，第二个点尚未诊断、零额外 Delta
+    assert state["current_long_state"] == "partial"  # 读回第二点历史
     assert len(state["proficiency_deltas"]) == 1
     assert state["proficiency_deltas"][0]["point_id"] == "aop-concept"
     assert state["proficiency_deltas"][0]["to_state"] == "mastered"
+
+
+# ---- 知识模型 load-or-build（Task ⑨）----
+
+def test_knowledge_model_reused_across_sessions():
+    """同一 user + 同一 goal，第二次会话复用已冻结知识模型，不重新调用 planner。
+
+    Task ⑨ 核心：point_id 由 LLM 每会话现生成会跨会话漂移（同一目标两次拆解
+    得到不同 id），导致按 point_id 读回熟练度查空；load-or-build 冻结 km 后
+    point_id 天然稳定。
+    """
+    store = InMemoryStore()
+
+    # 第一次会话：构建并冻结知识模型
+    graph1 = build_graph(
+        planner_model=ScriptedLLM([_single_point_model()]),
+        teacher_model=ScriptedLLM([
+            _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+                  proposed_goal="Spring AOP"),
+            _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="请解释 AOP"),
+        ]),
+        diagnoser_model=ScriptedLLM([]),
+        checkpointer=InMemorySaver(),
+        store=store,
+    )
+    graph1.invoke(
+        {"user_message": "Spring AOP"},
+        config={"configurable": {"thread_id": "t1", "user_id": "u1"}},
+    )
+
+    # 第二次会话：新 thread、新图实例、空 planner 队列；同 user + 同 goal 应复用
+    planner2 = ScriptedLLM([])  # 若错误地重新构建，invoke 会因队列耗尽而 assert
+    graph2 = build_graph(
+        planner_model=planner2,
+        teacher_model=ScriptedLLM([
+            _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+                  proposed_goal="Spring AOP"),
+            _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="再解释一次"),
+        ]),
+        diagnoser_model=ScriptedLLM([]),
+        checkpointer=InMemorySaver(),
+        store=store,
+    )
+    config2 = {"configurable": {"thread_id": "t2", "user_id": "u1"}}
+    graph2.invoke({"user_message": "Spring AOP"}, config=config2)
+
+    assert planner2.calls == []  # 复用：planner 未被再次调用
+    state2 = graph2.get_state(config2).values
+    assert state2["knowledge_model"]["points"][0]["id"] == "aop-concept"
+    assert state2["goal"] == "Spring AOP"
+
+
+def test_cross_session_goal_roundtrip_reads_back_mastery():
+    """端到端：第一次会话 mastered 并写 delta，第二次同 user + 同 goal 读回 mastered。
+
+    覆盖 Task ⑨ 验收标准：知识模型冻结 + point_id 稳定 + 读回闭环真正闭合。
+    """
+    store = InMemoryStore()
+
+    # 第一次会话：完整 mastered 闭环
+    graph1 = build_graph(
+        planner_model=ScriptedLLM([_single_point_model()]),
+        teacher_model=ScriptedLLM([
+            _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+                  proposed_goal="Spring AOP"),
+            _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="请解释 AOP"),
+            _turn(ConversationIntent.ANSWER, ConversationAction.DIAGNOSE),
+            _turn(ConversationIntent.ANSWER, ConversationAction.RESPOND, reply="恭喜掌握 AOP"),
+        ]),
+        diagnoser_model=ScriptedLLM([
+            _mastered_diagnosis(),
+            _ConceptAssessmentStub(True, "概念解释正确"),
+            _ScenarioAssessmentStub(True, "场景辨析正确"),
+        ]),
+        checkpointer=InMemorySaver(),
+        store=store,
+    )
+    config1 = {"configurable": {"thread_id": "t1", "user_id": "u1"}}
+    graph1.invoke({"user_message": "Spring AOP"}, config=config1)
+    final1 = graph1.invoke(
+        Command(resume="AOP 是面向切面编程，通过切面拦截方法调用……"),
+        config=config1,
+    )
+    # 模拟 app 层持久化：把 graph 产出的 Delta 写入 Store
+    for delta in final1["proficiency_deltas"]:
+        append_proficiency_delta(store, "u1", ProficiencyEntry.model_validate(delta))
+
+    # 第二次会话：同 user + 同 goal，空 planner（复用 km）
+    graph2 = build_graph(
+        planner_model=ScriptedLLM([]),
+        teacher_model=ScriptedLLM([
+            _turn(ConversationIntent.SET_GOAL, ConversationAction.SET_GOAL,
+                  proposed_goal="Spring AOP"),
+            _turn(ConversationIntent.ANSWER, ConversationAction.PROBE, reply="再问一次"),
+        ]),
+        diagnoser_model=ScriptedLLM([]),
+        checkpointer=InMemorySaver(),
+        store=store,
+    )
+    config2 = {"configurable": {"thread_id": "t2", "user_id": "u1"}}
+    graph2.invoke({"user_message": "Spring AOP"}, config=config2)
+
+    state2 = graph2.get_state(config2).values
+    assert state2["knowledge_model"]["points"][0]["id"] == "aop-concept"
+    assert state2["current_long_state"] == "mastered"  # 跨会话读回历史熟练度

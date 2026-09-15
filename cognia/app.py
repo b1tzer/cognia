@@ -290,46 +290,67 @@ async def on_message(message: cl.Message):
     # 后台记忆：从用户本轮表达中提取稳定偏好写 profile（不阻塞主流程）
     asyncio.create_task(_remember_profile(store, user_id, message.content))
 
-    # 思考过程 Step：流式接收思考 token，边思考边显示
-    async with cl.Step(name="思考过程", type="run") as thinking_step:
-        # 回复消息：流式接收回答 token，边生成边显示（行业标准 SSE 流式）
-        reply_msg = cl.Message(content="")
-        await reply_msg.send()
+    # 最终回答消息：边生成边流式（行业标准 SSE）
+    reply_msg = cl.Message(content="")
+    await reply_msg.send()
 
-        tool_steps: dict = {}
+    # 当前思考块（每轮 LLM 生成一个独立 Step，默认展开、逐字可见）
+    thinking_state: dict = {"step": None}
+    # 工具卡片映射：call_id -> Step（并行同名工具也能正确关联）
+    tool_steps: dict = {}
 
-        async def on_reasoning(text: str) -> None:
-            await thinking_step.stream_token(text)
+    async def _close_thinking() -> None:
+        """结束当前思考块：update 后前端停止 loading，内容定格、可手动收起。"""
+        if thinking_state["step"] is not None:
+            await thinking_state["step"].update()
+            thinking_state["step"] = None
 
-        async def on_text(text: str) -> None:
-            await reply_msg.stream_token(text)
-
-        async def on_tool_start(name: str, args: dict) -> None:
-            step = cl.Step(name=f"工具 · {name}", type="tool")
-            step.input = json.dumps(args, ensure_ascii=False)
+    async def on_reasoning(text: str) -> None:
+        # 新一轮思考开始：还没有思考块则创建（默认展开，逐字显示）
+        if thinking_state["step"] is None:
+            step = cl.Step(name="思考过程", type="run", default_open=True)
             await step.send()
-            tool_steps[name] = step
+            thinking_state["step"] = step
+        await thinking_state["step"].stream_token(text)
 
-        async def on_tool_result(name: str, result: str) -> None:
-            step = tool_steps.get(name)
-            if step is not None:
-                step.output = result
-                await step.update()
+    async def on_text(text: str) -> None:
+        await reply_msg.stream_token(text)
 
-        try:
-            await stream_agent_turn(
-                agent,
-                tools_by_name,
-                messages,
-                on_reasoning=on_reasoning,
-                on_text=on_text,
-                on_tool_start=on_tool_start,
-                on_tool_result=on_tool_result,
-            )
-        except Exception as exc:  # LLM 调用失败等，给用户友好提示而非堆栈
-            await reply_msg.stream_token(f"\n\n抱歉，处理时出错了：{exc}")
-        finally:
-            await reply_msg.update()
+    async def on_tool_start(call_id: str, name: str, args: dict) -> None:
+        # 工具卡片：显示工具名 + 入参（show_input）+ 输出结果（默认展开）
+        step = cl.Step(
+            name=f"工具 · {name}",
+            type="tool",
+            show_input=True,
+            default_open=True,
+        )
+        step.input = json.dumps(args, ensure_ascii=False, indent=2)
+        await step.send()
+        tool_steps[call_id] = step
 
-        if not thinking_step.output:
-            thinking_step.output = "（本轮未生成思考过程）"
+    async def on_tool_result(call_id: str, name: str, result: str) -> None:
+        step = tool_steps.get(call_id)
+        if step is not None:
+            step.output = result
+            await step.update()
+
+    async def on_llm_turn_end(has_tool_calls: bool) -> None:
+        # 一轮 LLM 生成结束：收起当前思考块；有工具则随后展示工具卡片，无工具则回答已流完
+        await _close_thinking()
+
+    try:
+        await stream_agent_turn(
+            agent,
+            tools_by_name,
+            messages,
+            on_reasoning=on_reasoning,
+            on_text=on_text,
+            on_tool_start=on_tool_start,
+            on_tool_result=on_tool_result,
+            on_llm_turn_end=on_llm_turn_end,
+        )
+    except Exception as exc:  # LLM 调用失败等，给用户友好提示而非堆栈
+        await reply_msg.stream_token(f"\n\n抱歉，处理时出错了：{exc}")
+    finally:
+        await _close_thinking()
+        await reply_msg.update()

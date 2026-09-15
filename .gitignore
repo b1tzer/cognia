@@ -33,3 +33,9 @@ htmlcov/
 .cache/
 
 logs/
+
+# Frontend (Next.js + CopilotKit)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local

@@ -13,6 +13,10 @@ dependencies = [
     "chainlit>=1.0.0",
     "python-dotenv>=1.0.0",
     "sqlalchemy>=2.0.52",
+    "copilotkit>=0.1.96",
+    "ag-ui-langgraph>=0.0.45",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.53.0",
 ]
 
 [dependency-groups]

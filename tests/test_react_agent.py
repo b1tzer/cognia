@@ -102,6 +102,7 @@ def test_stream_agent_turn_two_rounds():
     text_parts = []
     tool_starts = []
     tool_results = []
+    turn_ends = []
 
     async def collect():
         final = await stream_agent_turn(
@@ -110,8 +111,9 @@ def test_stream_agent_turn_two_rounds():
             messages,
             on_reasoning=lambda t: reasoning_parts.append(t),
             on_text=lambda t: text_parts.append(t),
-            on_tool_start=lambda name, args: tool_starts.append((name, args)),
-            on_tool_result=lambda name, result: tool_results.append((name, result)),
+            on_tool_start=lambda call_id, name, args: tool_starts.append((name, args)),
+            on_tool_result=lambda call_id, name, result: tool_results.append((name, result)),
+            on_llm_turn_end=lambda has_tool_calls: turn_ends.append(has_tool_calls),
         )
         return final
 
@@ -123,6 +125,9 @@ def test_stream_agent_turn_two_rounds():
 
     assert tool_starts == [("read_learner_state", {"point_id": "aop-concept"})]
     assert tool_results == [("read_learner_state", "partial")]
+
+    # 轮次边界：第一轮（工具轮）True，第二轮（最终回答轮）False
+    assert turn_ends == [True, False]
 
     # 历史回填：Human + AI(带 tool_calls) + Tool + AI(最终)
     assert len(messages) == 4
@@ -157,7 +162,7 @@ def test_stream_agent_turn_unknown_tool_returns_error_text():
             agent,
             tools_by_name,
             messages,
-            on_tool_result=lambda name, result: tool_results.append((name, result)),
+            on_tool_result=lambda call_id, name, result: tool_results.append((name, result)),
         )
 
     final = asyncio.run(collect())

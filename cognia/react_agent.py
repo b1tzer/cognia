@@ -24,8 +24,9 @@ from langchain_core.messages import AIMessage, ToolMessage
 # 回调类型：都是 async 可等待函数
 ReasoningCallback = Callable[[str], Awaitable[None]]
 TextCallback = Callable[[str], Awaitable[None]]
-ToolStartCallback = Callable[[str, dict], Awaitable[None]]
-ToolResultCallback = Callable[[str, str], Awaitable[None]]
+ToolStartCallback = Callable[[str, str, dict], Awaitable[None]]  # (call_id, name, args)
+ToolResultCallback = Callable[[str, str, str], Awaitable[None]]  # (call_id, name, result)
+TurnEndCallback = Callable[[bool], Awaitable[None]]  # has_tool_calls：一轮 LLM 生成结束
 
 
 async def _maybe_await(callback, *args) -> None:
@@ -73,9 +74,10 @@ def _parse_tool_calls(acc: dict) -> list[dict]:
 
 async def _execute_tool(tools_by_name: dict, call: dict, on_start, on_result) -> str:
     """执行单个工具调用；工具执行放 executor 线程，避免阻塞事件循环。"""
+    call_id = call["id"]
     name = call["name"]
     args = call["args"]
-    await _maybe_await(on_start, name, args)
+    await _maybe_await(on_start, call_id, name, args)
 
     tool = tools_by_name.get(name)
     if tool is None:
@@ -89,7 +91,7 @@ async def _execute_tool(tools_by_name: dict, call: dict, on_start, on_result) ->
         except Exception as exc:  # 工具执行失败返回错误文本，不让整个会话崩掉
             result = f"工具执行错误：{exc}"
 
-    await _maybe_await(on_result, name, result)
+    await _maybe_await(on_result, call_id, name, result)
     return result
 
 
@@ -102,6 +104,7 @@ async def stream_agent_turn(
     on_text: TextCallback | None = None,
     on_tool_start: ToolStartCallback | None = None,
     on_tool_result: ToolResultCallback | None = None,
+    on_llm_turn_end: TurnEndCallback | None = None,
 ) -> str:
     """执行一轮 ReAct：LLM ↔ 工具，直到 LLM 不再发起工具调用。
 
@@ -109,11 +112,11 @@ async def stream_agent_turn(
     - reasoning_content（思考链）→ on_reasoning
     - content（回复文本）→ on_text
     - tool_call_chunks（工具调用）→ 累积后执行，触发 on_tool_start / on_tool_result
+    - 每轮 LLM 生成结束 → on_llm_turn_end(has_tool_calls)，供 UI 区分「思考 / 工具 /
+      最终回答」的轮次边界（行业标准 Agent 的节奏感）
 
     返回：最后一轮（无工具调用）的完整回复文本；纯工具轮返回空串。
     """
-    final_text_parts: list[str] = []
-
     while True:
         reasoning_parts: list[str] = []
         text_parts: list[str] = []
@@ -139,6 +142,9 @@ async def stream_agent_turn(
 
         tool_calls = _parse_tool_calls(tool_acc)
 
+        # 一轮 LLM 生成结束：通知 UI 关闭当前思考块（有工具则随后展示工具卡片）
+        await _maybe_await(on_llm_turn_end, bool(tool_calls))
+
         if tool_calls:
             # 本轮是工具轮：把 assistant 消息（带 tool_calls）追加进历史，
             # 执行工具后追加 ToolMessage，继续下一轮 LLM 生成。
@@ -163,7 +169,6 @@ async def stream_agent_turn(
                     tool_call_id=call["id"],
                     name=call["name"],
                 ))
-            final_text_parts = []
             continue
 
         # 本轮无工具调用：回复文本就是最终回复，追加进历史后返回

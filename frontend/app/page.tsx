@@ -188,6 +188,7 @@ function ChatApp() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [loadingThread, setLoadingThread] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -203,15 +204,13 @@ function ChatApp() {
   }, []);
 
   const switchThread = useCallback(
-    async (threadId: string) => {
+    (threadId: string) => {
+      // 只做「选中会话」的状态切换；历史消息的统一加载交给下方
+      // 监听 currentThreadId 的 useEffect，避免一次切换触发两次请求。
       setCurrentThreadId(threadId);
       persistCurrentThreadId(threadId);
-      if (!agent) return;
-      const history = await getThreadMessages(threadId);
-      agent.threadId = threadId;
-      agent.setMessages(history);
     },
-    [agent, persistCurrentThreadId],
+    [persistCurrentThreadId],
   );
 
   // 初始化：拉线程列表 + 恢复当前线程。
@@ -245,15 +244,22 @@ function ChatApp() {
     };
   }, [refreshThreads, persistCurrentThreadId]);
 
-  // 就绪且 agent 可用时，加载当前会话历史。
+  // 就绪且 agent 可用时，加载当前会话历史（初始化 + 切换共用这一条路径）。
   useEffect(() => {
     if (!ready || !currentThreadId || !agent) return;
     let cancelled = false;
+    setLoadingThread(true);
     (async () => {
-      const history = await getThreadMessages(currentThreadId);
-      if (cancelled) return;
-      agent.threadId = currentThreadId;
-      agent.setMessages(history);
+      try {
+        const history = await getThreadMessages(currentThreadId);
+        if (cancelled) return;
+        agent.threadId = currentThreadId;
+        agent.setMessages(history);
+      } catch (err) {
+        console.error("加载会话历史失败", err);
+      } finally {
+        if (!cancelled) setLoadingThread(false);
+      }
     })();
     return () => {
       cancelled = true;
@@ -266,13 +272,13 @@ function ChatApp() {
   }, [agent?.messages.length]);
 
   const handleSelect = (threadId: string) => {
-    void switchThread(threadId);
+    switchThread(threadId);
   };
 
   const handleCreate = async () => {
     const created = await createThread();
     setThreads((prev) => [created, ...prev]);
-    await switchThread(created.thread_id);
+    switchThread(created.thread_id);
   };
 
   const handleRename = async (threadId: string, title: string) => {
@@ -283,16 +289,36 @@ function ChatApp() {
   };
 
   const handleDelete = async (threadId: string) => {
-    await deleteThread(threadId);
-    let list = await refreshThreads();
+    // 1. 乐观移除：侧边栏立即消失，不等网络返回。
+    const remaining = threads.filter((t) => t.thread_id !== threadId);
+    setThreads(remaining);
+
+    // 2. 若删除的是当前会话，立即切换到列表第一个（或新建），不阻塞 UI。
     if (threadId === currentThreadId) {
-      if (list.length === 0) {
-        const created = await createThread();
-        list = [created];
+      if (remaining.length > 0) {
+        switchThread(remaining[0].thread_id);
+      } else {
+        try {
+          const created = await createThread();
+          setThreads([created]);
+          switchThread(created.thread_id);
+        } catch (err) {
+          console.error("新建会话失败", err);
+        }
       }
-      await switchThread(list[0].thread_id);
     }
-    setThreads(list);
+
+    // 3. 后台真正删除并刷新，同步服务端权威列表。
+    try {
+      await deleteThread(threadId);
+      const list = await refreshThreads();
+      setThreads(list);
+    } catch (err) {
+      console.error("删除会话失败", err);
+      // 删除失败时回滚为服务端真实列表。
+      const list = await refreshThreads().catch(() => threads);
+      setThreads(list);
+    }
   };
 
   const handleSend = async () => {
@@ -342,7 +368,7 @@ function ChatApp() {
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto bg-white">
-          {!isReady || !ready ? (
+          {!isReady || !ready || loadingThread ? (
             <div className="flex h-full items-center justify-center text-sm text-zinc-400">
               加载中…
             </div>
@@ -351,9 +377,9 @@ function ChatApp() {
               开始一段新对话吧
             </div>
           ) : (
-            displayMessages.map((item) => (
+            displayMessages.map((item, idx) => (
               <MessageBubble
-                key={item.message.id ?? crypto.randomUUID()}
+                key={item.message.id ?? `msg-${idx}`}
                 message={item.message}
                 toolName={item.toolName}
                 isActiveReasoning={item.isActiveReasoning}

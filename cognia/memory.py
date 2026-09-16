@@ -146,6 +146,43 @@ def get_knowledge_model(store: BaseStore, user_id: str, goal_key: str) -> dict |
     return item.value if item else None
 
 
+# ---- 聚合读取（供个人页 / 知识版图拉取，纯函数无副作用）----
+
+def list_knowledge_models(store: BaseStore, user_id: str) -> list[dict]:
+    """读某 user 的全部知识模型（按 goal 冻结的 value 列表）。
+
+    store 为 None / user_id 缺失时返回空列表（安全降级，不抛错）。
+    每个元素是知识模型 dict（含 goal / points）。
+    """
+    if store is None or not user_id:
+        return []
+    items = store.search((KNOWLEDGE_MODEL_NS, user_id))
+    return [item.value for item in items if item.value is not None]
+
+
+def list_current_proficiencies(store: BaseStore, user_id: str) -> dict[str, str]:
+    """读某 user 所有知识点的当前熟练度（每个 point 最新 Delta 的 to_state）。
+
+    store 为 None / user_id 缺失时返回空 dict（安全降级）。
+    返回 `{point_id: state}`；从未评估过的 point 不在结果里（由调用方补 unassessed）。
+    """
+    if store is None or not user_id:
+        return {}
+    items = store.search((PROFICIENCY_NS, user_id))
+    latest: dict[str, dict] = {}
+    for item in items:
+        value = item.value or {}
+        point_id = value.get("point_id")
+        to_state = value.get("to_state")
+        ts = value.get("timestamp") or ""
+        if not point_id or not to_state:
+            continue
+        # ISO 8601 UTC 时间戳可字典序比较，取每个 point 的最新 Delta
+        if point_id not in latest or ts > latest[point_id]["ts"]:
+            latest[point_id] = {"ts": ts, "state": to_state}
+    return {pid: v["state"] for pid, v in latest.items()}
+
+
 # ---- runtime context：user_id 注入（不塞 State）----
 
 def get_user_id(config: dict) -> str | None:

@@ -230,6 +230,47 @@ def health():
     }
 
 
+@app.get("/knowledge-map")
+async def knowledge_map_endpoint(request: Request, user_id: str | None = None):
+    """聚合当前匿名用户的知识版图（知识模型 + 熟练度），供认知图谱个人页渲染。
+
+    - `user_id` 缺失 → 400（前端必须先建立匿名标识）。
+    - store 为 None（Postgres 降级）→ 返回空版图 `goals: []`，不 500。
+    - 每个 goal 聚合其全部知识点 + 每个知识点的当前熟练度（缺失补 unassessed）。
+    """
+    if not user_id:
+        raise HTTPException(status_code=400, detail="缺少 user_id 参数")
+
+    store = getattr(request.app.state, "store", None)
+    if store is None:
+        return {"user_id": user_id, "goals": []}
+
+    kms = memory.list_knowledge_models(store, user_id)
+    proficiencies = memory.list_current_proficiencies(store, user_id)
+
+    goals = []
+    for km in kms:
+        points = km.get("points") or []
+        goal_points = []
+        goal_proficiencies = {}
+        for p in points:
+            pid = p.get("id")
+            goal_points.append({
+                "id": pid,
+                "name": p.get("name"),
+                "description": p.get("description"),
+                "prerequisites": p.get("prerequisites") or [],
+            })
+            goal_proficiencies[pid] = proficiencies.get(pid, "unassessed")
+        goals.append({
+            "goal": km.get("goal", ""),
+            "points": goal_points,
+            "proficiencies": goal_proficiencies,
+        })
+
+    return {"user_id": user_id, "goals": goals}
+
+
 # ---- 会话管理端点（多会话列表 / 新建 / 重命名 / 删除）----
 # 权威数据在服务端 PostgreSQL：会话列表 = cognia_threads 元数据 ∪ checkpoints
 # 真实会话；删除会话会同时清理 checkpointer 里的 checkpoint / blobs / writes。

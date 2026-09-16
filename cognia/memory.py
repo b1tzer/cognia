@@ -18,12 +18,13 @@ import os
 
 from langgraph.store.base import BaseStore
 
-from cognia.schemas import ProficiencyEntry
+from cognia.schemas import CognitiveState, Observation, ProficiencyEntry
 
 # namespace 第一段（Store 的 namespace 是 tuple：类别 + user_id）
 PROFICIENCY_NS = "proficiency"
 PROFILE_NS = "profile"
 KNOWLEDGE_MODEL_NS = "knowledge_model"
+OBSERVATION_NS = "observation"
 
 # 模块级单例缓存：生产环境整个进程只建一个共享 AsyncConnectionPool，并让
 # Checkpointer 与 Store 复用同一个池。否则每次请求都新建 ConnectionPool 会导致
@@ -72,6 +73,71 @@ def get_current_proficiency(store: BaseStore, user_id: str, point_id: str) -> st
     """
     history = get_proficiency_history(store, user_id, point_id)
     return history[-1]["to_state"] if history else None
+
+
+# ---- 观察记录（observation）：AI 观察样本，只追加 ----
+
+def _has_evidence(observation: Observation) -> bool:
+    """evidence 过滤空白后是否非空（严禁脑补证据，spec §6）。"""
+    return any(str(e).strip() for e in (observation.evidence or []))
+
+
+def record_observation(store, user_id: str, observation: Observation) -> bool:
+    """追加一条 AI 观察样本（只追加，不直接改权威状态）。
+
+    - store / user_id 缺失 → 安全降级，返回 False（不落库）。
+    - observed_state == unassessed → 跳过（未评估不产生观测）。
+    - evidence 为空 → 拒绝写入（严禁脑补证据，spec §6）。
+
+    返回 True 表示已记录，False 表示跳过。key = point_id + timestamp，
+    历史不可变、可审计。namespace = ("observation", user_id)。
+    """
+    if store is None or not user_id:
+        return False
+    if observation.observed_state == CognitiveState.UNASSESSED:
+        return False
+    if not _has_evidence(observation):
+        return False
+    key = f"{observation.point_id}:{observation.timestamp.isoformat()}"
+    store.put((OBSERVATION_NS, user_id), key, observation.model_dump(mode="json"))
+    return True
+
+
+async def arecord_observation(store, user_id: str, observation: Observation) -> bool:
+    """record_observation 的异步版本（供主事件循环内调用）。
+
+    与 aappend_proficiency_delta 同理：AsyncPostgresStore 在主事件循环线程里
+    必须用 `await store.aput`。
+    """
+    if store is None or not user_id:
+        return False
+    if observation.observed_state == CognitiveState.UNASSESSED:
+        return False
+    if not _has_evidence(observation):
+        return False
+    key = f"{observation.point_id}:{observation.timestamp.isoformat()}"
+    await store.aput((OBSERVATION_NS, user_id), key, observation.model_dump(mode="json"))
+    return True
+
+
+def query_observations(store, user_id: str, point_id: str) -> list[dict]:
+    """读某 user 某知识点的完整观察历史（按 timestamp 升序，可审计）。"""
+    if store is None or not user_id or not point_id:
+        return []
+    items = store.search((OBSERVATION_NS, user_id))
+    obs = [item.value for item in items if item.value.get("point_id") == point_id]
+    obs.sort(key=lambda d: d.get("timestamp") or "")
+    return obs
+
+
+async def aquery_observations(store, user_id: str, point_id: str) -> list[dict]:
+    """query_observations 的异步版本（主事件循环内用 asearch）。"""
+    if store is None or not user_id or not point_id:
+        return []
+    items = await store.asearch((OBSERVATION_NS, user_id))
+    obs = [item.value for item in items if item.value.get("point_id") == point_id]
+    obs.sort(key=lambda d: d.get("timestamp") or "")
+    return obs
 
 
 # ---- 画像（profile）：基础偏好读写 ----

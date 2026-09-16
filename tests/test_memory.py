@@ -17,6 +17,8 @@ from cognia.memory import (
     alist_knowledge_models,
     append_proficiency_delta,
     aput_profile,
+    arecord_observation,
+    aquery_observations,
     get_checkpointer,
     get_current_proficiency,
     get_knowledge_model,
@@ -30,8 +32,10 @@ from cognia.memory import (
     normalize_goal,
     put_knowledge_model,
     put_profile,
+    query_observations,
+    record_observation,
 )
-from cognia.schemas import CognitiveState, ProficiencyEntry
+from cognia.schemas import CognitiveState, Confidence, Observation, ProficiencyEntry
 
 
 def _entry(point_id, from_state, to_state, day):
@@ -280,3 +284,87 @@ def test_alist_current_proficiencies_async():
         return await alist_current_proficiencies(store, "u1")
 
     assert asyncio.run(go()) == {"p1": "mastered"}
+
+
+# ---- 观察记录（observation）：AI 观察样本，只追加 ----
+
+def _obs(point_id, observed_state, day, evidence=None):
+    """构造带确定 timestamp 的 Observation，保证 key 唯一。"""
+    return Observation(
+        point_id=point_id,
+        observed_state=observed_state,
+        confidence=Confidence.HIGH,
+        evidence=evidence if evidence is not None else [f"证据-{day}"],
+        timestamp=datetime(2026, 9, day, tzinfo=timezone.utc),
+    )
+
+
+def test_record_observation_appends_history():
+    """多次记录同一点位观察，历史完整保留（只追加，不覆盖）。"""
+    store = InMemoryStore()
+    assert record_observation(store, "u1", _obs("p1", CognitiveState.PARTIAL, 1)) is True
+    assert record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 2)) is True
+
+    history = query_observations(store, "u1", "p1")
+    assert len(history) == 2
+    assert history[0]["observed_state"] == "partial"
+    assert history[1]["observed_state"] == "mastered"
+
+
+def test_query_observations_sorted_by_timestamp():
+    """观察历史按 timestamp 升序返回（可审计）。"""
+    store = InMemoryStore()
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 2))
+    record_observation(store, "u1", _obs("p1", CognitiveState.PARTIAL, 1))
+
+    history = query_observations(store, "u1", "p1")
+    assert [h["observed_state"] for h in history] == ["partial", "mastered"]
+
+
+def test_record_observation_skips_unassessed():
+    """unassessed 不产生观测（跳过，不落库）。"""
+    store = InMemoryStore()
+    assert record_observation(store, "u1", _obs("p1", CognitiveState.UNASSESSED, 1)) is False
+    assert query_observations(store, "u1", "p1") == []
+
+
+def test_record_observation_rejects_empty_evidence():
+    """evidence 为空（或全空白）时拒绝写入，禁止脑补证据。"""
+    store = InMemoryStore()
+    assert record_observation(store, "u1", _obs("p1", CognitiveState.PARTIAL, 1, evidence=[])) is False
+    assert record_observation(store, "u1", _obs("p1", CognitiveState.PARTIAL, 1, evidence=["  "])) is False
+    assert query_observations(store, "u1", "p1") == []
+
+
+def test_record_observation_store_none_degrades():
+    """store 为 None 时安全降级，返回 False 不抛错。"""
+    assert record_observation(None, "u1", _obs("p1", CognitiveState.PARTIAL, 1)) is False
+
+
+def test_query_observations_isolation_and_empty():
+    """观察按 user 隔离，store 为 None / 无数据返回空列表。"""
+    store = InMemoryStore()
+    record_observation(store, "u1", _obs("p1", CognitiveState.PARTIAL, 1))
+
+    assert query_observations(store, "u2", "p1") == []
+    assert query_observations(store, "u1", "p2") == []
+    assert query_observations(None, "u1", "p1") == []
+
+
+def test_arecord_observation_async():
+    """arecord_observation 异步写入，读回一致。"""
+    store = InMemoryStore()
+    assert asyncio.run(arecord_observation(store, "u1", _obs("p1", CognitiveState.PARTIAL, 1))) is True
+    assert query_observations(store, "u1", "p1")[0]["observed_state"] == "partial"
+
+
+def test_aquery_observations_async():
+    """aquery_observations 与同步版逻辑一致，走 asearch。"""
+    store = InMemoryStore()
+    record_observation(store, "u1", _obs("p1", CognitiveState.PARTIAL, 1))
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 2))
+
+    async def go():
+        return await aquery_observations(store, "u1", "p1")
+
+    assert [h["observed_state"] for h in asyncio.run(go())] == ["partial", "mastered"]

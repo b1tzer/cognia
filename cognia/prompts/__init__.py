@@ -4,7 +4,7 @@
 独立成文件，便于 diff / review / 版本化与回归测试。
 
 各文件对应原模块：
-- teacher.py：教学 Agent（原 react_agent.py）
+- teacher.py：教学 Agent
 - learning_engine.py：诊断器 / 知识建模器 / 验证器（原 learning_engine.py）
 """
 

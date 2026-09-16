@@ -3,8 +3,8 @@
 验证两类契约：
 1. 抽离到 cognia.prompts 的 system prompt 非空，且保留关键「铁律」指令
    （防止有人误删决定 AI 行为的关键约束）；
-2. 旧 import 路径（react_agent / learning_engine）与 prompts 包 re-export
-   完全一致，防止未来两处文本漂移。
+2. 业务模块（learning_engine）从 prompts 包 import 的常量与权威文本一致，
+   防止未来复制粘贴导致两处文本漂移。
 """
 
 from cognia import prompts
@@ -64,13 +64,7 @@ def test_verifier_prompts_keep_role():
     assert "场景" in SCENARIO_VERIFIER_SYSTEM_PROMPT
 
 
-# ---- 3. 旧 import 路径与 prompts 包一致（防文本漂移）----
-
-def test_react_agent_reexport_matches_prompts_package():
-    """react_agent 旧名 re-export 与 prompts 包权威文本一致。"""
-    from cognia.react_agent import REACT_TEACHER_SYSTEM_PROMPT
-    assert REACT_TEACHER_SYSTEM_PROMPT == TEACHER_SYSTEM_PROMPT
-
+# ---- 3. 业务模块 import 的就是 prompts 包权威常量（防复制漂移）----
 
 def test_learning_engine_import_matches_prompts_package():
     """learning_engine 引入的常量与 prompts 包权威文本一致。"""

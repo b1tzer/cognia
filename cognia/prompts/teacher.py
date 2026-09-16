@@ -1,4 +1,4 @@
-"""教学 Agent system prompt（原 react_agent.py 的 REACT_TEACHER_SYSTEM_PROMPT）。
+"""教学 Agent system prompt。
 
 抽离目的：让决定教学行为的策略性 prompt 独立于业务逻辑代码，
 便于 diff / review / 版本化（prompts-as-code）。

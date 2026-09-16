@@ -9,16 +9,19 @@
 import asyncio
 from datetime import datetime, timezone
 
+import pytest
 from langgraph.store.memory import InMemoryStore
 
 from cognia import memory as memory_mod
 from cognia.memory import (
+    add_prerequisite,
     alist_current_proficiencies,
     alist_knowledge_models,
     append_proficiency_delta,
     aput_profile,
     arecord_observation,
     aquery_observations,
+    delete_point,
     get_checkpointer,
     get_current_proficiency,
     get_knowledge_model,
@@ -27,15 +30,32 @@ from cognia.memory import (
     get_proficiency_history,
     get_store,
     get_user_id,
+    insert_point,
     list_current_proficiencies,
     list_knowledge_models,
     normalize_goal,
     put_knowledge_model,
     put_profile,
+    query_dependents,
     query_observations,
+    query_point,
+    query_prerequisites,
+    query_structure,
     record_observation,
+    remove_prerequisite,
+    set_attributes,
+    update_point,
 )
-from cognia.schemas import CognitiveState, Confidence, Observation, ProficiencyEntry
+from cognia.schemas import (
+    BloomLevel,
+    CognitiveState,
+    Confidence,
+    KnowledgePoint,
+    Observation,
+    PointAttributes,
+    PointType,
+    ProficiencyEntry,
+)
 
 
 def _entry(point_id, from_state, to_state, day):
@@ -368,3 +388,184 @@ def test_aquery_observations_async():
         return await aquery_observations(store, "u1", "p1")
 
     assert [h["observed_state"] for h in asyncio.run(go())] == ["partial", "mastered"]
+
+
+# ---- 知识结构管理（知识版图能力域 A）----
+
+def _attrs():
+    """构造 PointAttributes，供测试复用。"""
+    return PointAttributes(
+        type=PointType.CONCEPT,
+        difficulty=2,
+        importance=3,
+        bloom_level=BloomLevel.UNDERSTAND,
+    )
+
+
+def _mk_point(point_id, name=None, prerequisites=None, attributes=None):
+    """构造带确定字段的 KnowledgePoint。"""
+    return KnowledgePoint(
+        id=point_id,
+        name=name if name is not None else f"点-{point_id}",
+        description=f"{point_id} 的描述",
+        prerequisites=prerequisites or [],
+        attributes=attributes,
+    )
+
+
+def test_insert_point_creates_structure_and_reads_back():
+    """insert_point 结构不存在时创建空结构并插入节点。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "spring aop", _mk_point("a"))
+    km = query_structure(store, "u1", "spring aop")
+    assert km is not None
+    assert [p.id for p in km.points] == ["a"]
+
+
+def test_insert_point_idempotent_replace():
+    """insert_point 幂等：同 id 节点被替换，不产生重复。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a", name="旧"))
+    insert_point(store, "u1", "g", _mk_point("a", name="新"))
+    km = query_structure(store, "u1", "g")
+    assert len(km.points) == 1
+    assert km.points[0].name == "新"
+
+
+def test_update_point():
+    """update_point 更新名称与描述。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    update_point(store, "u1", "g", "a", "新名", "新描述")
+    p = query_point(store, "u1", "g", "a")
+    assert p.name == "新名"
+    assert p.description == "新描述"
+
+
+def test_update_point_missing_raises():
+    """update_point 作用于不存在的点报错。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    with pytest.raises(ValueError):
+        update_point(store, "u1", "g", "nonexistent", "x", "y")
+
+
+def test_delete_point_cascades_edges():
+    """delete_point 级联删除其他节点指向它的依赖边。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    insert_point(store, "u1", "g", _mk_point("b", prerequisites=["a"]))
+    insert_point(store, "u1", "g", _mk_point("c", prerequisites=["a"]))
+    delete_point(store, "u1", "g", "a")
+
+    km = query_structure(store, "u1", "g")
+    assert {p.id for p in km.points} == {"b", "c"}
+    for p in km.points:
+        assert "a" not in p.prerequisites
+
+
+def test_delete_point_missing_raises():
+    """delete_point 作用于不存在的点报错。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    with pytest.raises(ValueError):
+        delete_point(store, "u1", "g", "nonexistent")
+
+
+def test_add_prerequisite_and_query():
+    """add_prerequisite 建边后 query_prerequisites 读回。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    insert_point(store, "u1", "g", _mk_point("b"))
+    add_prerequisite(store, "u1", "g", "b", "a")  # b 依赖 a
+    assert [p.id for p in query_prerequisites(store, "u1", "g", "b")] == ["a"]
+
+
+def test_add_prerequisite_missing_point_raises():
+    """依赖边指向不存在的点报错。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    with pytest.raises(ValueError):
+        add_prerequisite(store, "u1", "g", "a", "nonexistent")
+
+
+def test_add_prerequisite_self_raises():
+    """知识点不能依赖自身。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    with pytest.raises(ValueError):
+        add_prerequisite(store, "u1", "g", "a", "a")
+
+
+def test_add_prerequisite_cycle_raises():
+    """直接环（a 依赖 b 且 b 依赖 a）拒绝。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    insert_point(store, "u1", "g", _mk_point("b", prerequisites=["a"]))
+    with pytest.raises(ValueError):
+        add_prerequisite(store, "u1", "g", "a", "b")
+
+
+def test_add_prerequisite_transitive_cycle_raises():
+    """传递环（a → b → c → a）拒绝。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    insert_point(store, "u1", "g", _mk_point("b", prerequisites=["a"]))
+    insert_point(store, "u1", "g", _mk_point("c", prerequisites=["b"]))
+    with pytest.raises(ValueError):
+        add_prerequisite(store, "u1", "g", "a", "c")
+
+
+def test_remove_prerequisite():
+    """remove_prerequisite 解除依赖边（幂等）。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    insert_point(store, "u1", "g", _mk_point("b", prerequisites=["a"]))
+    remove_prerequisite(store, "u1", "g", "b", "a")
+    assert query_prerequisites(store, "u1", "g", "b") == []
+
+
+def test_set_attributes_and_query():
+    """set_attributes 登记属性后 query_point 读回完整 attributes。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    set_attributes(store, "u1", "g", "a", _attrs())
+    p = query_point(store, "u1", "g", "a")
+    assert p.attributes.type == PointType.CONCEPT
+    assert p.attributes.bloom_level == BloomLevel.UNDERSTAND
+
+
+def test_query_dependents():
+    """query_dependents 返回依赖该点的所有后继。"""
+    store = InMemoryStore()
+    insert_point(store, "u1", "g", _mk_point("a"))
+    insert_point(store, "u1", "g", _mk_point("b", prerequisites=["a"]))
+    insert_point(store, "u1", "g", _mk_point("c", prerequisites=["a"]))
+    assert {p.id for p in query_dependents(store, "u1", "g", "a")} == {"b", "c"}
+
+
+def test_query_missing_returns_none_or_empty():
+    """结构/点不存在时查询返回 None 或空列表，不抛错。"""
+    store = InMemoryStore()
+    assert query_structure(store, "u1", "g") is None
+    assert query_point(store, "u1", "g", "a") is None
+    assert query_prerequisites(store, "u1", "g", "a") == []
+    assert query_dependents(store, "u1", "g", "a") == []
+
+
+def test_structure_ops_store_none_degrades():
+    """store 为 None 时写操作安全降级不抛错，查询返回空。"""
+    insert_point(None, "u1", "g", _mk_point("a"))
+    update_point(None, "u1", "g", "a", "x", "y")
+    delete_point(None, "u1", "g", "a")
+    add_prerequisite(None, "u1", "g", "a", "b")
+    remove_prerequisite(None, "u1", "g", "a", "b")
+    set_attributes(None, "u1", "g", "a", _attrs())
+    assert query_structure(None, "u1", "g") is None
+
+
+def test_structure_requires_existing_structure():
+    """写操作（insert 除外）在结构不存在时报错。"""
+    store = InMemoryStore()
+    with pytest.raises(ValueError):
+        update_point(store, "u1", "g", "a", "x", "y")

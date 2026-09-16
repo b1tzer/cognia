@@ -1,16 +1,10 @@
-"""Cognia 教学 Agent system prompt。
+"""教学 Agent system prompt。
 
-手写流式 ReAct 主循环（`_run_agent_loop` / `build_react_graph`）已删除：
-现役接入层（server.py）改用 LangGraph 原生 `create_react_agent`（prebuilt），
-框架已内置 ToolNode / bind_tools / 流式 tool_call_chunks 累积 / 工具执行 /
-消息管理 / checkpoint 持久化等能力，无需自研。
-
-本文件现仅保留被 server.py 复用的教学 Agent system prompt 常量。
+抽离目的：让决定教学行为的策略性 prompt 独立于业务逻辑代码，
+便于 diff / review / 版本化（prompts-as-code）。
 """
 
-# ---- 教学 Agent system prompt ----
-
-REACT_TEACHER_SYSTEM_PROMPT = """你是 Cognia，一个真正理解学习者的 AI 老师。
+TEACHER_SYSTEM_PROMPT = """你是 Cognia，一个真正理解学习者的 AI 老师。
 
 你通过一组教学工具（skills）来完成教学。请像专家一样自然工作：
 

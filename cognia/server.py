@@ -45,7 +45,7 @@ from ag_ui_langgraph.utils import langchain_messages_to_agui
 from copilotkit import CopilotKitMiddleware, CopilotKitState, LangGraphAGUIAgent
 
 from cognia import memory, models, threads
-from cognia.react_agent import REACT_TEACHER_SYSTEM_PROMPT
+from cognia.prompts.teacher import TEACHER_SYSTEM_PROMPT
 from cognia.tools import build_cognia_tools
 
 
@@ -83,7 +83,7 @@ def build_agent(checkpointer=None, user_id: str = "local-user"):
     graph = create_agent(
         model=teacher,
         tools=tool_list,
-        system_prompt=REACT_TEACHER_SYSTEM_PROMPT,
+        system_prompt=TEACHER_SYSTEM_PROMPT,
         middleware=[CopilotKitMiddleware()],
         state_schema=CopilotKitState,
         checkpointer=checkpointer if checkpointer is not None else InMemorySaver(),

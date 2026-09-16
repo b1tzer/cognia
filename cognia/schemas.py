@@ -40,6 +40,36 @@ class ValidationResult(str, Enum):
     FAILED = "failed"          # 验证失败
 
 
+class BloomLevel(str, Enum):
+    """认知层级（布鲁姆分类，派生验证深度 verification_depth）。"""
+
+    REMEMBER = "remember"        # 记忆
+    UNDERSTAND = "understand"    # 理解
+    APPLY = "apply"              # 应用
+    ANALYZE = "analyze"          # 分析
+    EVALUATE = "evaluate"        # 评价
+    CREATE = "create"            # 创造
+
+
+class PointType(str, Enum):
+    """知识点类型（决定教学与验证方式）。"""
+
+    CONCEPT = "concept"          # 概念
+    FACT = "fact"                # 事实
+    SKILL = "skill"              # 技能
+    PRINCIPLE = "principle"      # 原理
+    PROCESS = "process"          # 流程
+
+
+class PointAttributes(BaseModel):
+    """知识点本体属性（只描述知识本身，与「谁学得怎么样」无关）。"""
+
+    type: PointType                              # 类型
+    difficulty: int = Field(ge=1, le=5)          # 难度 1-5（影响 BKT 参数）
+    importance: int = Field(ge=1, le=5)          # 重要度 1-5（决定教学优先级）
+    bloom_level: BloomLevel                        # 认知层级（派生 verification_depth）
+
+
 class KnowledgePoint(BaseModel):
     """知识模型中的单个知识点。"""
 
@@ -47,6 +77,7 @@ class KnowledgePoint(BaseModel):
     name: str
     description: str
     prerequisites: list[str] = Field(default_factory=list)  # 依赖的知识点 id
+    attributes: PointAttributes | None = None                # 本体属性（可选，避免破坏既有调用）
 
 
 class KnowledgeModel(BaseModel):
@@ -117,6 +148,27 @@ class ProficiencyEntry(BaseModel):
     evidence: list[str] = Field(default_factory=list)  # 支撑本次迁移的用户原话（非 AI 总结）
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     update_type: Literal["delta"] = "delta"   # 增量 Delta，严禁全量重写
+
+
+class Observation(BaseModel):
+    """AI 对用户理解程度的一次观察样本（只追加，非最终结论）。
+
+    这是知识版图子系统的「过程数据」：AI 每次判断用户对某知识点的理解程度，
+    只提交一条 Observation，系统用 BKT 算法融合后才产出权威 Proficiency。
+    AI 无权直接改写权威状态，只能提交观察值。
+    """
+
+    point_id: str
+    observed_state: CognitiveState                    # AI 判定的五态（观察值，非结论）
+    confidence: Confidence                             # AI 的置信度
+    evidence: list[str] = Field(default_factory=list)  # 用户原话片段，严禁脑补（spec §6）
+    observer: Literal["ai"] = "ai"                     # 观察者身份（预留多源）
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _normalize_evidence(cls, v):
+        return _coerce_str_list(v)
 
 
 class Intervention(BaseModel):

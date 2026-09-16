@@ -11,6 +11,10 @@ import "@copilotkit/react-core/v2/styles.css";
 import { Markdown } from "@copilotkit/react-ui";
 import "@copilotkit/react-ui/styles.css";
 import ThreadSidebar from "./components/thread-sidebar";
+import KnowledgeMap, {
+  type KnowledgeMapData,
+  type KnowledgeMapGoal,
+} from "./components/knowledge-map";
 import {
   cogniaToolRenderers,
   useCogniaFrontendTools,
@@ -23,6 +27,7 @@ import {
   renameThread,
   type Thread,
 } from "./lib/threads";
+import { getOrCreateUserId } from "./lib/user-id";
 
 // localStorage 只保存「当前选中的 threadId」。会话列表与历史消息的权威数据
 // 都在服务端 PostgreSQL；localStorage 不保存线程列表。
@@ -202,6 +207,11 @@ function ChatApp() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // 视图切换：chat（对话）/ map（知识版图）
+  const [view, setView] = useState<"chat" | "map">("chat");
+  const [mapData, setMapData] = useState<KnowledgeMapGoal[]>([]);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
   // 滚动容器 ref 与「用户是否手动上滚」状态：用于在思考中/回答流式输出时
   // 自动跟随滚动，且不打断用户主动向上翻阅。
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -394,13 +404,42 @@ function ChatApp() {
         role: "user",
         content: text,
       });
-      await copilotkit.runAgent({ agent });
+      // 匿名 user_id 经 AG-UI forwarded_props 传给后端（clarifications Q6），
+      // 后端 _extract_user_id 从 forwarded_props.user_id 读取（宪法 §5 runtime context）。
+      await copilotkit.runAgent({
+        agent,
+        forwardedProps: { user_id: getOrCreateUserId() },
+      });
     } catch (err) {
       console.error("发送失败", err);
     } finally {
       setSending(false);
     }
   };
+
+  const loadKnowledgeMap = useCallback(async () => {
+    setMapLoading(true);
+    setMapError(null);
+    try {
+      const userId = getOrCreateUserId();
+      const resp = await fetch(
+        `/api/knowledge-map?user_id=${encodeURIComponent(userId)}`,
+      );
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data: KnowledgeMapData = await resp.json();
+      setMapData(data.goals ?? []);
+    } catch (err) {
+      console.error("加载知识版图失败", err);
+      setMapError("加载知识版图失败，请稍后重试");
+    } finally {
+      setMapLoading(false);
+    }
+  }, []);
+
+  const showMap = useCallback(() => {
+    setView("map");
+    void loadKnowledgeMap();
+  }, [loadKnowledgeMap]);
 
   const messages = agent?.messages ?? [];
   const displayMessages = useMemo(
@@ -420,20 +459,42 @@ function ChatApp() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-zinc-200 bg-white px-6 py-3">
-          <h1 className="text-lg font-semibold text-zinc-900">
-            Cognia · AI 学习教练
-          </h1>
-          <p className="text-sm text-zinc-500">
-            主动发现认知盲区，动态引导掌握知识点
-          </p>
+        <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-3">
+          <div>
+            <h1 className="text-lg font-semibold text-zinc-900">
+              Cognia · AI 学习教练
+            </h1>
+            <p className="text-sm text-zinc-500">
+              主动发现认知盲区，动态引导掌握知识点
+            </p>
+          </div>
+          <button
+            onClick={() => (view === "chat" ? showMap() : setView("chat"))}
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 transition hover:bg-zinc-100"
+          >
+            {view === "chat" ? "知识版图" : "返回对话"}
+          </button>
         </header>
 
         <div
           ref={scrollContainerRef}
           className="min-h-0 flex-1 overflow-y-auto bg-white"
         >
-          {!isReady || !ready || loadingThread ? (
+          {view === "map" ? (
+            <div className="p-6">
+              {mapLoading ? (
+                <div className="text-sm text-zinc-400">加载中…</div>
+              ) : mapError ? (
+                <div className="text-sm text-red-600">{mapError}</div>
+              ) : mapData.length === 0 ? (
+                <div className="py-16 text-center text-sm text-zinc-400">
+                  还没有学习记录，去对话里开始一段学习吧
+                </div>
+              ) : (
+                <KnowledgeMap goals={mapData} />
+              )}
+            </div>
+          ) : !isReady || !ready || loadingThread ? (
             <div className="flex h-full items-center justify-center text-sm text-zinc-400">
               加载中…
             </div>
@@ -475,29 +536,31 @@ function ChatApp() {
           )}
         </div>
 
-        <div className="border-t border-zinc-200 bg-white p-4">
-          <div className="flex gap-2">
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleSend();
-                }
-              }}
-              placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-              className="flex-1 rounded-xl border border-zinc-300 px-4 py-2 text-sm text-zinc-800 outline-none focus:border-zinc-500"
-            />
-            <button
-              onClick={() => void handleSend()}
-              disabled={sending || !input.trim()}
-              className="rounded-xl bg-zinc-900 px-5 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-40"
-            >
-              {sending ? "发送中…" : "发送"}
-            </button>
+        {view === "chat" && (
+          <div className="border-t border-zinc-200 bg-white p-4">
+            <div className="flex gap-2">
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleSend();
+                  }
+                }}
+                placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+                className="flex-1 rounded-xl border border-zinc-300 px-4 py-2 text-sm text-zinc-800 outline-none focus:border-zinc-500"
+              />
+              <button
+                onClick={() => void handleSend()}
+                disabled={sending || !input.trim()}
+                className="rounded-xl bg-zinc-900 px-5 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-40"
+              >
+                {sending ? "发送中…" : "发送"}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

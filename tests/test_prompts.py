@@ -34,9 +34,11 @@ def test_all_system_prompts_non_empty():
 # ---- 2. 关键铁律存在（防误删决定行为的关键约束）----
 
 def test_teacher_prompt_keeps_diagnosis_guardrail():
-    """教学 Agent 不得直接改掌握状态，必须经 propose_diagnosis 由系统裁决。"""
+    """教学 Agent 不得直接改掌握状态，只能提交观察值，由系统 BKT 定级。"""
     assert "不能直接判定或修改学生的掌握状态" in TEACHER_SYSTEM_PROMPT
     assert "propose_diagnosis" in TEACHER_SYSTEM_PROMPT
+    assert "record_observation" in TEACHER_SYSTEM_PROMPT
+    assert "query_proficiency" in TEACHER_SYSTEM_PROMPT
 
 
 def test_teacher_prompt_keeps_web_search_guardrail():

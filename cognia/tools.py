@@ -24,6 +24,7 @@ import urllib.parse
 import urllib.request
 
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
 
 from cognia.learning_engine import (
     build_knowledge_model,
@@ -35,6 +36,7 @@ from cognia.memory import (
     append_proficiency_delta,
     get_current_proficiency,
     get_knowledge_model,
+    get_user_id,
     normalize_goal,
     put_knowledge_model,
 )
@@ -89,15 +91,16 @@ def _search_web(query: str, max_results: int = 5) -> list[dict]:
         })
     return results
 
-def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, user_id=None):
+def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
     """构建认知模型工具集（闭包注入模型与存储依赖）。
 
     - diagnoser：诊断 + 双重验证（run_diagnosis / run_verification）
     - planner：知识模型构建
     - teacher：探针问题 / 讲解生成
     - store：长期 Store（熟练度 / 知识模型持久化），None 时跳过持久化（测试 / 纯推理）
-    - user_id：当前用户标识，**由工厂闭包注入，不暴露给 LLM**（宪法 §5：user_id 来自
-      runtime context，LLM 只应填写业务参数，不能伪造身份）。
+    - user_id：**不在此闭包注入**，由每个工具通过 `RunnableConfig` 从 runtime context
+      读取（宪法 §5：user_id 走 runtime context，不塞 State、不进闭包；LLM 只填写
+      业务参数，不能伪造身份）。
 
     模型为**惰性初始化**：只在对应工具真正被调用时才获取，避免构造工具集（含纯读
     工具如 read_learner_state）时强制要求 LLM API 凭据，也便于测试只注入需要的假模型。
@@ -125,12 +128,13 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
         return teacher
 
     @tool
-    def read_learner_state(point_id: str) -> str:
+    def read_learner_state(point_id: str, config: RunnableConfig) -> str:
         """读取当前用户对某知识点的认知状态（五态之一）。
 
         Args:
             point_id: 知识点唯一 id。
         """
+        user_id = get_user_id(config)
         state = (
             get_current_proficiency(store, user_id, point_id)
             if (store and user_id)
@@ -140,7 +144,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
         return json.dumps({"state": state or "unassessed"}, ensure_ascii=False)
 
     @tool
-    def build_learning_goal(goal: str) -> str:
+    def build_learning_goal(goal: str, config: RunnableConfig) -> str:
         """为当前用户构建 / 复用某学习目标的知识模型（知识点列表 + 前置依赖）。
 
         load-or-build：同一 (user_id, goal) 会复用已冻结的知识模型，保证知识点 id
@@ -149,6 +153,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
         Args:
             goal: 学习目标（如「Spring AOP」）。
         """
+        user_id = get_user_id(config)
         goal = (goal or "").strip()
         goal_key = normalize_goal(goal)
 
@@ -180,6 +185,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
         question: str,
         user_answer: str,
         current_state: str,
+        config: RunnableConfig,
     ) -> str:
         """提议对用户回答做一次认知诊断，并让系统裁决是否发生状态迁移。
 
@@ -195,6 +201,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
             user_answer: 用户对探针问题的回答原文。
             current_state: 该知识点当前五态（unassessed/unknown/partial/misconception/mastered）。
         """
+        user_id = get_user_id(config)
         point = KnowledgePoint(
             id=point_id,
             name=point_name,

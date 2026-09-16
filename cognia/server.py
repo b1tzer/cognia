@@ -55,21 +55,22 @@ class RenameThreadRequest(BaseModel):
     title: str
 
 
-def build_agent(checkpointer=None, user_id: str = "local-user"):
+def build_agent(checkpointer=None, store=None):
     """构建 Cognia 教学 ReAct agent（图）。
 
     - teacher 模型：对话 Agent（理解意图 + 决策 + 生成回复 + 工具调用）
-    - tools：认知模型工具集（user_id 闭包注入，LLM 不可伪造身份）
+    - tools：认知模型工具集（store 闭包注入，user_id 走 runtime context）
     - checkpointer：会话状态持久化。生产传 Postgres（跨刷新/重启恢复），
       不传时用 InMemorySaver（POC/测试）。
+    - store：长期 Store（熟练度 / 知识模型持久化）。None 时跳过持久化
+      （测试 / Postgres 降级），由 lifespan 显式告警，禁止静默丢弃。
 
-    注意：user_id 目前为固定值（POC 阶段）。多用户身份注入需在请求边界
-    解析并逐请求构建 agent（见 LangGraphAGUIAgent config 参数），属后续安全加固项。
+    user_id 不在此注入：由每个请求在 endpoint 边界解析后，经
+    `config["configurable"]["user_id"]`（runtime context）传给工具（宪法 §5）。
     """
     teacher = models.get_conversation_agent_model()
     tools = build_cognia_tools(
-        store=None,          # POC：不接长期 Store，验证事件流
-        user_id=user_id,     # 身份闭包注入，LLM 无法伪造
+        store=store,         # 长期 Store；None 时工具内部跳过持久化
         teacher=teacher,
     )
     tool_list = list(tools.values())
@@ -115,18 +116,22 @@ async def lifespan(app: FastAPI):
     try:
         pool = await memory.get_pool()
         checkpointer = await memory.get_checkpointer()
+        store = await memory.get_store()
         await threads.ensure_schema(pool)
         app.state.pool = pool
         app.state.checkpointer = checkpointer
+        app.state.store = store
         app.state.threads_available = True
-        print("[Cognia] 使用 Postgres checkpointer 持久化会话状态")
+        print("[Cognia] 使用 Postgres 持久化会话状态与长期认知状态")
     except Exception as exc:  # Postgres 不可用 / 缺依赖等，降级保体验
-        print(f"[Cognia] Postgres 不可用，降级到内存 checkpointer：{exc}")
+        print(f"[Cognia] Postgres 不可用，降级到内存 checkpointer（长期认知状态不持久化）：{exc}")
         checkpointer = InMemorySaver()
+        store = None
         app.state.checkpointer = checkpointer
         app.state.pool = None
+        app.state.store = None
         app.state.threads_available = False
-    _agent.graph = build_agent(checkpointer=checkpointer)
+    _agent.graph = build_agent(checkpointer=checkpointer, store=store)
     yield
 
 
@@ -171,6 +176,21 @@ async def _auto_title_thread(request: Request, input_data: RunAgentInput) -> Non
     title = text[:30] + ("…" if len(text) > 30 else "")
     await threads.auto_title_if_empty(app_state.pool, thread_id, title)
 
+def _extract_user_id(input_data: RunAgentInput) -> str:
+    """从 AG-UI 输入的 forwarded_props 解析匿名 user_id。
+
+    前端经 forwarded_props 传匿名标识（MVP 无登录，clarifications Q6）。
+    兼容 user_id / userId 两种 key（协议键名 snake_case，前端 JS 可能用 camelCase）。
+    缺失时降级为 "local-user" 并显式告警，保持前端未升级前的兼容行为。
+    """
+    props = getattr(input_data, "forwarded_props", None)
+    if not isinstance(props, dict):
+        props = {}
+    user_id = props.get("user_id") or props.get("userId")
+    if not user_id:
+        print("[Cognia] 未收到 user_id，降级为 local-user")
+        return "local-user"
+    return str(user_id)
 
 # AG-UI 端点（path="/"）。与 ag_ui_langgraph.add_langgraph_fastapi_endpoint
 # 等价，但多了「进入时自动生成会话标题」这一步；健康检查端点一并保留。
@@ -181,8 +201,16 @@ async def cognia_agent_endpoint(input_data: RunAgentInput, request: Request):
     accept_header = request.headers.get("accept")
     encoder = EventEncoder(accept=accept_header)
 
-    # 每个请求 clone 独立 agent，避免并发请求共享 active_run 状态。
-    request_agent = _agent.clone()
+    # 每个请求构造独立 agent（复用 graph，注入逐请求 user_id），
+    # 既避免并发请求共享 active_run 状态，又让 user_id 走 runtime context
+    # （宪法 §5）。clone() 不接受 config 参数，故此处重建轻量包装对象。
+    user_id = _extract_user_id(input_data)
+    request_agent = LangGraphAGUIAgent(
+        name=_agent.name,
+        description=_agent.description,
+        graph=_agent.graph,
+        config={"configurable": {"user_id": user_id}},
+    )
 
     async def event_generator():
         async for event in request_agent.run(input_data):

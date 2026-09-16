@@ -8,7 +8,11 @@
 - learning_engine.py：诊断器 / 知识建模器 / 验证器（原 learning_engine.py）
 """
 
-from cognia.prompts.teacher import TEACHER_SYSTEM_PROMPT
+from cognia.prompts.teacher import (
+    EXPLAINER_SYSTEM_PROMPT,
+    PROBE_GENERATOR_SYSTEM_PROMPT,
+    TEACHER_SYSTEM_PROMPT,
+)
 from cognia.prompts.learning_engine import (
     CONCEPT_VERIFIER_SYSTEM_PROMPT,
     DIAGNOSER_SYSTEM_PROMPT,
@@ -18,6 +22,8 @@ from cognia.prompts.learning_engine import (
 
 __all__ = [
     "TEACHER_SYSTEM_PROMPT",
+    "PROBE_GENERATOR_SYSTEM_PROMPT",
+    "EXPLAINER_SYSTEM_PROMPT",
     "DIAGNOSER_SYSTEM_PROMPT",
     "KNOWLEDGE_MODELER_SYSTEM_PROMPT",
     "CONCEPT_VERIFIER_SYSTEM_PROMPT",

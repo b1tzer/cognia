@@ -38,6 +38,10 @@ from cognia.memory import (
     normalize_goal,
     put_knowledge_model,
 )
+from cognia.prompts.teacher import (
+    EXPLAINER_SYSTEM_PROMPT,
+    PROBE_GENERATOR_SYSTEM_PROMPT,
+)
 from cognia.schemas import (
     CognitiveState,
     Confidence,
@@ -258,11 +262,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
             point_description: 知识点一句话描述。
         """
         result = _get_teacher().invoke([
-            ("system", (
-                "你是 Cognia 的教学教练。请针对给定知识点提出一个简短、具体、自然的"
-                "开放式问题（不要出选择题），引导用户用自己的话表达理解。只输出问题"
-                "本身，不要夹带答案、诊断标准或任何解释。"
-            )),
+            ("system", PROBE_GENERATOR_SYSTEM_PROMPT),
             ("human", f"知识点：{point_name}（{point_description}）"),
         ])
         content = result.content if hasattr(result, "content") else str(result)
@@ -295,14 +295,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, u
             refs = "（本次未检索到外部资料，请仅基于已确定的技术事实谨慎讲解，不确定处明确说明。）"
 
         result = _get_teacher().invoke([
-            ("system", (
-                "你是 Cognia 的教学教练。下面是联网检索到的官方 / 权威资料。"
-                "请**严格基于这些资料**讲解知识点，确保技术事实准确；"
-                "若资料与你的先验知识冲突，以资料为准。"
-                "优先采信官方文档、权威站点（如 .org、.edu、官方域名等）。"
-                "讲解末尾用「参考来源」列出主要链接。"
-                "只输出讲给学习者听的内容，不要暴露诊断标准。"
-            )),
+            ("system", EXPLAINER_SYSTEM_PROMPT),
             ("human", (
                 f"知识点：{point_name}（{point_description}）\n"
                 f"教学策略：{style_hint}\n\n"

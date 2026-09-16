@@ -85,8 +85,16 @@ def _partial_diagnosis():
     )
 
 
-def _make_tools(diagnoser_responses, teacher_responses=None, store=None, user_id="u1"):
-    """构造工具集：diagnoser / teacher 用 ScriptedLLM，planner 用空桩，store / user_id 注入。"""
+def _cfg(user_id="u1"):
+    """构造带 user_id 的 runtime config（宪法 §5：user_id 走 runtime context）。"""
+    return {"configurable": {"user_id": user_id}}
+
+
+def _make_tools(diagnoser_responses, teacher_responses=None, store=None):
+    """构造工具集：diagnoser / teacher 用 ScriptedLLM，planner 用空桩，store 注入。
+
+    user_id 不再经闭包注入，由调用工具时通过 runtime config 传入（宪法 §5）。
+    """
     diagnoser = ScriptedLLM(diagnoser_responses)
     teacher = ScriptedLLM(teacher_responses or [])
     planner = ScriptedLLM([])
@@ -95,7 +103,6 @@ def _make_tools(diagnoser_responses, teacher_responses=None, store=None, user_id
         planner=planner,
         teacher=teacher,
         store=store or InMemoryStore(),
-        user_id=user_id,
     )
 
 
@@ -115,10 +122,14 @@ def test_read_learner_state():
         evidence=["e"],
         timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
     ))
-    tools = build_cognia_tools(store=store, user_id="u1")
+    tools = build_cognia_tools(store=store)
 
-    assert tools["read_learner_state"].invoke({"point_id": "aop-concept"}) == '{"state": "partial"}'
-    assert tools["read_learner_state"].invoke({"point_id": "unknown-point"}) == '{"state": "unassessed"}'
+    assert tools["read_learner_state"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ) == '{"state": "partial"}'
+    assert tools["read_learner_state"].invoke(
+        {"point_id": "unknown-point"}, config=_cfg()
+    ) == '{"state": "unassessed"}'
 
 
 # ---- 写工具：三层闸门 ----
@@ -130,14 +141,14 @@ def test_propose_diagnosis_medium_confidence_no_migration():
                   confidence=Confidence.MEDIUM, evidence=["模糊"]),
     ])
     store = InMemoryStore()
-    tools = build_cognia_tools(diagnoser=diagnoser, store=store, user_id="u1")
+    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
 
     result = json.loads(tools["propose_diagnosis"].invoke({
         "point_id": "aop-concept",
         "point_name": "AOP 概念", "point_description": "面向切面编程",
         "question": "什么是 AOP？", "user_answer": "大概是切面吧",
         "current_state": "unassessed",
-    }))
+    }, config=_cfg()))
 
     assert result["migrated"] is False
     assert result["final_state"] == "unassessed"
@@ -154,14 +165,14 @@ def test_propose_diagnosis_mastered_verification_fail_no_migration():
         _ScenarioAssessmentStub(False, ""),
     ])
     store = InMemoryStore()
-    tools = build_cognia_tools(diagnoser=diagnoser, store=store, user_id="u1")
+    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
 
     result = json.loads(tools["propose_diagnosis"].invoke({
         "point_id": "aop-concept",
         "point_name": "AOP 概念", "point_description": "面向切面编程",
         "question": "什么是 AOP？", "user_answer": "AOP 就是切面",
         "current_state": "partial",
-    }))
+    }, config=_cfg()))
 
     assert result["migrated"] is False
     assert result["final_state"] == "partial"          # 保持原状态
@@ -180,14 +191,14 @@ def test_propose_diagnosis_mastered_with_verification_migrates():
         _ScenarioAssessmentStub(True, "场景正确"),
     ])
     store = InMemoryStore()
-    tools = build_cognia_tools(diagnoser=diagnoser, store=store, user_id="u1")
+    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
 
     result = json.loads(tools["propose_diagnosis"].invoke({
         "point_id": "aop-concept",
         "point_name": "AOP 概念", "point_description": "面向切面编程",
         "question": "什么是 AOP？", "user_answer": "AOP 通过切面拦截方法调用",
         "current_state": "partial",
-    }))
+    }, config=_cfg()))
 
     assert result["migrated"] is True
     assert result["final_state"] == "mastered"
@@ -201,14 +212,14 @@ def test_propose_diagnosis_partial_high_confidence_migrates():
     """高置信度 partial（非 mastered）经状态机裁决迁移，无需双重验证。"""
     diagnoser = ScriptedLLM([_partial_diagnosis()])
     store = InMemoryStore()
-    tools = build_cognia_tools(diagnoser=diagnoser, store=store, user_id="u1")
+    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
 
     result = json.loads(tools["propose_diagnosis"].invoke({
         "point_id": "aop-concept",
         "point_name": "AOP 概念", "point_description": "面向切面编程",
         "question": "什么是 AOP？", "user_answer": "AOP 就是切面，但代理机制说不清",
         "current_state": "unassessed",
-    }))
+    }, config=_cfg()))
 
     assert result["migrated"] is True
     assert result["final_state"] == "partial"
@@ -259,14 +270,13 @@ def test_build_learning_goal_builds_then_reuses():
         planner=planner,
         teacher=ScriptedLLM([]),
         store=store,
-        user_id="u1",
     )
 
-    first = json.loads(tools["build_learning_goal"].invoke({"goal": "Spring AOP"}))
+    first = json.loads(tools["build_learning_goal"].invoke({"goal": "Spring AOP"}, config=_cfg()))
     assert first["action"] == "构建"
     assert first["first_point_id"] == "aop-concept"
 
     # 第二次：复用，planner 不再被调用（队列已空，若重建会 assert 耗尽）
-    second = json.loads(tools["build_learning_goal"].invoke({"goal": "Spring AOP"}))
+    second = json.loads(tools["build_learning_goal"].invoke({"goal": "Spring AOP"}, config=_cfg()))
     assert second["action"] == "复用"
     assert second["first_point_id"] == "aop-concept"

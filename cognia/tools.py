@@ -39,6 +39,7 @@ from cognia.memory import (
     get_user_id,
     normalize_goal,
     put_knowledge_model,
+    query_proficiency as _query_proficiency,
     record_observation as _record_observation,
 )
 from cognia.prompts.teacher import (
@@ -321,6 +322,35 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
         }, ensure_ascii=False)
 
     @tool
+    def query_proficiency(point_id: str, config: RunnableConfig) -> str:
+        """查询系统对某知识点的权威熟练度（BKT 算法融合观察历史后算出的结果）。
+
+        这是「系统计算产物」，AI 只能查询、无权直接改写。返回连续掌握概率
+        （latent_value）+ 离散五态（mapped_state）+ 不确定性（uncertainty）。
+
+        Args:
+            point_id: 知识点唯一 id。
+        """
+        user_id = get_user_id(config)
+        prof = (
+            _query_proficiency(store, user_id, point_id)
+            if (store and user_id)
+            else None
+        )
+        if prof is None:
+            return json.dumps(
+                {"mapped_state": "unassessed", "latent_value": None, "uncertainty": None},
+                ensure_ascii=False,
+            )
+        return json.dumps({
+            "point_id": prof.point_id,
+            "mapped_state": prof.mapped_state.value,
+            "latent_value": prof.latent_value,
+            "uncertainty": prof.uncertainty,
+            "observation_count": prof.observation_count,
+        }, ensure_ascii=False)
+
+    @tool
     def generate_probe(point_name: str, point_description: str) -> str:
         """生成一个针对某知识点的开放式探针问题，引导用户用自己的话表达理解。
 
@@ -394,6 +424,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
         "build_learning_goal": build_learning_goal,
         "propose_diagnosis": propose_diagnosis,
         "record_observation": record_observation,
+        "query_proficiency": query_proficiency,
         "generate_probe": generate_probe,
         "explain": explain,
         "web_search": web_search,

@@ -383,3 +383,76 @@ def test_record_observation_store_none_degrades():
     }, config=_cfg()))
 
     assert result["recorded"] is False
+
+
+# ---- 读工具：query_proficiency（查询权威状态）----
+
+def test_query_proficiency_unassessed():
+    """无观察 → 返回 unassessed，latent_value 为 BKT 先验 0.4，observation_count=0。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["query_proficiency"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ))
+
+    assert result["mapped_state"] == "unassessed"
+    assert result["latent_value"] == 0.4  # BKT 先验 P(L0)
+    assert result["observation_count"] == 0
+
+
+def test_query_proficiency_with_observation():
+    """有观察 → 返回系统 BKT 融合后的权威状态。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "mastered",
+        "confidence": "high",
+        "evidence": ["用户准确解释切面"],
+    }, config=_cfg())
+
+    result = json.loads(tools["query_proficiency"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ))
+
+    assert result["point_id"] == "aop-concept"
+    assert result["mapped_state"] in ("mastered", "partial")
+    assert result["latent_value"] is not None
+    assert 0.0 <= result["latent_value"] <= 1.0
+    assert result["observation_count"] == 1
+
+
+def test_query_proficiency_store_none_degrades():
+    """store 为 None → 返回 unassessed 降级（不抛错）。"""
+    tools = build_cognia_tools(store=None)
+
+    result = json.loads(tools["query_proficiency"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ))
+
+    assert result["mapped_state"] == "unassessed"
+
+
+def test_query_proficiency_reads_authoritative_not_raw():
+    """查询的是系统权威状态，不是 AI 观察值本身（latent_value 为 BKT 后验）。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    # 提交一次 misconception 观察：AI 观察值是 misconception，但系统权威状态
+    # 由 BKT 后验 + 离散化得出，mapped_state 应为 misconception（负向观察优先）。
+    tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "misconception",
+        "confidence": "high",
+        "evidence": ["用户认为 @Around 修改字节码"],
+    }, config=_cfg())
+
+    result = json.loads(tools["query_proficiency"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ))
+
+    assert result["mapped_state"] == "misconception"
+    # latent_value 是连续概率（0-1），不是观察值本身
+    assert 0.0 <= result["latent_value"] <= 1.0

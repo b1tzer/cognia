@@ -1,0 +1,260 @@
+{
+  "version": "1.0-draft",
+  "domain": "Spring AOP",
+  "set_type": "dev",
+  "note": "草稿版：AI 出稿，待产品负责人审核修正。diagnose 输入为 (point, question, user_answer)，评估对比 diagnosis.state 与 expected_state。",
+  "samples": [
+    {
+      "id": "spring-aop-001",
+      "point": {
+        "id": "aop-proxy-mechanism",
+        "name": "AOP 代理机制",
+        "description": "Spring AOP 通过动态代理实现切面增强：目标对象实现接口时默认用 JDK 动态代理，未实现接口时用 CGLIB 字节码代理",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 的底层代理是怎么工作的？JDK 动态代理和 CGLIB 有什么区别？",
+      "user_answer": "Spring AOP 底层是通过动态代理来实现切面增强的。如果目标类实现了接口，Spring 默认用 JDK 动态代理，它基于 java.lang.reflect.Proxy，在运行时生成一个实现同样接口的代理类，只能代理接口方法。如果目标类没有实现接口，就用 CGLIB，它通过字节码生成一个目标类的子类来代理。不过 CGLIB 没法代理 final 类或 final 方法。Spring Boot 2.x 默认 proxyTargetClass 是 true，所以很多场景会直接用 CGLIB。",
+      "expected_state": "mastered",
+      "rationale": "概念解释（动态代理机制）与场景辨析（接口 vs 类的适用场景、final 限制、Boot 默认行为）均正确且完整，两份独立正向证据齐备。",
+      "key_evidence": [
+        "如果目标类实现了接口，Spring 默认用 JDK 动态代理",
+        "如果目标类没有实现接口，就用 CGLIB",
+        "CGLIB 没法代理 final 类或 final 方法"
+      ]
+    },
+    {
+      "id": "spring-aop-002",
+      "point": {
+        "id": "aop-proxy-mechanism",
+        "name": "AOP 代理机制",
+        "description": "Spring AOP 通过动态代理实现切面增强：目标对象实现接口时默认用 JDK 动态代理，未实现接口时用 CGLIB 字节码代理",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 的底层代理是怎么工作的？JDK 动态代理和 CGLIB 有什么区别？",
+      "user_answer": "Spring AOP 底层是用动态代理实现的，主要就是 JDK 动态代理和 CGLIB。JDK 动态代理是 Java 自带的，CGLIB 是第三方库。具体哪个场景用哪个我不是特别确定，好像跟有没有接口有关，但我不太记得清楚了。",
+      "expected_state": "partial",
+      "rationale": "能说出「动态代理 + JDK/CGLIB 两种」的大意，但「谁对接口、谁对类、final 限制」等细节模糊、边界说不清。",
+      "key_evidence": [
+        "具体哪个场景用哪个我不是特别确定",
+        "我不太记得清楚了"
+      ]
+    },
+    {
+      "id": "spring-aop-003",
+      "point": {
+        "id": "aop-proxy-mechanism",
+        "name": "AOP 代理机制",
+        "description": "Spring AOP 通过动态代理实现切面增强：目标对象实现接口时默认用 JDK 动态代理，未实现接口时用 CGLIB 字节码代理",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 的底层代理是怎么工作的？JDK 动态代理和 CGLIB 有什么区别？",
+      "user_answer": "Spring AOP 就是用的 CGLIB，因为 JDK 动态代理性能太差了，Spring 早就全部改成 CGLIB 了。而且 CGLIB 是通过反射来实现的，所以能代理任何方法。",
+      "expected_state": "misconception",
+      "rationale": "存在明确的概念混淆与事实错误（「全部用 CGLIB」「CGLIB 用反射实现」均错误），且用户自认为正确。",
+      "key_evidence": [
+        "Spring 早就全部改成 CGLIB 了",
+        "CGLIB 是通过反射来实现的"
+      ]
+    },
+    {
+      "id": "spring-aop-004",
+      "point": {
+        "id": "aop-proxy-mechanism",
+        "name": "AOP 代理机制",
+        "description": "Spring AOP 通过动态代理实现切面增强：目标对象实现接口时默认用 JDK 动态代理，未实现接口时用 CGLIB 字节码代理",
+        "prerequisites": []
+      },
+      "question": "你了解 Spring AOP 的底层代理机制吗？JDK 动态代理和 CGLIB 你知道吗？",
+      "user_answer": "这个我没听说过，JDK 动态代理和 CGLIB 是什么我都不知道，我平时就是直接用 @Aspect 注解写切面，没关注过底层。",
+      "expected_state": "unknown",
+      "rationale": "明确否定证据（「没听说过」「不知道」），确认用户对该知识点处于盲区。",
+      "key_evidence": [
+        "这个我没听说过",
+        "JDK 动态代理和 CGLIB 是什么我都不知道"
+      ]
+    },
+    {
+      "id": "spring-aop-005",
+      "point": {
+        "id": "aop-proxy-mechanism",
+        "name": "AOP 代理机制",
+        "description": "Spring AOP 通过动态代理实现切面增强：目标对象实现接口时默认用 JDK 动态代理，未实现接口时用 CGLIB 字节码代理",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 的底层代理机制，你能讲讲吗？",
+      "user_answer": "嗯……这个，我不太确定从哪说起。",
+      "expected_state": "unassessed",
+      "rationale": "表达过于模糊，既无否定证据也无理解证据，无法区分是否掌握，应保持未评估。",
+      "key_evidence": [
+        "我不太确定从哪说起"
+      ]
+    },
+    {
+      "id": "spring-aop-006",
+      "point": {
+        "id": "aop-self-invocation",
+        "name": "AOP 自调用失效",
+        "description": "同一个 bean 内部方法互相调用时，被调方法不会走代理对象，导致 @Transactional/@Async 等 AOP 增强失效",
+        "prerequisites": ["aop-proxy-mechanism"]
+      },
+      "question": "为什么在同一个类里，一个方法直接调用另一个带 @Transactional 注解的方法，事务会失效？",
+      "user_answer": "因为 @Transactional 是通过 AOP 代理实现的，只有从外部通过代理对象调用目标方法时，代理的拦截逻辑才会生效。在同一个类内部，方法 A 调用方法 B 时，调用的是 this 指向的原始对象，而不是 Spring 生成的代理对象，所以 B 方法上的 @Transactional 不会被代理拦截，事务自然就失效了。解决方法是把 B 方法放到另一个 bean，或者通过 AopContext.currentProxy() 获取代理对象，或者自己注入自己的代理。",
+      "expected_state": "mastered",
+      "rationale": "概念解释（this 绕过代理）与场景辨析（拆 bean / AopContext / 自注入等解决方案）均正确。",
+      "key_evidence": [
+        "调用的是 this 指向的原始对象，而不是 Spring 生成的代理对象",
+        "通过 AopContext.currentProxy() 获取代理对象"
+      ]
+    },
+    {
+      "id": "spring-aop-007",
+      "point": {
+        "id": "aop-self-invocation",
+        "name": "AOP 自调用失效",
+        "description": "同一个 bean 内部方法互相调用时，被调方法不会走代理对象，导致 @Transactional/@Async 等 AOP 增强失效",
+        "prerequisites": ["aop-proxy-mechanism"]
+      },
+      "question": "为什么在同一个类里，一个方法直接调用另一个带 @Transactional 注解的方法，事务会失效？",
+      "user_answer": "这个好像是 AOP 代理的问题，内部方法调用不会经过代理，所以注解不生效。具体原理我不是很清楚，反正知道会遇到这个问题，一般拆到别的类里就能解决。",
+      "expected_state": "partial",
+      "rationale": "能说大意（内部调用不经过代理、拆类解决），但「this vs 代理对象」的机制细节说不清。",
+      "key_evidence": [
+        "内部方法调用不会经过代理",
+        "具体原理我不是很清楚"
+      ]
+    },
+    {
+      "id": "spring-aop-008",
+      "point": {
+        "id": "aop-self-invocation",
+        "name": "AOP 自调用失效",
+        "description": "同一个 bean 内部方法互相调用时，被调方法不会走代理对象，导致 @Transactional/@Async 等 AOP 增强失效",
+        "prerequisites": ["aop-proxy-mechanism"]
+      },
+      "question": "为什么在同一个类里，一个方法直接调用另一个带 @Transactional 注解的方法，事务会失效？",
+      "user_answer": "这个是因为 @Transactional 注解需要结合 @Async 才能生效，或者是因为方法没有被 Spring 扫描到。其实在同一个类里调用，只要被调用的方法也标了注解，事务就会生效的，我试过是可以的。",
+      "expected_state": "misconception",
+      "rationale": "存在事实错误（以为同类自调用事务会生效、归因到「没被扫描到」或「要结合 @Async」），且自认为正确。",
+      "key_evidence": [
+        "只要被调用的方法也标了注解，事务就会生效",
+        "@Transactional 注解需要结合 @Async 才能生效"
+      ]
+    },
+    {
+      "id": "spring-aop-009",
+      "point": {
+        "id": "aop-self-invocation",
+        "name": "AOP 自调用失效",
+        "description": "同一个 bean 内部方法互相调用时，被调方法不会走代理对象，导致 @Transactional/@Async 等 AOP 增强失效",
+        "prerequisites": ["aop-proxy-mechanism"]
+      },
+      "question": "你遇到过 Spring 里同一个类内部方法互相调用导致 @Transactional 事务失效的问题吗？",
+      "user_answer": "没遇到过，也不知道还有这种问题，@Transactional 不是加上了就生效吗？内部调用失效是什么意思我没听过。",
+      "expected_state": "unknown",
+      "rationale": "明确否定证据（「没遇到过」「没听过」），确认盲区。",
+      "key_evidence": [
+        "也不知道还有这种问题",
+        "内部调用失效是什么意思我没听过"
+      ]
+    },
+    {
+      "id": "spring-aop-010",
+      "point": {
+        "id": "aop-self-invocation",
+        "name": "AOP 自调用失效",
+        "description": "同一个 bean 内部方法互相调用时，被调方法不会走代理对象，导致 @Transactional/@Async 等 AOP 增强失效",
+        "prerequisites": ["aop-proxy-mechanism"]
+      },
+      "question": "Spring 中同类内部方法自调用导致事务失效，你了解这个现象吗？",
+      "user_answer": "自调用？事务失效？这个我不太懂你说的场景具体指什么。",
+      "expected_state": "unassessed",
+      "rationale": "表达模糊，未给出任何理解或否定证据，无法判定。",
+      "key_evidence": [
+        "我不太懂你说的场景具体指什么"
+      ]
+    },
+    {
+      "id": "spring-aop-011",
+      "point": {
+        "id": "aop-advice-order",
+        "name": "通知类型与执行顺序",
+        "description": "Spring AOP 的五种通知类型（@Before/@After/@AfterReturning/@AfterThrowing/@Around）及其执行顺序，@Around 可控制目标方法是否执行",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 有哪些通知类型？@Around 和其他通知的执行顺序是什么？",
+      "user_answer": "Spring AOP 有五种通知：@Before 前置、@After 后置（不管成功失败都执行，类似 finally）、@AfterReturning 返回后（正常返回才执行）、@AfterThrowing 异常后（抛异常才执行）、@Around 环绕（包裹整个方法，可以控制是否调用 proceed()）。执行顺序是：@Around 进入 → @Before → 目标方法 → @AfterReturning（或 @AfterThrowing）→ @After → @Around 退出。@Around 最强大，可以同时做前置和后置逻辑，还能决定要不要执行目标方法。",
+      "expected_state": "mastered",
+      "rationale": "五种通知类型齐全，@After 与 @AfterReturning/@AfterThrowing 的区别（finally 语义）清晰，执行顺序与 @Around 的 proceed 控制正确。",
+      "key_evidence": [
+        "@After 后置（不管成功失败都执行，类似 finally）",
+        "@Around 进入 → @Before → 目标方法 → @AfterReturning → @After → @Around 退出"
+      ]
+    },
+    {
+      "id": "spring-aop-012",
+      "point": {
+        "id": "aop-advice-order",
+        "name": "通知类型与执行顺序",
+        "description": "Spring AOP 的五种通知类型（@Before/@After/@AfterReturning/@AfterThrowing/@Around）及其执行顺序，@Around 可控制目标方法是否执行",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 有哪些通知类型？@Around 和其他通知的执行顺序是什么？",
+      "user_answer": "有 @Before、@After、@Around、@AfterReturning 这些，@Before 是方法执行前，@After 是方法执行后，@Around 是环绕。具体 @AfterReturning 和 @After 有什么区别，还有异常时的顺序，我有点记不清了。",
+      "expected_state": "partial",
+      "rationale": "能说出大部分通知类型和大意，但 @AfterReturning 与 @After 的语义区别、异常场景、执行顺序细节模糊。",
+      "key_evidence": [
+        "@AfterReturning 和 @After 有什么区别...我有点记不清了"
+      ]
+    },
+    {
+      "id": "spring-aop-013",
+      "point": {
+        "id": "aop-advice-order",
+        "name": "通知类型与执行顺序",
+        "description": "Spring AOP 的五种通知类型（@Before/@After/@AfterReturning/@AfterThrowing/@Around）及其执行顺序，@Around 可控制目标方法是否执行",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 有哪些通知类型？@Around 和其他通知的执行顺序是什么？",
+      "user_answer": "@After 是在方法正常返回之后才执行的，如果方法抛异常，@After 就不会执行了，只有 @AfterThrowing 才会执行。所以 @After 和 @AfterReturning 其实是一样的，只是名字不同。",
+      "expected_state": "misconception",
+      "rationale": "明确的事实错误：@After 无论正常还是异常都会执行（类似 finally），用户误以为异常时不执行、且与 @AfterReturning 等价。",
+      "key_evidence": [
+        "如果方法抛异常，@After 就不会执行了",
+        "@After 和 @AfterReturning 其实是一样的"
+      ]
+    },
+    {
+      "id": "spring-aop-014",
+      "point": {
+        "id": "aop-advice-order",
+        "name": "通知类型与执行顺序",
+        "description": "Spring AOP 的五种通知类型（@Before/@After/@AfterReturning/@AfterThrowing/@Around）及其执行顺序，@Around 可控制目标方法是否执行",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 里 @Before、@After、@Around 这些通知类型你了解吗？",
+      "user_answer": "这些注解我不太了解，平时只写过 @Aspect，里面的通知类型没系统学过。",
+      "expected_state": "unknown",
+      "rationale": "明确否定证据（「不太了解」「没系统学过」），确认盲区。",
+      "key_evidence": [
+        "这些注解我不太了解",
+        "通知类型没系统学过"
+      ]
+    },
+    {
+      "id": "spring-aop-015",
+      "point": {
+        "id": "aop-advice-order",
+        "name": "通知类型与执行顺序",
+        "description": "Spring AOP 的五种通知类型（@Before/@After/@AfterReturning/@AfterThrowing/@Around）及其执行顺序，@Around 可控制目标方法是否执行",
+        "prerequisites": []
+      },
+      "question": "Spring AOP 有哪些通知类型，你知道吗？",
+      "user_answer": "通知类型……这个我一时半会儿说不上来。",
+      "expected_state": "unassessed",
+      "rationale": "表达模糊，无明确否定也无理解证据，无法判定。",
+      "key_evidence": [
+        "这个我一时半会儿说不上来"
+      ]
+    }
+  ]
+}

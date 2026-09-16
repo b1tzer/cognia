@@ -6,11 +6,12 @@
 注意分层：本模块只放「纯数据模型」，状态迁移逻辑（can_transition 等）放 state_machine.py（任务③）。
 """
 
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CognitiveState(str, Enum):
@@ -55,6 +56,30 @@ class KnowledgeModel(BaseModel):
     points: list[KnowledgePoint] = Field(default_factory=list)
 
 
+def _coerce_str_list(v):
+    """把 LLM 可能误输出的字符串归一化为 list[str]。
+
+    背景：structured_output 的降级路径（models.invoke_structured）下，模型有时把
+    list[str] 字段输出成 JSON 字符串（如 evidence: '["..."]'）而非数组，导致
+    model_validate 抛 ValidationError。这是数据契约的容错归一化，不是约束模型行为。
+    """
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        return [s]
+    if isinstance(v, list):
+        return [str(x) for x in v]
+    return v
+
+
 class Diagnosis(BaseModel):
     """认知诊断结果（候选，非最终迁移结果）。
 
@@ -66,6 +91,11 @@ class Diagnosis(BaseModel):
     state: CognitiveState
     confidence: Confidence
     evidence: list[str] = Field(default_factory=list)  # 用户原话片段，严禁脑补（spec §6）
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _normalize_evidence(cls, v):
+        return _coerce_str_list(v)
 
 
 class VerificationState(BaseModel):

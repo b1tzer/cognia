@@ -119,3 +119,36 @@ def test_intervention():
         content="JDK 动态代理只能代理接口，CGLIB 通过继承实现",
     )
     assert inter.intervention_type == "correct"
+
+
+def test_diagnosis_evidence_coerces_json_string():
+    """evidence 被 LLM 误输出为 JSON 数组字符串时，归一化为 list[str]。"""
+    diag = Diagnosis(
+        point_id="aop-proxy",
+        state=CognitiveState.UNKNOWN,
+        confidence=Confidence.HIGH,
+        evidence='["@Transactional 不是自动生效的"]',
+    )
+    assert diag.evidence == ["@Transactional 不是自动生效的"]
+
+
+def test_diagnosis_evidence_coerces_plain_string():
+    """evidence 为单个纯字符串时，归一化为单元素 list。"""
+    diag = Diagnosis(
+        point_id="aop-proxy",
+        state=CognitiveState.UNKNOWN,
+        confidence=Confidence.HIGH,
+        evidence="用户说没听过",
+    )
+    assert diag.evidence == ["用户说没听过"]
+
+
+def test_diagnosis_evidence_list_unchanged():
+    """evidence 为正常 list 时保持原样。"""
+    diag = Diagnosis(
+        point_id="aop-proxy",
+        state=CognitiveState.PARTIAL,
+        confidence=Confidence.HIGH,
+        evidence=["能说大意", "细节模糊"],
+    )
+    assert diag.evidence == ["能说大意", "细节模糊"]

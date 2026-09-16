@@ -39,6 +39,7 @@ from cognia.memory import (
     get_user_id,
     normalize_goal,
     put_knowledge_model,
+    record_observation as _record_observation,
 )
 from cognia.prompts.teacher import (
     EXPLAINER_SYSTEM_PROMPT,
@@ -49,6 +50,7 @@ from cognia.schemas import (
     Confidence,
     KnowledgeModel,
     KnowledgePoint,
+    Observation,
 )
 from cognia.state_machine import is_mastered_migration_allowed
 
@@ -261,6 +263,64 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
         return json.dumps(result, ensure_ascii=False)
 
     @tool
+    def record_observation(
+        point_id: str,
+        observed_state: str,
+        confidence: str,
+        evidence: list[str],
+        config: RunnableConfig,
+    ) -> str:
+        """记录一条对用户理解程度的观察样本（只追加，不直接改写权威熟练度）。
+
+        重要：本工具只「追加观察」，权威熟练度由系统用 BKT 算法融合观察历史后
+        计算得出。AI 无权直接改写权威状态，只能提交观察值，然后用 query_proficiency
+        查询系统计算出的权威结果。
+
+        Args:
+            point_id: 知识点唯一 id。
+            observed_state: AI 判定的五态（unassessed/unknown/partial/misconception/mastered）。
+            confidence: AI 的置信度（high/medium/low）。
+            evidence: 用户原话片段列表（严禁脑补）。
+        """
+        user_id = get_user_id(config)
+
+        try:
+            state = CognitiveState(observed_state)
+        except (ValueError, TypeError):
+            return json.dumps(
+                {"recorded": False, "error": f"非法 observed_state: {observed_state}"},
+                ensure_ascii=False,
+            )
+
+        try:
+            conf = Confidence(confidence)
+        except (ValueError, TypeError):
+            return json.dumps(
+                {"recorded": False, "error": f"非法 confidence: {confidence}"},
+                ensure_ascii=False,
+            )
+
+        observation = Observation(
+            point_id=point_id,
+            observed_state=state,
+            confidence=conf,
+            evidence=evidence,
+        )
+
+        # store / user_id 缺失 → 安全降级（不落库）；unassessed / 空 evidence 由
+        # memory.record_observation 内部跳过并返回 False。
+        recorded = bool(
+            store and user_id and _record_observation(store, user_id, observation)
+        )
+
+        return json.dumps({
+            "recorded": recorded,
+            "point_id": point_id,
+            "observed_state": state.value,
+            "confidence": conf.value,
+        }, ensure_ascii=False)
+
+    @tool
     def generate_probe(point_name: str, point_description: str) -> str:
         """生成一个针对某知识点的开放式探针问题，引导用户用自己的话表达理解。
 
@@ -333,6 +393,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
         "read_learner_state": read_learner_state,
         "build_learning_goal": build_learning_goal,
         "propose_diagnosis": propose_diagnosis,
+        "record_observation": record_observation,
         "generate_probe": generate_probe,
         "explain": explain,
         "web_search": web_search,

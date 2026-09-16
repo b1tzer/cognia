@@ -280,3 +280,106 @@ def test_build_learning_goal_builds_then_reuses():
     second = json.loads(tools["build_learning_goal"].invoke({"goal": "Spring AOP"}, config=_cfg()))
     assert second["action"] == "复用"
     assert second["first_point_id"] == "aop-concept"
+
+
+# ---- 写工具：record_observation（观察样本，只追加不改结论）----
+
+def test_record_observation_appends_only():
+    """record_observation 只追加观察，不直接写 proficiency 结论。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "partial",
+        "confidence": "high",
+        "evidence": ["用户说 AOP 是切面，但说不清代理"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is True
+
+    from cognia.memory import query_observations, get_current_proficiency
+    obs = query_observations(store, "u1", "aop-concept")
+    assert len(obs) == 1
+    assert obs[0]["observed_state"] == "partial"
+    # 关键：没有直接写 proficiency Delta（AI 不能直接改结论）
+    assert get_current_proficiency(store, "u1", "aop-concept") is None
+
+
+def test_record_observation_unassessed_skipped():
+    """unassessed 不产生观测。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "unassessed",
+        "confidence": "high",
+        "evidence": ["x"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+
+    from cognia.memory import query_observations
+    assert query_observations(store, "u1", "aop-concept") == []
+
+
+def test_record_observation_empty_evidence_rejected():
+    """空 evidence 拒绝写入。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "partial",
+        "confidence": "high",
+        "evidence": [],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+
+
+def test_record_observation_invalid_state():
+    """非法 observed_state 返回错误，不落库。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "nonsense",
+        "confidence": "high",
+        "evidence": ["x"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+    assert "error" in result
+
+
+def test_record_observation_invalid_confidence():
+    """非法 confidence 返回错误。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "partial",
+        "confidence": "nonsense",
+        "evidence": ["x"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+    assert "error" in result
+
+
+def test_record_observation_store_none_degrades():
+    """store 为 None 时安全降级，recorded=False。"""
+    tools = build_cognia_tools(store=None)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "partial",
+        "confidence": "high",
+        "evidence": ["x"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False

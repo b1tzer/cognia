@@ -13,6 +13,8 @@ from langgraph.store.memory import InMemoryStore
 
 from cognia import memory as memory_mod
 from cognia.memory import (
+    alist_current_proficiencies,
+    alist_knowledge_models,
     append_proficiency_delta,
     aput_profile,
     get_checkpointer,
@@ -251,3 +253,30 @@ def test_list_current_proficiencies_isolation_and_empty():
     assert list_current_proficiencies(store, "u2") == {}
     assert list_current_proficiencies(None, "u1") == {}  # store=None 安全降级
     assert list_current_proficiencies(store, "u1") == {"p1": "partial"}
+
+
+# ---- 异步聚合读取（主事件循环内必须用 asearch，防 InvalidStateError）----
+
+def test_alist_knowledge_models_async():
+    """alist_knowledge_models 与同步版逻辑一致，走 asearch。"""
+    store = InMemoryStore()
+    put_knowledge_model(store, "u1", "spring aop", {"goal": "Spring AOP", "points": []})
+    put_knowledge_model(store, "u1", "react hooks", {"goal": "React Hooks", "points": []})
+
+    async def go():
+        kms = await alist_knowledge_models(store, "u1")
+        return {km["goal"] for km in kms}
+
+    assert asyncio.run(go()) == {"Spring AOP", "React Hooks"}
+
+
+def test_alist_current_proficiencies_async():
+    """alist_current_proficiencies 与同步版逻辑一致，走 asearch。"""
+    store = InMemoryStore()
+    append_proficiency_delta(store, "u1", _entry("p1", None, CognitiveState.PARTIAL, 1))
+    append_proficiency_delta(store, "u1", _entry("p1", CognitiveState.PARTIAL, CognitiveState.MASTERED, 2))
+
+    async def go():
+        return await alist_current_proficiencies(store, "u1")
+
+    assert asyncio.run(go()) == {"p1": "mastered"}

@@ -183,6 +183,39 @@ def list_current_proficiencies(store: BaseStore, user_id: str) -> dict[str, str]
     return {pid: v["state"] for pid, v in latest.items()}
 
 
+async def alist_knowledge_models(store, user_id: str) -> list[dict]:
+    """list_knowledge_models 的异步版本（供主事件循环内的 async endpoint 调用）。
+
+    AsyncPostgresStore 在主事件循环线程里禁止同步 store.search（抛
+    asyncio.InvalidStateError），必须 `await store.asearch(...)`。逻辑与同步版一致。
+    """
+    if store is None or not user_id:
+        return []
+    items = await store.asearch((KNOWLEDGE_MODEL_NS, user_id))
+    return [item.value for item in items if item.value is not None]
+
+
+async def alist_current_proficiencies(store, user_id: str) -> dict[str, str]:
+    """list_current_proficiencies 的异步版本（供主事件循环内的 async endpoint 调用）。
+
+    同理：AsyncPostgresStore 必须用 `await store.asearch(...)`。逻辑与同步版一致。
+    """
+    if store is None or not user_id:
+        return {}
+    items = await store.asearch((PROFICIENCY_NS, user_id))
+    latest: dict[str, dict] = {}
+    for item in items:
+        value = item.value or {}
+        point_id = value.get("point_id")
+        to_state = value.get("to_state")
+        ts = value.get("timestamp") or ""
+        if not point_id or not to_state:
+            continue
+        if point_id not in latest or ts > latest[point_id]["ts"]:
+            latest[point_id] = {"ts": ts, "state": to_state}
+    return {pid: v["state"] for pid, v in latest.items()}
+
+
 # ---- runtime context：user_id 注入（不塞 State）----
 
 def get_user_id(config: dict) -> str | None:

@@ -24,8 +24,11 @@ from cognia.schemas import (
     KnowledgePoint,
     Observation,
     PointAttributes,
+    Proficiency,
     ProficiencyEntry,
 )
+
+from cognia.proficiency_engine import compute_proficiency
 
 # namespace 第一段（Store 的 namespace 是 tuple：类别 + user_id）
 PROFICIENCY_NS = "proficiency"
@@ -145,6 +148,40 @@ async def aquery_observations(store, user_id: str, point_id: str) -> list[dict]:
     obs = [item.value for item in items if item.value.get("point_id") == point_id]
     obs.sort(key=lambda d: d.get("timestamp") or "")
     return obs
+
+
+# ---- 权威熟练度（proficiency）查询：观察历史 → BKT 融合 → Proficiency ----
+
+def query_proficiency(store, user_id: str, point_id: str) -> Proficiency | None:
+    """读某 user 某知识点的权威熟练度（能力域 D：单点查询）。
+
+    内部：query_observations → compute_proficiency → Proficiency。
+    这是系统计算产物，AI 只能查询、无权直接改写。
+
+    - store / user_id / point_id 缺失 → 返回 None（安全降级）。
+    - 无观察 → 返回 point_id 正确、mapped_state=unassessed 的 Proficiency。
+    - 单点查询无 goal 上下文，attributes 传 None（难度回退默认 P(T)、
+      bloom_level 保守取 depth=2）；整图查询（#109）在有 goal 上下文时另行传属性。
+    """
+    if store is None or not user_id or not point_id:
+        return None
+    observations = query_observations(store, user_id, point_id)
+    prof = compute_proficiency(observations, None)
+    if prof.point_id == "":
+        # 无观察时 compute_proficiency 返回空 point_id，这里补回真实 point_id
+        return prof.model_copy(update={"point_id": point_id})
+    return prof
+
+
+async def aquery_proficiency(store, user_id: str, point_id: str) -> Proficiency | None:
+    """query_proficiency 的异步版本（主事件循环内用 asearch）。"""
+    if store is None or not user_id or not point_id:
+        return None
+    observations = await aquery_observations(store, user_id, point_id)
+    prof = compute_proficiency(observations, None)
+    if prof.point_id == "":
+        return prof.model_copy(update={"point_id": point_id})
+    return prof
 
 
 # ---- 画像（profile）：基础偏好读写 ----

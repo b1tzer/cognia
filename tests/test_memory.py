@@ -21,6 +21,7 @@ from cognia.memory import (
     aput_profile,
     arecord_observation,
     aquery_observations,
+    aquery_proficiency,
     delete_point,
     get_checkpointer,
     get_current_proficiency,
@@ -40,6 +41,7 @@ from cognia.memory import (
     query_observations,
     query_point,
     query_prerequisites,
+    query_proficiency,
     query_structure,
     record_observation,
     remove_prerequisite,
@@ -569,3 +571,62 @@ def test_structure_requires_existing_structure():
     store = InMemoryStore()
     with pytest.raises(ValueError):
         update_point(store, "u1", "g", "a", "x", "y")
+
+
+# ---- 权威熟练度查询（query_proficiency）----
+
+def test_query_proficiency_empty_unassessed():
+    """无观察 → unassessed，且 point_id 正确补回。"""
+    store = InMemoryStore()
+    prof = query_proficiency(store, "u1", "p1")
+    assert prof is not None
+    assert prof.point_id == "p1"
+    assert prof.mapped_state == CognitiveState.UNASSESSED
+    assert prof.observation_count == 0
+
+
+def test_query_proficiency_with_observations():
+    """有观察 → 返回 BKT 融合后的权威状态。"""
+    store = InMemoryStore()
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 1))
+    prof = query_proficiency(store, "u1", "p1")
+    assert prof is not None
+    assert prof.point_id == "p1"
+    assert prof.observation_count == 1
+
+
+def test_query_proficiency_store_none_degrades():
+    """store 为 None → 返回 None（安全降级）。"""
+    assert query_proficiency(None, "u1", "p1") is None
+
+
+def test_query_proficiency_missing_point_unassessed():
+    """不存在的 point → 返回 unassessed（不抛错，与 unknown 区分）。"""
+    store = InMemoryStore()
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 1))
+    prof = query_proficiency(store, "u1", "nonexistent")
+    assert prof is not None
+    assert prof.point_id == "nonexistent"
+    assert prof.mapped_state == CognitiveState.UNASSESSED
+
+
+def test_query_proficiency_user_isolation():
+    """不同 user 隔离：u1 的观察对 u2 不可见。"""
+    store = InMemoryStore()
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 1))
+    prof = query_proficiency(store, "u2", "p1")
+    assert prof.mapped_state == CognitiveState.UNASSESSED
+    assert prof.observation_count == 0
+
+
+def test_aquery_proficiency_async():
+    """aquery_proficiency 与同步版逻辑一致。"""
+    store = InMemoryStore()
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 1))
+
+    async def go():
+        return await aquery_proficiency(store, "u1", "p1")
+
+    prof = asyncio.run(go())
+    assert prof.point_id == "p1"
+    assert prof.observation_count == 1

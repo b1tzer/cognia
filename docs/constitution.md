@@ -70,3 +70,16 @@
 - 注释用中文（见项目语言偏好）
 - State 用 TypedDict 定义；累加字段必须配 reducer
 - 节点保持纯函数，尽量小（单节点 ≤ 150 行）
+
+## 8. Prompt 管理（prompts-as-code）
+
+- 策略性 system prompt（决定 AI 行为的指令）一律抽离到 `cognia/prompts/` 独立包，
+  禁止内联在业务逻辑代码里；human 消息模板（含运行时变量 / JSON 花括号）不强抽。
+- 每个 prompt 一个常量，经 `cognia/prompts/__init__.py` 统一导出；业务模块只从这里
+  import，禁止多处复制同一段 prompt 文本。
+- prompt 变更走 Git 分支 + PR review，与代码同等纪律；禁止在供应商 playground /
+  生产环境直接改 prompt。
+- 决定行为的关键铁律（如「不得直接改掌握状态」「证据必须来自用户原话」）必须在
+  `tests/test_prompts.py` 配一条「该指令仍存在」的回归断言，防止误删致静默退化
+  （呼应 §6「变更 prompt 前先跑既有 eval 不回归」）。
+- 抽离后的旧 import 路径（re-export）与 prompts 包权威文本必须一致，测试锁死防漂移。

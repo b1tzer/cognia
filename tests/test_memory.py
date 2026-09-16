@@ -15,6 +15,7 @@ from langgraph.store.memory import InMemoryStore
 from cognia import memory as memory_mod
 from cognia.memory import (
     add_prerequisite,
+    alist_authoritative_proficiencies,
     alist_current_proficiencies,
     alist_knowledge_models,
     append_proficiency_delta,
@@ -630,3 +631,100 @@ def test_aquery_proficiency_async():
     prof = asyncio.run(go())
     assert prof.point_id == "p1"
     assert prof.observation_count == 1
+
+
+# ---- 权威熟练度聚合（alist_authoritative_proficiencies）----
+
+def _km_with_point(pid, attributes=None):
+    """构造含单个 point 的知识模型 dict（attributes 为 PointAttributes 或 None）。"""
+    point = {"id": pid, "name": f"点-{pid}", "description": f"{pid} 描述"}
+    if attributes is not None:
+        point["attributes"] = attributes.model_dump(mode="json")
+    return {"goal": "g", "points": [point]}
+
+
+def _attrs_bloom(bloom):
+    """按认知层级构造 PointAttributes。"""
+    return PointAttributes(
+        type=PointType.CONCEPT,
+        difficulty=2,
+        importance=3,
+        bloom_level=bloom,
+    )
+
+
+def test_alist_authoritative_proficiencies_empty():
+    """无数据 → 返回 {}。"""
+    store = InMemoryStore()
+
+    async def go():
+        return await alist_authoritative_proficiencies(store, "u1")
+
+    assert asyncio.run(go()) == {}
+
+
+def test_alist_authoritative_proficiencies_mastered_understand():
+    """单次 mastered + understand（depth=1）→ mastered。"""
+    store = InMemoryStore()
+    put_knowledge_model(
+        store, "u1", "g",
+        _km_with_point("p1", _attrs_bloom(BloomLevel.UNDERSTAND)),
+    )
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 1))
+
+    async def go():
+        return await alist_authoritative_proficiencies(store, "u1")
+
+    assert asyncio.run(go()) == {"p1": "mastered"}
+
+
+def test_alist_authoritative_proficiencies_apply_requires_two():
+    """单次 mastered + apply（depth=2）→ 观察数不足，不定 mastered（partial）。"""
+    store = InMemoryStore()
+    put_knowledge_model(
+        store, "u1", "g",
+        _km_with_point("p1", _attrs_bloom(BloomLevel.APPLY)),
+    )
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 1))
+
+    async def go():
+        return await alist_authoritative_proficiencies(store, "u1")
+
+    assert asyncio.run(go()) == {"p1": "partial"}
+
+
+def test_alist_authoritative_proficiencies_no_attributes_fallback():
+    """point 无 attributes → 保守 depth=2，单次 mastered 不定 mastered。"""
+    store = InMemoryStore()
+    put_knowledge_model(store, "u1", "g", _km_with_point("p1", None))
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 1))
+
+    async def go():
+        return await alist_authoritative_proficiencies(store, "u1")
+
+    assert asyncio.run(go()) == {"p1": "partial"}
+
+
+def test_alist_authoritative_proficiencies_misconception():
+    """最近一次负向观察为 misconception → misconception。"""
+    store = InMemoryStore()
+    put_knowledge_model(
+        store, "u1", "g",
+        _km_with_point("p1", _attrs_bloom(BloomLevel.UNDERSTAND)),
+    )
+    record_observation(store, "u1", _obs("p1", CognitiveState.MASTERED, 1))
+    record_observation(store, "u1", _obs("p1", CognitiveState.MISCONCEPTION, 2))
+
+    async def go():
+        return await alist_authoritative_proficiencies(store, "u1")
+
+    assert asyncio.run(go()) == {"p1": "misconception"}
+
+
+def test_alist_authoritative_proficiencies_store_none():
+    """store 为 None → 返回 {}（安全降级）。"""
+
+    async def go():
+        return await alist_authoritative_proficiencies(None, "u1")
+
+    assert asyncio.run(go()) == {}

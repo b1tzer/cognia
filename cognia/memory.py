@@ -507,6 +507,40 @@ async def alist_current_proficiencies(store, user_id: str) -> dict[str, str]:
     return {pid: v["state"] for pid, v in latest.items()}
 
 
+async def alist_authoritative_proficiencies(store, user_id: str) -> dict[str, str]:
+    """读某 user 全部知识点的权威熟练度（观察历史 → BKT 融合 → mapped_state）。
+
+    与 list_current_proficiencies / alist_current_proficiencies 的关键区别：
+    后者读旧 proficiency Delta 的 to_state（AI 诊断直接落库的结论），本函数读
+    observation 样本并经 BKT 算法融合出权威状态——知识版图子系统的核心语义
+    「AI 只提交观察值，系统算法定级」。
+
+    返回 `{point_id: mapped_state}`；从未评估过的 point 不在结果里（由调用方补
+    unassessed）。遍历 knowledge_model 的每个 point，用其 attributes（难度 /
+    认知层级）驱动 BKT 参数与验证深度；attributes 缺失或非法时回退默认值。
+    """
+    if store is None or not user_id:
+        return {}
+    kms = await alist_knowledge_models(store, user_id)
+    result: dict[str, str] = {}
+    for km in kms:
+        for p in (km.get("points") or []):
+            pid = p.get("id")
+            if not pid:
+                continue
+            attributes = None
+            attrs = p.get("attributes")
+            if isinstance(attrs, dict):
+                try:
+                    attributes = PointAttributes.model_validate(attrs)
+                except Exception:
+                    attributes = None
+            obs = await aquery_observations(store, user_id, pid)
+            prof = compute_proficiency(obs, attributes)
+            result[pid] = prof.mapped_state.value
+    return result
+
+
 # ---- runtime context：user_id 注入（不塞 State）----
 
 def get_user_id(config: dict) -> str | None:

@@ -55,6 +55,28 @@ kill_duplicates() {
 
 SERVICE="${1:-all}"
 
+# -----------------------------------------------------------------------------
+# wait_for_backend
+#   轮询后端 /health 端点，直到 uvicorn lifespan（含 Postgres 连接）全部完成。
+#   后端是后台启动，uvicorn --reload + lifespan 连 Postgres 需要数秒才能真正
+#   监听端口；若前端在其就绪前启动，浏览器首次请求会 ECONNREFUSED 导致 500。
+#   超时（默认 30s，可用 BACKEND_WAIT_TIMEOUT 覆盖）后不阻塞前端启动，仅告警。
+# -----------------------------------------------------------------------------
+wait_for_backend() {
+    local port="${AGUI_PORT:-8123}"
+    local max_wait="${BACKEND_WAIT_TIMEOUT:-30}"
+    echo "[Cognia] 等待 AG-UI 后端就绪（端口 ${port}，最多 ${max_wait}s）..."
+    for i in $(seq 1 "$max_wait"); do
+        if curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+            echo "[Cognia] AG-UI 后端已就绪。"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "[Cognia] 警告：等待后端就绪超时（${max_wait}s），前端将照常启动。" >&2
+    return 0
+}
+
 start_agui_background() {
     echo "[Cognia] 启动 AG-UI 后端（后台, 端口 ${AGUI_PORT:-8123}）..."
     (uv run python -m uvicorn cognia.server:app \
@@ -73,6 +95,7 @@ case "$SERVICE" in
         kill_duplicates "uvicorn cognia.server:app" "AG-UI 后端"
         kill_duplicates "next dev" "Next.js 前端"
         start_agui_background
+        wait_for_backend
         start_frontend_foreground
         ;;
     frontend)

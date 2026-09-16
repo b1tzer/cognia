@@ -171,6 +171,22 @@ class Observation(BaseModel):
         return _coerce_str_list(v)
 
 
+class Proficiency(BaseModel):
+    """系统产出的权威熟练度（AI 只读，由 BKT 融合观察值计算得出）。
+
+    关键区分：`mapped_state` 是系统权威状态，与 `Observation.observed_state`
+    （AI 判了什么）严格不同。AI 只能提交观察值并查询本结果，无权直接改写。
+    """
+
+    point_id: str
+    latent_value: float = Field(ge=0.0, le=1.0)  # 连续值 P(learned)，BKT 后验 ∈ [0,1]
+    mapped_state: CognitiveState                    # 离散化后的五态（唯一对外权威状态）
+    uncertainty: float = Field(ge=0.0, le=1.0)     # 不确定性（1 - max(p, 1-p)）
+    source_algorithm: str = "bkt"                   # 来源算法（当前仅 BKT，预留扩展）
+    observation_count: int = 0                      # 已融合的有效观察次数
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class Intervention(BaseModel):
     """主动干预动作（追问 / 解释 / 纠错 / 回溯）。"""
 

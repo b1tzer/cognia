@@ -6,7 +6,11 @@
 3. 参数钳制与非法回退（不抛异常）
 4. 难度查表（难度越高 P(T) 越低）
 5. 序列融合与除零保护
+6. 离散化（verification_depth 派生 + 连续值 → 五态）
+7. compute_proficiency（观察历史 + 属性 → 权威 Proficiency）
 """
+
+from datetime import datetime, timezone
 
 from cognia.proficiency_engine import (
     DEFAULT_P_L0,
@@ -15,12 +19,21 @@ from cognia.proficiency_engine import (
     BKTParams,
     bkt_infer,
     bkt_update,
+    compute_proficiency,
     discretize,
     params_for_difficulty,
     state_to_binary,
     verification_depth,
 )
-from cognia.schemas import BloomLevel, CognitiveState
+from cognia.schemas import (
+    BloomLevel,
+    CognitiveState,
+    Confidence,
+    Observation,
+    PointAttributes,
+    PointType,
+    Proficiency,
+)
 
 
 def test_state_to_binary_correct():
@@ -219,3 +232,105 @@ def test_discretize_threshold_clamped():
     assert discretize([CognitiveState.MASTERED], 0.9, 1, mastery_threshold=5.0) == CognitiveState.PARTIAL
     # 阈值钳制为 0.0 时，任意 latent 都可能 mastered（只要观察数够）
     assert discretize([CognitiveState.MASTERED], 0.0, 1, mastery_threshold=-1.0) == CognitiveState.MASTERED
+
+
+# ---- compute_proficiency（观察历史 + 属性 → 权威 Proficiency）----
+
+def _obs(point_id, state, day, confidence=Confidence.HIGH):
+    """构造带确定 timestamp 的 Observation。"""
+    return Observation(
+        point_id=point_id,
+        observed_state=state,
+        confidence=confidence,
+        evidence=[f"证据-{day}"],
+        timestamp=datetime(2026, 9, day, tzinfo=timezone.utc),
+    )
+
+
+def _attrs(bloom=BloomLevel.UNDERSTAND, difficulty=2):
+    """构造 PointAttributes（默认 understand + difficulty=2）。"""
+    return PointAttributes(
+        type=PointType.CONCEPT,
+        difficulty=difficulty,
+        importance=3,
+        bloom_level=bloom,
+    )
+
+
+def test_compute_proficiency_empty_unassessed():
+    """空观察 → unassessed，point_id 空，observation_count=0，latent=先验。"""
+    p = compute_proficiency([], _attrs())
+    assert p.mapped_state == CognitiveState.UNASSESSED
+    assert p.point_id == ""
+    assert p.observation_count == 0
+    assert p.latent_value == DEFAULT_P_L0
+
+
+def test_compute_proficiency_single_mastered_understand():
+    """单次 mastered + understand（depth=1）→ mastered。"""
+    p = compute_proficiency(
+        [_obs("p1", CognitiveState.MASTERED, 1)],
+        _attrs(bloom=BloomLevel.UNDERSTAND),
+    )
+    assert p.mapped_state == CognitiveState.MASTERED
+    assert p.observation_count == 1
+
+
+def test_compute_proficiency_single_mastered_apply_requires_two():
+    """单次 mastered + apply（depth=2）→ 观察数不足，不定 mastered（partial）。"""
+    p = compute_proficiency(
+        [_obs("p1", CognitiveState.MASTERED, 1)],
+        _attrs(bloom=BloomLevel.APPLY),
+    )
+    assert p.mapped_state != CognitiveState.MASTERED
+    assert p.mapped_state == CognitiveState.PARTIAL
+    assert p.observation_count == 1
+
+
+def test_compute_proficiency_accepts_dicts():
+    """observations 可传 dict（query_observations 的 json 返回值）。"""
+    raw = _obs("p1", CognitiveState.MASTERED, 1).model_dump(mode="json")
+    p = compute_proficiency([raw], _attrs(bloom=BloomLevel.UNDERSTAND))
+    assert p.point_id == "p1"
+    assert p.observation_count == 1
+
+
+def test_compute_proficiency_skips_invalid_items():
+    """非法观察项被跳过，不影响整体计算。"""
+    p = compute_proficiency(
+        [None, "not-an-obs", _obs("p1", CognitiveState.MASTERED, 1)],
+        _attrs(bloom=BloomLevel.UNDERSTAND),
+    )
+    assert p.point_id == "p1"
+    assert p.observation_count == 1
+
+
+def test_compute_proficiency_point_id_and_last_updated():
+    """point_id 取第一个观察，last_updated 取最后一个观察的 timestamp。"""
+    o1 = _obs("p1", CognitiveState.PARTIAL, 1)
+    o2 = _obs("p1", CognitiveState.MASTERED, 2)
+    p = compute_proficiency([o1, o2], _attrs(bloom=BloomLevel.UNDERSTAND))
+    assert p.point_id == "p1"
+    assert p.last_updated == o2.timestamp
+
+
+def test_compute_proficiency_misconception():
+    """最近一次负向观察为 misconception → misconception。"""
+    p = compute_proficiency(
+        [_obs("p1", CognitiveState.MASTERED, 1), _obs("p1", CognitiveState.MISCONCEPTION, 2)],
+        _attrs(bloom=BloomLevel.UNDERSTAND),
+    )
+    assert p.mapped_state == CognitiveState.MISCONCEPTION
+
+
+def test_compute_proficiency_fields_complete():
+    """Proficiency 字段齐全且数值范围合法。"""
+    p = compute_proficiency(
+        [_obs("p1", CognitiveState.MASTERED, 1)],
+        _attrs(bloom=BloomLevel.UNDERSTAND),
+    )
+    assert isinstance(p, Proficiency)
+    assert 0.0 <= p.latent_value <= 1.0
+    assert 0.0 <= p.uncertainty <= 1.0
+    assert p.source_algorithm == "bkt"
+    assert p.last_updated.tzinfo is not None

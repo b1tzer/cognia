@@ -14,7 +14,7 @@ BKT = Bayesian Knowledge Tracing（贝叶斯知识追踪）。把 AI 提交的�
 
 from dataclasses import dataclass
 
-from cognia.schemas import BloomLevel, CognitiveState
+from cognia.schemas import BloomLevel, CognitiveState, Observation, PointAttributes, Proficiency
 
 # ---- BKT 四参数默认值 ----
 # P(L0)：先验已掌握概率；P(T)：学习转移概率；P(G)：猜测概率；P(S)：失误概率。
@@ -199,3 +199,72 @@ def discretize(
 
     # 有正确性证据（存在 correct 观测）但未达 mastered 阈值 → partial。
     return CognitiveState.PARTIAL
+
+
+# ---- 权威熟练度计算（能力域 C：观察历史 + 属性 → Proficiency）----
+
+def _coerce_observation(item) -> Observation | None:
+    """把 Observation 或 dict（query_observations 的返回值）归一化为 Observation。
+
+    无法归一化的非法项返回 None（由调用方跳过），不抛异常。
+    """
+    if isinstance(item, Observation):
+        return item
+    if isinstance(item, dict):
+        try:
+            return Observation.model_validate(item)
+        except Exception:
+            return None
+    return None
+
+
+def compute_proficiency(
+    observations,
+    point_attributes: PointAttributes | None = None,
+) -> Proficiency:
+    """融合观察历史 + 知识点属性，产出权威熟练度 Proficiency（纯函数，零 IO）。
+
+    流程：观察序列 → BKT 融合（难度派生参数）→ 离散化（bloom_level 派生深度）
+          → 组装 Proficiency。
+
+    - observations：list[Observation] 或 list[dict]（query_observations 返回的
+      model_dump(mode="json") 结果），非法项跳过，unassessed 由 bkt_infer 内部跳过。
+    - point_attributes 为 None 时：难度回退默认 P(T)，bloom_level 保守取 depth=2。
+    - point_id 从第一个有效观察提取；无观察时为空字符串（由上层 query_proficiency
+      显式提供真实 point_id）。
+    - last_updated 取最后一个观察的 timestamp；无观察时用 Proficiency 默认当前时间。
+    """
+    obs_list = [
+        o for o in (_coerce_observation(x) for x in observations) if o is not None
+    ]
+    states = [o.observed_state for o in obs_list]
+
+    # 有效观察数（跳过 unassessed）
+    observation_count = len([s for s in states if state_to_binary(s) is not None])
+
+    # BKT 参数由难度派生
+    difficulty = point_attributes.difficulty if point_attributes is not None else None
+    params = params_for_difficulty(difficulty)
+    latent_value = bkt_infer(states, params)
+
+    # verification_depth 由 bloom_level 派生
+    bloom = point_attributes.bloom_level if point_attributes is not None else None
+    depth = verification_depth(bloom)
+    mapped_state = discretize(states, latent_value, depth)
+
+    # 不确定性 = 1 - max(p, 1-p)，p 越接近 0.5 越不确定
+    uncertainty = 1.0 - max(latent_value, 1.0 - latent_value)
+
+    payload = {
+        "point_id": obs_list[0].point_id if obs_list else "",
+        "latent_value": latent_value,
+        "mapped_state": mapped_state,
+        "uncertainty": uncertainty,
+        "source_algorithm": "bkt",
+        "observation_count": observation_count,
+    }
+    if obs_list:
+        # 有观察：last_updated = 最后一条观察的 timestamp（可复现、可测试）
+        payload["last_updated"] = obs_list[-1].timestamp
+    # 无观察：不传 last_updated，交由 Proficiency 默认当前时间
+    return Proficiency(**payload)

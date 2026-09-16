@@ -14,7 +14,7 @@ BKT = Bayesian Knowledge Tracing（贝叶斯知识追踪）。把 AI 提交的�
 
 from dataclasses import dataclass
 
-from cognia.schemas import CognitiveState
+from cognia.schemas import BloomLevel, CognitiveState
 
 # ---- BKT 四参数默认值 ----
 # P(L0)：先验已掌握概率；P(T)：学习转移概率；P(G)：猜测概率；P(S)：失误概率。
@@ -135,3 +135,67 @@ def bkt_infer(states, params: BKTParams | None = None) -> float:
         is_correct = state_to_binary(state)
         current = bkt_update(current, is_correct, p)
     return current
+
+
+# ---- 离散化映射（能力域 C：连续值 → 五态）----
+
+# 判 mastered 的连续值阈值（P(learned) 下限，实现阶段可调参）。
+DEFAULT_MASTERY_THRESHOLD = 0.75
+
+
+def verification_depth(bloom_level) -> int:
+    """由认知层级派生「升到 mastered 所需的最少独立观察次数」。
+
+    - remember / understand → 1 次（一次独立观察即可定级）。
+    - apply / analyze / evaluate / create → 2 次（概念 + 场景两次独立观察）。
+
+    非法 / 缺失 bloom_level → 保守取 2（宁可多验证一次，不降低定级门槛）。
+    """
+    if bloom_level == BloomLevel.REMEMBER or bloom_level == BloomLevel.UNDERSTAND:
+        return 1
+    return 2
+
+
+def _effective_states(states) -> list:
+    """过滤 unassessed，只保留产生观测的状态（保持原顺序）。"""
+    return [s for s in states if state_to_binary(s) is not None]
+
+
+def discretize(
+    states,
+    latent_value: float,
+    verification_depth: int,
+    mastery_threshold: float = DEFAULT_MASTERY_THRESHOLD,
+) -> CognitiveState:
+    """把连续值 P(learned) + 观察序列离散化为五态。
+
+    规则（对齐 design §5.3）：
+    1. 有效观察数为 0 → unassessed（未评估，与 unknown 区分）。
+    2. `latent_value ≥ mastery_threshold` 且 `有效观察数 ≥ verification_depth`
+       → mastered（阈值 + 最少观察次数双条件）。
+    3. 未达 mastered：
+       - 最近一次负向观察为 misconception → misconception
+       - 最近一次负向观察为 unknown → unknown
+       - 否则（存在正确性证据但未达阈值）→ partial
+
+    `verification_depth` 由调用方经 `verification_depth(bloom_level)` 派生后传入。
+    `mastery_threshold` 非法时钳制到 [0,1]。
+    """
+    effective = _effective_states(states)
+    count = len(effective)
+    if count == 0:
+        return CognitiveState.UNASSESSED
+
+    threshold = _clamp(mastery_threshold)
+    if latent_value >= threshold and count >= verification_depth:
+        return CognitiveState.MASTERED
+
+    # 最近一次负向观察决定 misconception vs unknown（两者语义不同）。
+    for state in reversed(effective):
+        if state == CognitiveState.MISCONCEPTION:
+            return CognitiveState.MISCONCEPTION
+        if state == CognitiveState.UNKNOWN:
+            return CognitiveState.UNKNOWN
+
+    # 有正确性证据（存在 correct 观测）但未达 mastered 阈值 → partial。
+    return CognitiveState.PARTIAL

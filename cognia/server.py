@@ -246,7 +246,7 @@ async def knowledge_map_endpoint(request: Request, user_id: str | None = None):
         return {"user_id": user_id, "goals": []}
 
     kms = await memory.alist_knowledge_models(store, user_id)
-    proficiencies = await memory.alist_current_proficiencies(store, user_id)
+    proficiencies = await memory.alist_authoritative_proficiencies(store, user_id)
 
     goals = []
     for km in kms:

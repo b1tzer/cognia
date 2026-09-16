@@ -4,13 +4,14 @@
 
 重点验证：
 1. 读工具：read_learner_state 正确读五态。
-2. 写工具 propose_diagnosis 的三层闸门：
-   - 中 / 低置信度不迁移；
-   - mastered 必须概念 + 场景双重验证全过才迁移；
-   - 验证失败不迁移；
-   - 高置信度非 mastered 经状态机裁决迁移，并增量写回 store。
-3. 教学工具 generate_probe / explain 生成文本。
-4. build_learning_goal 的 load-or-build 复用。
+2. 写工具 propose_diagnosis（诊断=提交观察，系统 BKT 定级）：
+   - 提交观察样本、不直接写 Delta；
+   - 返回系统权威状态（authoritative_state）；
+   - 不再走双重验证；
+   - store 缺失安全降级。
+3. record_observation / query_proficiency skill（提交观察值 + 查询权威状态）。
+4. 教学工具 generate_probe / explain 生成文本。
+5. build_learning_goal 的 load-or-build 复用。
 """
 
 import json
@@ -53,18 +54,6 @@ class ScriptedLLM:
         self.calls.append(messages)
         assert self._responses, "ScriptedLLM 响应队列耗尽"
         return self._responses.pop(0)
-
-
-class _ConceptAssessmentStub:
-    def __init__(self, passed, evidence=""):
-        self.passed = passed
-        self.evidence = evidence
-
-
-class _ScenarioAssessmentStub:
-    def __init__(self, passed, evidence=""):
-        self.passed = passed
-        self.evidence = evidence
 
 
 def _mastered_diagnosis():
@@ -132,84 +121,10 @@ def test_read_learner_state():
     ) == '{"state": "unassessed"}'
 
 
-# ---- 写工具：三层闸门 ----
+# ---- 写工具：propose_diagnosis（诊断=提交观察，系统 BKT 定级）----
 
-def test_propose_diagnosis_medium_confidence_no_migration():
-    """中置信度诊断不迁移（诊断 ≠ 迁移，三层闸门第一层）。"""
-    diagnoser = ScriptedLLM([
-        Diagnosis(point_id="aop-concept", state=CognitiveState.PARTIAL,
-                  confidence=Confidence.MEDIUM, evidence=["模糊"]),
-    ])
-    store = InMemoryStore()
-    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
-
-    result = json.loads(tools["propose_diagnosis"].invoke({
-        "point_id": "aop-concept",
-        "point_name": "AOP 概念", "point_description": "面向切面编程",
-        "question": "什么是 AOP？", "user_answer": "大概是切面吧",
-        "current_state": "unassessed",
-    }, config=_cfg()))
-
-    assert result["migrated"] is False
-    assert result["final_state"] == "unassessed"
-
-    from cognia.memory import get_current_proficiency
-    assert get_current_proficiency(store, "u1", "aop-concept") is None  # 未写 delta
-
-
-def test_propose_diagnosis_mastered_verification_fail_no_migration():
-    """伪 mastered（验证失败）不迁移，诊断降级 partial，零 Delta。"""
-    diagnoser = ScriptedLLM([
-        _mastered_diagnosis(),
-        _ConceptAssessmentStub(False, ""),
-        _ScenarioAssessmentStub(False, ""),
-    ])
-    store = InMemoryStore()
-    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
-
-    result = json.loads(tools["propose_diagnosis"].invoke({
-        "point_id": "aop-concept",
-        "point_name": "AOP 概念", "point_description": "面向切面编程",
-        "question": "什么是 AOP？", "user_answer": "AOP 就是切面",
-        "current_state": "partial",
-    }, config=_cfg()))
-
-    assert result["migrated"] is False
-    assert result["final_state"] == "partial"          # 保持原状态
-    assert result["diagnosed_state"] == "partial"       # 诊断已降级
-    assert result["verification"] == {"concept": "failed", "scenario": "failed"}
-
-    from cognia.memory import get_current_proficiency
-    assert get_current_proficiency(store, "u1", "aop-concept") is None  # 未写 delta
-
-
-def test_propose_diagnosis_mastered_with_verification_migrates():
-    """mastered + 双重验证全过 → 迁移并增量写回 store。"""
-    diagnoser = ScriptedLLM([
-        _mastered_diagnosis(),
-        _ConceptAssessmentStub(True, "概念正确"),
-        _ScenarioAssessmentStub(True, "场景正确"),
-    ])
-    store = InMemoryStore()
-    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
-
-    result = json.loads(tools["propose_diagnosis"].invoke({
-        "point_id": "aop-concept",
-        "point_name": "AOP 概念", "point_description": "面向切面编程",
-        "question": "什么是 AOP？", "user_answer": "AOP 通过切面拦截方法调用",
-        "current_state": "partial",
-    }, config=_cfg()))
-
-    assert result["migrated"] is True
-    assert result["final_state"] == "mastered"
-    assert result["verification"] == {"concept": "passed", "scenario": "passed"}
-
-    from cognia.memory import get_current_proficiency
-    assert get_current_proficiency(store, "u1", "aop-concept") == "mastered"  # 已写 delta
-
-
-def test_propose_diagnosis_partial_high_confidence_migrates():
-    """高置信度 partial（非 mastered）经状态机裁决迁移，无需双重验证。"""
+def test_propose_diagnosis_submits_observation_and_returns_authoritative():
+    """propose_diagnosis 提交观察样本并返回系统权威状态（不直接写 Delta）。"""
     diagnoser = ScriptedLLM([_partial_diagnosis()])
     store = InMemoryStore()
     tools = build_cognia_tools(diagnoser=diagnoser, store=store)
@@ -221,11 +136,68 @@ def test_propose_diagnosis_partial_high_confidence_migrates():
         "current_state": "unassessed",
     }, config=_cfg()))
 
-    assert result["migrated"] is True
-    assert result["final_state"] == "partial"
+    assert result["recorded"] is True
+    assert result["diagnosed_state"] == "partial"
+    assert "authoritative_state" in result
 
-    from cognia.memory import get_current_proficiency
-    assert get_current_proficiency(store, "u1", "aop-concept") == "partial"
+    from cognia.memory import get_current_proficiency, query_observations
+    # 关键：不直接写 proficiency Delta（AI 不能直接改结论），只追加观察
+    assert get_current_proficiency(store, "u1", "aop-concept") is None
+    assert len(query_observations(store, "u1", "aop-concept")) == 1
+
+
+def test_propose_diagnosis_mastered_observation_authoritative_partial():
+    """单次 mastered 观察 + 无属性（depth 保守 2）→ 权威状态 partial（不 mastered）。"""
+    diagnoser = ScriptedLLM([_mastered_diagnosis()])
+    store = InMemoryStore()
+    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
+
+    result = json.loads(tools["propose_diagnosis"].invoke({
+        "point_id": "aop-concept",
+        "point_name": "AOP 概念", "point_description": "面向切面编程",
+        "question": "什么是 AOP？", "user_answer": "AOP 通过切面拦截方法调用",
+        "current_state": "partial",
+    }, config=_cfg()))
+
+    assert result["recorded"] is True
+    assert result["diagnosed_state"] == "mastered"
+    # mastered 双条件：latent≥阈值 且 观察数≥depth；无 attributes 时 depth=2，
+    # 单次观察不足以定 mastered
+    assert result["authoritative_state"] == "partial"
+    assert result["observation_count"] == 1
+
+
+def test_propose_diagnosis_no_double_verification():
+    """改造后不再走双重验证：一次诊断只调用一次 diagnoser（无 verifier）。"""
+    diagnoser = ScriptedLLM([_mastered_diagnosis()])
+    store = InMemoryStore()
+    tools = build_cognia_tools(diagnoser=diagnoser, store=store)
+
+    tools["propose_diagnosis"].invoke({
+        "point_id": "aop-concept",
+        "point_name": "AOP 概念", "point_description": "面向切面编程",
+        "question": "什么是 AOP？", "user_answer": "AOP 通过切面拦截方法调用",
+        "current_state": "unassessed",
+    }, config=_cfg())
+
+    # 只调用一次 diagnoser（run_diagnosis），没有第二次 verifier 调用
+    assert len(diagnoser.calls) == 1
+
+
+def test_propose_diagnosis_store_none_degrades():
+    """store 为 None 时安全降级：不落库，返回 unassessed 权威状态。"""
+    diagnoser = ScriptedLLM([_partial_diagnosis()])
+    tools = build_cognia_tools(diagnoser=diagnoser, store=None)
+
+    result = json.loads(tools["propose_diagnosis"].invoke({
+        "point_id": "aop-concept",
+        "point_name": "AOP 概念", "point_description": "面向切面编程",
+        "question": "什么是 AOP？", "user_answer": "AOP 就是切面",
+        "current_state": "unassessed",
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+    assert result["authoritative_state"] == "unassessed"
 
 
 # ---- 教学工具 ----
@@ -280,3 +252,179 @@ def test_build_learning_goal_builds_then_reuses():
     second = json.loads(tools["build_learning_goal"].invoke({"goal": "Spring AOP"}, config=_cfg()))
     assert second["action"] == "复用"
     assert second["first_point_id"] == "aop-concept"
+
+
+# ---- 写工具：record_observation（观察样本，只追加不改结论）----
+
+def test_record_observation_appends_only():
+    """record_observation 只追加观察，不直接写 proficiency 结论。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "partial",
+        "confidence": "high",
+        "evidence": ["用户说 AOP 是切面，但说不清代理"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is True
+
+    from cognia.memory import query_observations, get_current_proficiency
+    obs = query_observations(store, "u1", "aop-concept")
+    assert len(obs) == 1
+    assert obs[0]["observed_state"] == "partial"
+    # 关键：没有直接写 proficiency Delta（AI 不能直接改结论）
+    assert get_current_proficiency(store, "u1", "aop-concept") is None
+
+
+def test_record_observation_unassessed_skipped():
+    """unassessed 不产生观测。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "unassessed",
+        "confidence": "high",
+        "evidence": ["x"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+
+    from cognia.memory import query_observations
+    assert query_observations(store, "u1", "aop-concept") == []
+
+
+def test_record_observation_empty_evidence_rejected():
+    """空 evidence 拒绝写入。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "partial",
+        "confidence": "high",
+        "evidence": [],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+
+
+def test_record_observation_invalid_state():
+    """非法 observed_state 返回错误，不落库。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "nonsense",
+        "confidence": "high",
+        "evidence": ["x"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+    assert "error" in result
+
+
+def test_record_observation_invalid_confidence():
+    """非法 confidence 返回错误。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "partial",
+        "confidence": "nonsense",
+        "evidence": ["x"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+    assert "error" in result
+
+
+def test_record_observation_store_none_degrades():
+    """store 为 None 时安全降级，recorded=False。"""
+    tools = build_cognia_tools(store=None)
+
+    result = json.loads(tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "partial",
+        "confidence": "high",
+        "evidence": ["x"],
+    }, config=_cfg()))
+
+    assert result["recorded"] is False
+
+
+# ---- 读工具：query_proficiency（查询权威状态）----
+
+def test_query_proficiency_unassessed():
+    """无观察 → 返回 unassessed，latent_value 为 BKT 先验 0.4，observation_count=0。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    result = json.loads(tools["query_proficiency"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ))
+
+    assert result["mapped_state"] == "unassessed"
+    assert result["latent_value"] == 0.4  # BKT 先验 P(L0)
+    assert result["observation_count"] == 0
+
+
+def test_query_proficiency_with_observation():
+    """有观察 → 返回系统 BKT 融合后的权威状态。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "mastered",
+        "confidence": "high",
+        "evidence": ["用户准确解释切面"],
+    }, config=_cfg())
+
+    result = json.loads(tools["query_proficiency"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ))
+
+    assert result["point_id"] == "aop-concept"
+    assert result["mapped_state"] in ("mastered", "partial")
+    assert result["latent_value"] is not None
+    assert 0.0 <= result["latent_value"] <= 1.0
+    assert result["observation_count"] == 1
+
+
+def test_query_proficiency_store_none_degrades():
+    """store 为 None → 返回 unassessed 降级（不抛错）。"""
+    tools = build_cognia_tools(store=None)
+
+    result = json.loads(tools["query_proficiency"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ))
+
+    assert result["mapped_state"] == "unassessed"
+
+
+def test_query_proficiency_reads_authoritative_not_raw():
+    """查询的是系统权威状态，不是 AI 观察值本身（latent_value 为 BKT 后验）。"""
+    store = InMemoryStore()
+    tools = build_cognia_tools(store=store)
+
+    # 提交一次 misconception 观察：AI 观察值是 misconception，但系统权威状态
+    # 由 BKT 后验 + 离散化得出，mapped_state 应为 misconception（负向观察优先）。
+    tools["record_observation"].invoke({
+        "point_id": "aop-concept",
+        "observed_state": "misconception",
+        "confidence": "high",
+        "evidence": ["用户认为 @Around 修改字节码"],
+    }, config=_cfg())
+
+    result = json.loads(tools["query_proficiency"].invoke(
+        {"point_id": "aop-concept"}, config=_cfg()
+    ))
+
+    assert result["mapped_state"] == "misconception"
+    # latent_value 是连续概率（0-1），不是观察值本身
+    assert 0.0 <= result["latent_value"] <= 1.0

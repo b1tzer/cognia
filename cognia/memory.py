@@ -18,12 +18,23 @@ import os
 
 from langgraph.store.base import BaseStore
 
-from cognia.schemas import ProficiencyEntry
+from cognia.schemas import (
+    CognitiveState,
+    KnowledgeModel,
+    KnowledgePoint,
+    Observation,
+    PointAttributes,
+    Proficiency,
+    ProficiencyEntry,
+)
+
+from cognia.proficiency_engine import compute_proficiency
 
 # namespace 第一段（Store 的 namespace 是 tuple：类别 + user_id）
 PROFICIENCY_NS = "proficiency"
 PROFILE_NS = "profile"
 KNOWLEDGE_MODEL_NS = "knowledge_model"
+OBSERVATION_NS = "observation"
 
 # 模块级单例缓存：生产环境整个进程只建一个共享 AsyncConnectionPool，并让
 # Checkpointer 与 Store 复用同一个池。否则每次请求都新建 ConnectionPool 会导致
@@ -72,6 +83,105 @@ def get_current_proficiency(store: BaseStore, user_id: str, point_id: str) -> st
     """
     history = get_proficiency_history(store, user_id, point_id)
     return history[-1]["to_state"] if history else None
+
+
+# ---- 观察记录（observation）：AI 观察样本，只追加 ----
+
+def _has_evidence(observation: Observation) -> bool:
+    """evidence 过滤空白后是否非空（严禁脑补证据，spec §6）。"""
+    return any(str(e).strip() for e in (observation.evidence or []))
+
+
+def record_observation(store, user_id: str, observation: Observation) -> bool:
+    """追加一条 AI 观察样本（只追加，不直接改权威状态）。
+
+    - store / user_id 缺失 → 安全降级，返回 False（不落库）。
+    - observed_state == unassessed → 跳过（未评估不产生观测）。
+    - evidence 为空 → 拒绝写入（严禁脑补证据，spec §6）。
+
+    返回 True 表示已记录，False 表示跳过。key = point_id + timestamp，
+    历史不可变、可审计。namespace = ("observation", user_id)。
+    """
+    if store is None or not user_id:
+        return False
+    if observation.observed_state == CognitiveState.UNASSESSED:
+        return False
+    if not _has_evidence(observation):
+        return False
+    key = f"{observation.point_id}:{observation.timestamp.isoformat()}"
+    store.put((OBSERVATION_NS, user_id), key, observation.model_dump(mode="json"))
+    return True
+
+
+async def arecord_observation(store, user_id: str, observation: Observation) -> bool:
+    """record_observation 的异步版本（供主事件循环内调用）。
+
+    与 aappend_proficiency_delta 同理：AsyncPostgresStore 在主事件循环线程里
+    必须用 `await store.aput`。
+    """
+    if store is None or not user_id:
+        return False
+    if observation.observed_state == CognitiveState.UNASSESSED:
+        return False
+    if not _has_evidence(observation):
+        return False
+    key = f"{observation.point_id}:{observation.timestamp.isoformat()}"
+    await store.aput((OBSERVATION_NS, user_id), key, observation.model_dump(mode="json"))
+    return True
+
+
+def query_observations(store, user_id: str, point_id: str) -> list[dict]:
+    """读某 user 某知识点的完整观察历史（按 timestamp 升序，可审计）。"""
+    if store is None or not user_id or not point_id:
+        return []
+    items = store.search((OBSERVATION_NS, user_id))
+    obs = [item.value for item in items if item.value.get("point_id") == point_id]
+    obs.sort(key=lambda d: d.get("timestamp") or "")
+    return obs
+
+
+async def aquery_observations(store, user_id: str, point_id: str) -> list[dict]:
+    """query_observations 的异步版本（主事件循环内用 asearch）。"""
+    if store is None or not user_id or not point_id:
+        return []
+    items = await store.asearch((OBSERVATION_NS, user_id))
+    obs = [item.value for item in items if item.value.get("point_id") == point_id]
+    obs.sort(key=lambda d: d.get("timestamp") or "")
+    return obs
+
+
+# ---- 权威熟练度（proficiency）查询：观察历史 → BKT 融合 → Proficiency ----
+
+def query_proficiency(store, user_id: str, point_id: str) -> Proficiency | None:
+    """读某 user 某知识点的权威熟练度（能力域 D：单点查询）。
+
+    内部：query_observations → compute_proficiency → Proficiency。
+    这是系统计算产物，AI 只能查询、无权直接改写。
+
+    - store / user_id / point_id 缺失 → 返回 None（安全降级）。
+    - 无观察 → 返回 point_id 正确、mapped_state=unassessed 的 Proficiency。
+    - 单点查询无 goal 上下文，attributes 传 None（难度回退默认 P(T)、
+      bloom_level 保守取 depth=2）；整图查询（#109）在有 goal 上下文时另行传属性。
+    """
+    if store is None or not user_id or not point_id:
+        return None
+    observations = query_observations(store, user_id, point_id)
+    prof = compute_proficiency(observations, None)
+    if prof.point_id == "":
+        # 无观察时 compute_proficiency 返回空 point_id，这里补回真实 point_id
+        return prof.model_copy(update={"point_id": point_id})
+    return prof
+
+
+async def aquery_proficiency(store, user_id: str, point_id: str) -> Proficiency | None:
+    """query_proficiency 的异步版本（主事件循环内用 asearch）。"""
+    if store is None or not user_id or not point_id:
+        return None
+    observations = await aquery_observations(store, user_id, point_id)
+    prof = compute_proficiency(observations, None)
+    if prof.point_id == "":
+        return prof.model_copy(update={"point_id": point_id})
+    return prof
 
 
 # ---- 画像（profile）：基础偏好读写 ----
@@ -146,6 +256,187 @@ def get_knowledge_model(store: BaseStore, user_id: str, goal_key: str) -> dict |
     return item.value if item else None
 
 
+# ---- 知识结构管理（知识版图能力域 A：节点 CRUD + 依赖边 + 属性）----
+#
+# 复用 knowledge_model namespace 作为「知识结构」的持久化载体：同一份数据
+# （KnowledgeModel = goal + points），既支持 build_learning_goal 的批量生成，
+# 也支持这里的细粒度增删改。point_id 在单个 goal 内唯一，故以 goal_key 定位。
+
+def _load_structure(store, user_id: str, goal_key: str) -> KnowledgeModel | None:
+    """读某 user 某 goal 的知识结构（KnowledgeModel），不存在返回 None。"""
+    km_dict = get_knowledge_model(store, user_id, goal_key)
+    if km_dict is None:
+        return None
+    return KnowledgeModel.model_validate(km_dict)
+
+
+def _save_structure(store, user_id: str, goal_key: str, km: KnowledgeModel) -> None:
+    """写回某 user 某 goal 的知识结构（整体覆盖该 goal 的 value）。"""
+    put_knowledge_model(store, user_id, goal_key, km.model_dump(mode="json"))
+
+
+def _require_structure(store, user_id: str, goal_key: str) -> KnowledgeModel:
+    """读知识结构，结构不存在则报错（写/查询操作的前置守卫）。"""
+    km = _load_structure(store, user_id, goal_key)
+    if km is None:
+        raise ValueError(f"知识结构不存在：goal_key={goal_key}")
+    return km
+
+
+def _find_point(km: KnowledgeModel, point_id: str) -> KnowledgePoint | None:
+    """在知识结构中按 point_id 查找知识点，不存在返回 None。"""
+    return next((p for p in km.points if p.id == point_id), None)
+
+
+def _would_create_cycle(point_id: str, prerequisite_id: str, points: list[KnowledgePoint]) -> bool:
+    """加边「point_id 依赖 prerequisite_id」是否形成环。
+
+    判断 prerequisite_id 是否已（直接或间接）依赖 point_id：沿 prerequisites
+    反向 DFS，若能到达 point_id 则加边后形成环。
+    """
+    by_id = {p.id: p for p in points}
+    visited: set[str] = set()
+    stack = [prerequisite_id]
+    while stack:
+        cur = stack.pop()
+        if cur == point_id:
+            return True
+        if cur in visited:
+            continue
+        visited.add(cur)
+        p = by_id.get(cur)
+        if p:
+            stack.extend(p.prerequisites)
+    return False
+
+
+def insert_point(store, user_id: str, goal_key: str, point: KnowledgePoint) -> None:
+    """新增知识点节点（幂等：point_id 已存在则替换该节点）。
+
+    store / user_id 缺失 → 安全降级（不落库，不抛错）。
+    结构不存在 → 以 goal_key 为 goal 创建空结构后插入。
+    """
+    if store is None or not user_id:
+        return
+    km = _load_structure(store, user_id, goal_key)
+    if km is None:
+        km = KnowledgeModel(goal=goal_key, points=[])
+    # 幂等替换：先剔除同 id 旧节点，再追加新节点
+    km.points = [p for p in km.points if p.id != point.id] + [point]
+    _save_structure(store, user_id, goal_key, km)
+
+
+def update_point(store, user_id: str, goal_key: str, point_id: str, name: str, description: str) -> None:
+    """更新知识点名称与描述（点不存在报错）。"""
+    if store is None or not user_id:
+        return
+    km = _require_structure(store, user_id, goal_key)
+    point = _find_point(km, point_id)
+    if point is None:
+        raise ValueError(f"知识点不存在：point_id={point_id}")
+    point.name = name
+    point.description = description
+    _save_structure(store, user_id, goal_key, km)
+
+
+def delete_point(store, user_id: str, goal_key: str, point_id: str) -> None:
+    """删除知识点节点，并级联删除其他节点指向它的依赖边。"""
+    if store is None or not user_id:
+        return
+    km = _require_structure(store, user_id, goal_key)
+    if _find_point(km, point_id) is None:
+        raise ValueError(f"知识点不存在：point_id={point_id}")
+    # 删除节点本身
+    km.points = [p for p in km.points if p.id != point_id]
+    # 级联删除其他节点对它的依赖引用
+    for p in km.points:
+        p.prerequisites = [pid for pid in p.prerequisites if pid != point_id]
+    _save_structure(store, user_id, goal_key, km)
+
+
+def add_prerequisite(store, user_id: str, goal_key: str, point_id: str, prerequisite_id: str) -> None:
+    """建立「point_id 依赖 prerequisite_id」的依赖边。
+
+    - 依赖边指向不存在的点 → 报错。
+    - 引入环 → 拒绝（保持 DAG 合法）。
+    - 自依赖（point_id == prerequisite_id）→ 拒绝。
+    """
+    if store is None or not user_id:
+        return
+    km = _require_structure(store, user_id, goal_key)
+    if _find_point(km, point_id) is None:
+        raise ValueError(f"知识点不存在：point_id={point_id}")
+    if _find_point(km, prerequisite_id) is None:
+        raise ValueError(f"依赖知识点不存在：prerequisite_id={prerequisite_id}")
+    if point_id == prerequisite_id:
+        raise ValueError("知识点不能依赖自身")
+    if _would_create_cycle(point_id, prerequisite_id, km.points):
+        raise ValueError(f"加边会形成环：{point_id} → {prerequisite_id}")
+    point = _find_point(km, point_id)
+    if prerequisite_id not in point.prerequisites:
+        point.prerequisites = [*point.prerequisites, prerequisite_id]
+        _save_structure(store, user_id, goal_key, km)
+
+
+def remove_prerequisite(store, user_id: str, goal_key: str, point_id: str, prerequisite_id: str) -> None:
+    """解除「point_id 依赖 prerequisite_id」的依赖边（幂等：边不存在不报错）。"""
+    if store is None or not user_id:
+        return
+    km = _require_structure(store, user_id, goal_key)
+    point = _find_point(km, point_id)
+    if point is None:
+        raise ValueError(f"知识点不存在：point_id={point_id}")
+    point.prerequisites = [pid for pid in point.prerequisites if pid != prerequisite_id]
+    _save_structure(store, user_id, goal_key, km)
+
+
+def set_attributes(store, user_id: str, goal_key: str, point_id: str, attributes: PointAttributes) -> None:
+    """登记知识点本体属性（点不存在报错）。"""
+    if store is None or not user_id:
+        return
+    km = _require_structure(store, user_id, goal_key)
+    point = _find_point(km, point_id)
+    if point is None:
+        raise ValueError(f"知识点不存在：point_id={point_id}")
+    point.attributes = attributes
+    _save_structure(store, user_id, goal_key, km)
+
+
+def query_structure(store, user_id: str, goal_key: str) -> KnowledgeModel | None:
+    """读某 user 某 goal 的完整知识结构（不存在返回 None）。"""
+    if store is None or not user_id:
+        return None
+    return _load_structure(store, user_id, goal_key)
+
+
+def query_point(store, user_id: str, goal_key: str, point_id: str) -> KnowledgePoint | None:
+    """读某知识点（不存在返回 None）。"""
+    km = query_structure(store, user_id, goal_key)
+    if km is None:
+        return None
+    return _find_point(km, point_id)
+
+
+def query_prerequisites(store, user_id: str, goal_key: str, point_id: str) -> list[KnowledgePoint]:
+    """读某知识点的全部前置依赖点（按 prerequisites 顺序）。"""
+    km = query_structure(store, user_id, goal_key)
+    if km is None:
+        return []
+    point = _find_point(km, point_id)
+    if point is None:
+        return []
+    by_id = {p.id: p for p in km.points}
+    return [by_id[pid] for pid in point.prerequisites if pid in by_id]
+
+
+def query_dependents(store, user_id: str, goal_key: str, point_id: str) -> list[KnowledgePoint]:
+    """读某知识点的全部后继（依赖它的点）。"""
+    km = query_structure(store, user_id, goal_key)
+    if km is None:
+        return []
+    return [p for p in km.points if point_id in p.prerequisites]
+
+
 # ---- 聚合读取（供个人页 / 知识版图拉取，纯函数无副作用）----
 
 def list_knowledge_models(store: BaseStore, user_id: str) -> list[dict]:
@@ -214,6 +505,40 @@ async def alist_current_proficiencies(store, user_id: str) -> dict[str, str]:
         if point_id not in latest or ts > latest[point_id]["ts"]:
             latest[point_id] = {"ts": ts, "state": to_state}
     return {pid: v["state"] for pid, v in latest.items()}
+
+
+async def alist_authoritative_proficiencies(store, user_id: str) -> dict[str, str]:
+    """读某 user 全部知识点的权威熟练度（观察历史 → BKT 融合 → mapped_state）。
+
+    与 list_current_proficiencies / alist_current_proficiencies 的关键区别：
+    后者读旧 proficiency Delta 的 to_state（AI 诊断直接落库的结论），本函数读
+    observation 样本并经 BKT 算法融合出权威状态——知识版图子系统的核心语义
+    「AI 只提交观察值，系统算法定级」。
+
+    返回 `{point_id: mapped_state}`；从未评估过的 point 不在结果里（由调用方补
+    unassessed）。遍历 knowledge_model 的每个 point，用其 attributes（难度 /
+    认知层级）驱动 BKT 参数与验证深度；attributes 缺失或非法时回退默认值。
+    """
+    if store is None or not user_id:
+        return {}
+    kms = await alist_knowledge_models(store, user_id)
+    result: dict[str, str] = {}
+    for km in kms:
+        for p in (km.get("points") or []):
+            pid = p.get("id")
+            if not pid:
+                continue
+            attributes = None
+            attrs = p.get("attributes")
+            if isinstance(attrs, dict):
+                try:
+                    attributes = PointAttributes.model_validate(attrs)
+                except Exception:
+                    attributes = None
+            obs = await aquery_observations(store, user_id, pid)
+            prof = compute_proficiency(obs, attributes)
+            result[pid] = prof.mapped_state.value
+    return result
 
 
 # ---- runtime context：user_id 注入（不塞 State）----

@@ -103,10 +103,10 @@ function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
   };
 
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-line bg-surface">
-      <div className="flex items-center gap-2 border-b border-line bg-surface-muted px-4 py-2">
+    <div className="my-2 overflow-hidden rounded-xl border border-violet-200 bg-violet-50/50">
+      <div className="flex items-center gap-2 border-b border-violet-200 bg-violet-100/60 px-4 py-2">
         <span className="text-sm">📝</span>
-        <span className="text-xs font-medium text-accent">
+        <span className="text-xs font-medium text-violet-700">
           交互练习{pointName ? ` · ${pointName}` : ""}
         </span>
       </div>
@@ -118,7 +118,7 @@ function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
           {options.map((opt, i) => {
             const isSelected = selected === i;
             let optionClass =
-              "border-line bg-surface text-foreground hover:border-accent";
+              "border-line bg-surface text-foreground hover:border-violet-300";
             if (answered) {
               if (correctIndex !== null && i === correctIndex) {
                 optionClass = "border-emerald-500 bg-emerald-50 text-emerald-900";
@@ -128,7 +128,7 @@ function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
                 optionClass = "border-line bg-surface text-muted";
               }
             } else if (isSelected) {
-              optionClass = "border-accent bg-accent/10 text-foreground";
+              optionClass = "border-violet-500 bg-violet-100 text-violet-900";
             }
             return (
               <button
@@ -248,10 +248,10 @@ const diagnosisRenderer = defineToolCallRenderer({
     const meta = STATE_META[diagnosed] ?? { label: diagnosed || "未知", color: "text-muted bg-surface-muted" };
 
     return (
-      <div className="my-2 overflow-hidden rounded-xl border border-line bg-surface">
-        <div className="flex items-center gap-2 border-b border-line bg-surface-muted px-4 py-2">
+      <div className="my-2 overflow-hidden rounded-xl border border-blue-200 bg-blue-50/50">
+        <div className="flex items-center gap-2 border-b border-blue-200 bg-blue-100/60 px-4 py-2">
           <span className="text-sm">🧠</span>
-          <span className="text-xs font-medium text-accent">
+          <span className="text-xs font-medium text-blue-700">
             认知诊断 · {args.point_name ?? args.point_id ?? ""}
           </span>
         </div>
@@ -305,10 +305,10 @@ const knowledgeModelRenderer = defineToolCallRenderer({
     const points = Array.isArray(data.points) ? (data.points as string[]) : [];
 
     return (
-      <div className="my-2 overflow-hidden rounded-xl border border-line bg-surface">
-        <div className="flex items-center gap-2 border-b border-line bg-surface-muted px-4 py-2">
+      <div className="my-2 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50/50">
+        <div className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-100/60 px-4 py-2">
           <span className="text-sm">🗺️</span>
-          <span className="text-xs font-medium text-accent">
+          <span className="text-xs font-medium text-emerald-700">
             知识模型{action ? ` · ${action}` : ""}
           </span>
         </div>
@@ -352,10 +352,10 @@ const explainRenderer = defineToolCallRenderer({
     if (!text.trim()) return null;
 
     return (
-      <div className="my-2 overflow-hidden rounded-xl border border-line bg-surface">
-        <div className="flex items-center gap-2 border-b border-line bg-surface-muted px-4 py-2">
+      <div className="my-2 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50/50">
+        <div className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-100/60 px-4 py-2">
           <span className="text-sm">📖</span>
-          <span className="text-xs font-medium text-accent">
+          <span className="text-xs font-medium text-emerald-700">
             讲解{args.point_name ? ` · ${args.point_name}` : ""}
           </span>
         </div>

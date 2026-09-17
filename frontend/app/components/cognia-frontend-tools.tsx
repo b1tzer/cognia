@@ -3,7 +3,7 @@
 import { useState } from "react";
 import {
   defineToolCallRenderer,
-  useFrontendTool,
+  useHumanInTheLoop,
 } from "@copilotkit/react-core/v2";
 import { Markdown } from "@copilotkit/react-ui";
 import { z } from "zod";
@@ -11,9 +11,9 @@ import { z } from "zod";
 /**
  * Cognia 前端能力封装（CopilotKit 能力「三 + 五」）：
  *
- * 1. 前端工具（三）：useFrontendTool 注册 `practice_choice`，让后端 Cognia
+ * 1. 前端工具（三）：useHumanInTheLoop 注册 `practice_choice`，让后端 Cognia
  *    Agent 在诊断/干预后调用它，把「选择题练习」渲染成前端可交互卡片，
- *    而不是只能输出纯文本 Markdown。
+ *    而不是只能输出纯文本 Markdown；学生作答后会把选择结果回传给 Agent 继续推理。
  * 2. Generative UI（五）：defineToolCallRenderer 为 Cognia 已有后端工具
  *    （propose_diagnosis / build_learning_goal）注册自定义渲染器，把原本
  *    以 JSON 文本回流的工具结果渲染成结构化卡片。
@@ -30,20 +30,32 @@ type PracticeChoiceArgs = {
   question?: string;
   options?: string[];
   point_name?: string;
+  correct_index?: number;
+  explanation?: string;
 };
 
-function PracticeChoiceCard({
-  args,
-  status,
-}: {
+type PracticeChoiceRenderProps = {
   args: PracticeChoiceArgs;
   status: "inProgress" | "executing" | "complete";
-}) {
+  respond?: (result: unknown) => Promise<void>;
+};
+
+function PracticeChoiceCard({ args, status, respond }: PracticeChoiceRenderProps) {
   const [selected, setSelected] = useState<number | null>(null);
 
   const question = args?.question ?? "";
   const options = Array.isArray(args?.options) ? args.options : [];
   const pointName = args?.point_name ?? "";
+  const rawCorrectIndex =
+    typeof args?.correct_index === "number" ? args.correct_index : null;
+  const correctIndex =
+    rawCorrectIndex !== null && rawCorrectIndex >= 0 && rawCorrectIndex < options.length
+      ? rawCorrectIndex
+      : null;
+  const explanation = args?.explanation ?? "";
+
+  const answered = selected !== null;
+  const isCorrect = answered && correctIndex !== null && selected === correctIndex;
 
   // 参数还在流式生成中，先给占位，避免渲染残缺内容。
   if (status === "inProgress" && !question && options.length === 0) {
@@ -53,6 +65,23 @@ function PracticeChoiceCard({
       </div>
     );
   }
+
+  const handleSelect = async (i: number) => {
+    if (answered) return;
+    setSelected(i);
+    const correct = correctIndex !== null && i === correctIndex;
+    if (respond && status === "executing") {
+      try {
+        await respond({
+          selected_index: i,
+          correct_index: correctIndex,
+          is_correct: correct,
+        });
+      } catch {
+        // 回传失败不影响本地判对错的展示。
+      }
+    }
+  };
 
   return (
     <div className="my-2 overflow-hidden rounded-xl border border-violet-200 bg-violet-50/50">
@@ -69,25 +98,56 @@ function PracticeChoiceCard({
         <div className="space-y-2">
           {options.map((opt, i) => {
             const isSelected = selected === i;
+            let optionClass =
+              "border-zinc-200 bg-white text-zinc-700 hover:border-violet-300";
+            if (answered) {
+              if (correctIndex !== null && i === correctIndex) {
+                optionClass = "border-emerald-500 bg-emerald-50 text-emerald-900";
+              } else if (isSelected) {
+                optionClass = "border-rose-500 bg-rose-50 text-rose-900";
+              } else {
+                optionClass = "border-zinc-200 bg-white text-zinc-400";
+              }
+            } else if (isSelected) {
+              optionClass = "border-violet-500 bg-violet-100 text-violet-900";
+            }
             return (
               <button
                 key={i}
                 type="button"
-                onClick={() => setSelected(i)}
-                className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-sm transition ${
-                  isSelected
-                    ? "border-violet-500 bg-violet-100 text-violet-900"
-                    : "border-zinc-200 bg-white text-zinc-700 hover:border-violet-300"
-                }`}
+                onClick={() => handleSelect(i)}
+                disabled={answered}
+                className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-sm transition ${optionClass}`}
               >
                 <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-xs font-semibold text-zinc-600">
                   {String.fromCharCode(65 + i)}
                 </span>
-                <span className="whitespace-pre-wrap">{opt}</span>
+                <span className="flex-1 whitespace-pre-wrap">{opt}</span>
+                {answered && correctIndex !== null && i === correctIndex && (
+                  <span className="text-emerald-600">✓</span>
+                )}
+                {answered && isSelected && correctIndex !== i && (
+                  <span className="text-rose-600">✗</span>
+                )}
               </button>
             );
           })}
         </div>
+        {answered && (
+          <p
+            className={`mt-3 text-sm font-medium ${
+              isCorrect ? "text-emerald-700" : "text-rose-700"
+            }`}
+          >
+            {isCorrect ? "✓ 回答正确" : "✗ 回答错误"}
+          </p>
+        )}
+        {answered && explanation && (
+          <div className="mt-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
+            <span className="font-medium text-zinc-700">解析：</span>
+            <span className="whitespace-pre-wrap">{explanation}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -95,16 +155,20 @@ function PracticeChoiceCard({
 
 /** 注册 Cognia 的前端交互工具（三）。必须在 <CopilotKit> 内部调用。 */
 export function useCogniaFrontendTools() {
-  useFrontendTool({
+  useHumanInTheLoop({
     name: "practice_choice",
     description:
-      "向学生展示一道交互式选择题（单选），用于巩固知识点、检验理解或收集反馈。" +
-      "学生点击选项后前端本地高亮，无需返回结果。当你想更直观地检验或巩固某个" +
-      "知识点时，优先调用本工具而非只用文字提问。",
+      "向学生展示一道交互式选择题（单选），用于巩固知识点、检验理解。" +
+      "学生作答后，本工具会把选择结果（含所选选项索引、正确选项索引、是否正确）" +
+      "返回给你，你据此继续推理：答对则简短肯定并衔接推进到下一步，答错则针对" +
+      "该错误点讲解或再出一题。参数 correct_index 为正确选项的索引（从 0 开始），" +
+      "explanation 为作答后的解析说明。",
     parameters: z.object({
       question: z.string().describe("选择题题干，简洁明确"),
       options: z.array(z.string()).describe("2-4 个互斥选项"),
       point_name: z.string().describe("关联的知识点名称"),
+      correct_index: z.number().describe("正确选项的索引（从 0 开始）"),
+      explanation: z.string().describe("作答后展示的解析说明，解释为什么正确/错误"),
     }),
     render: PracticeChoiceCard,
   });

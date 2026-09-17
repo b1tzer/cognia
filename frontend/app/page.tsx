@@ -537,7 +537,9 @@ function ChatApp() {
                 });
                 if (rendered) {
                   return (
-                    <div key={item.toolCall.id ?? `tool-${idx}`}>{rendered}</div>
+                    <div key={item.toolCall.id ?? `tool-${idx}`} className="px-4">
+                      {rendered}
+                    </div>
                   );
                 }
               }

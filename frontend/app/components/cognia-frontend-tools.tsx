@@ -5,6 +5,7 @@ import {
   defineToolCallRenderer,
   useFrontendTool,
 } from "@copilotkit/react-core/v2";
+import { Markdown } from "@copilotkit/react-ui";
 import { z } from "zod";
 
 /**
@@ -242,5 +243,46 @@ const knowledgeModelRenderer = defineToolCallRenderer({
   },
 });
 
+/** explain 结果 → 讲解正文卡片。
+
+ * 讲解正文是「数据」（markdown 文本），必须正常渲染展示，而不是被折叠成
+ * 「🔧 调用完成」灰字。这里直接用 <Markdown> 渲染 tool 返回的讲解全文，
+ * 保证「先讲后练」的讲解内容能被用户看到。
+ */
+const explainRenderer = defineToolCallRenderer({
+  name: "explain",
+  args: z.object({
+    point_name: z.string().optional(),
+    point_description: z.string().optional(),
+    user_state: z.string().optional(),
+  }),
+  render: ({ args, status, result }) => {
+    if (status !== "complete") {
+      return (
+        <div className="my-2 animate-pulse rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-400">
+          正在讲解…
+        </div>
+      );
+    }
+
+    const text = typeof result === "string" ? result : "";
+    if (!text.trim()) return null;
+
+    return (
+      <div className="my-2 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50/50">
+        <div className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-100/60 px-4 py-2">
+          <span className="text-sm">📖</span>
+          <span className="text-xs font-medium text-emerald-700">
+            讲解{args.point_name ? ` · ${args.point_name}` : ""}
+          </span>
+        </div>
+        <div className="px-4 py-3 text-sm text-zinc-800">
+          <Markdown content={text} />
+        </div>
+      </div>
+    );
+  },
+});
+
 /** 所有 Cognia 后端工具的 Generative UI 渲染器，传给 <CopilotKit renderToolCalls>。 */
-export const cogniaToolRenderers = [diagnosisRenderer, knowledgeModelRenderer];
+export const cogniaToolRenderers = [diagnosisRenderer, knowledgeModelRenderer, explainRenderer];

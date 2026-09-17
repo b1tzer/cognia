@@ -47,8 +47,8 @@ const MessageBubble = memo(function MessageBubble({
   const role = message.role as string;
   if (role === "tool") {
     return (
-      <div className="px-4 py-1 text-xs text-zinc-400">
-        <span className="rounded bg-zinc-100 px-2 py-1">
+      <div className="px-4 py-1 text-xs text-muted">
+        <span className="rounded bg-surface-muted px-2 py-1">
           🔧 {toolName || "工具"} 调用完成
         </span>
       </div>
@@ -58,11 +58,11 @@ const MessageBubble = memo(function MessageBubble({
     const text = typeof message.content === "string" ? message.content : "";
     return (
       <div className="px-4 py-1">
-        <details className="text-xs text-zinc-500" open={isActiveReasoning}>
+        <details className="text-xs text-muted" open={isActiveReasoning}>
           <summary className="cursor-pointer select-none italic">
             {isActiveReasoning ? "思考中…" : "思考过程"}
           </summary>
-          <div className="mt-1 whitespace-pre-wrap rounded-lg bg-zinc-50 p-2 text-zinc-500">
+          <div className="mt-1 whitespace-pre-wrap rounded-lg bg-surface-muted p-2 text-muted">
             {text || "思考中…"}
           </div>
         </details>
@@ -82,11 +82,11 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-4 py-2`}>
       {isUser ? (
-        <div className="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-zinc-900 px-4 py-2 text-sm text-white">
+        <div className="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-accent px-4 py-2 text-sm text-white">
           {text}
         </div>
       ) : (
-        <div className="max-w-[85%] rounded-2xl bg-zinc-100 px-4 py-2 text-sm text-zinc-800">
+        <div className="max-w-[85%] rounded-2xl bg-surface-muted px-4 py-2 text-sm text-foreground">
           <Markdown content={markdown} />
         </div>
       )}
@@ -536,8 +536,8 @@ function ChatApp() {
     }
     if (!item.message) {
       return (
-        <div className="px-4 py-1 text-xs text-zinc-400">
-          <span className="rounded bg-zinc-100 px-2 py-1">
+        <div className="px-4 py-1 text-xs text-muted">
+          <span className="rounded bg-surface-muted px-2 py-1">
             🔧 {item.toolName || "工具"} 调用中…
           </span>
         </div>
@@ -564,18 +564,18 @@ function ChatApp() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-3">
+        <header className="flex items-center justify-between border-b border-line bg-surface px-6 py-3">
           <div>
-            <h1 className="text-lg font-semibold text-zinc-900">
+            <h1 className="text-lg font-semibold text-foreground">
               Cognia · AI 学习教练
             </h1>
-            <p className="text-sm text-zinc-500">
+            <p className="text-sm text-muted">
               主动发现认知盲区，动态引导掌握知识点
             </p>
           </div>
           <button
             onClick={() => (view === "chat" ? showMap() : setView("chat"))}
-            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 transition hover:bg-zinc-100"
+            className="rounded-lg border border-line px-3 py-1.5 text-sm text-foreground transition hover:bg-surface-muted"
           >
             {view === "chat" ? "知识版图" : "返回对话"}
           </button>
@@ -583,16 +583,16 @@ function ChatApp() {
 
         <div
           ref={scrollContainerRef}
-          className="min-h-0 flex-1 overflow-y-auto bg-white"
+          className="min-h-0 flex-1 overflow-y-auto bg-surface"
         >
           {view === "map" ? (
             <div className="p-6">
               {mapLoading ? (
-                <div className="text-sm text-zinc-400">加载中…</div>
+                <div className="text-sm text-muted">加载中…</div>
               ) : mapError ? (
                 <div className="text-sm text-red-600">{mapError}</div>
               ) : mapData.length === 0 ? (
-                <div className="py-16 text-center text-sm text-zinc-400">
+                <div className="py-16 text-center text-sm text-muted">
                   还没有学习记录，去对话里开始一段学习吧
                 </div>
               ) : (
@@ -600,11 +600,11 @@ function ChatApp() {
               )}
             </div>
           ) : !isReady || !ready || loadingThread ? (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-400">
+            <div className="flex h-full items-center justify-center text-sm text-muted">
               加载中…
             </div>
           ) : messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-400">
+            <div className="flex h-full items-center justify-center text-sm text-muted">
               开始一段新对话吧
             </div>
           ) : (
@@ -641,7 +641,7 @@ function ChatApp() {
         </div>
 
         {view === "chat" && (
-          <div className="border-t border-zinc-200 bg-white p-4">
+          <div className="border-t border-line bg-surface p-4">
             <div className="flex gap-2">
               <input
                 value={input}
@@ -653,12 +653,12 @@ function ChatApp() {
                   }
                 }}
                 placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-                className="flex-1 rounded-xl border border-zinc-300 px-4 py-2 text-sm text-zinc-800 outline-none focus:border-zinc-500"
+                className="flex-1 rounded-xl border border-line px-4 py-2 text-sm text-foreground outline-none focus:border-accent"
               />
               <button
                 onClick={() => void handleSend()}
                 disabled={sending || !input.trim()}
-                className="rounded-xl bg-zinc-900 px-5 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-40"
+                className="rounded-xl bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent-hover disabled:opacity-40"
               >
                 {sending ? "发送中…" : "发送"}
               </button>

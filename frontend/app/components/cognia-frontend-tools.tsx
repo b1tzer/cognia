@@ -81,7 +81,7 @@ function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
   // 参数还在流式生成中，先给占位，避免渲染残缺内容。
   if (status === "inProgress" && !question && options.length === 0) {
     return (
-      <div className="my-2 animate-pulse rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-400">
+      <div className="my-2 animate-pulse rounded-xl border border-line bg-surface-muted px-4 py-3 text-xs text-muted">
         正在准备练习卡片…
       </div>
     );
@@ -103,32 +103,32 @@ function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
   };
 
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-violet-200 bg-violet-50/50">
-      <div className="flex items-center gap-2 border-b border-violet-200 bg-violet-100/60 px-4 py-2">
+    <div className="my-2 overflow-hidden rounded-xl border border-line bg-surface">
+      <div className="flex items-center gap-2 border-b border-line bg-surface-muted px-4 py-2">
         <span className="text-sm">📝</span>
-        <span className="text-xs font-medium text-violet-700">
+        <span className="text-xs font-medium text-accent">
           交互练习{pointName ? ` · ${pointName}` : ""}
         </span>
       </div>
       <div className="px-4 py-3">
         {question && (
-          <p className="mb-3 text-sm font-medium text-zinc-800">{question}</p>
+          <p className="mb-3 text-sm font-medium text-foreground">{question}</p>
         )}
         <div className="space-y-2">
           {options.map((opt, i) => {
             const isSelected = selected === i;
             let optionClass =
-              "border-zinc-200 bg-white text-zinc-700 hover:border-violet-300";
+              "border-line bg-surface text-foreground hover:border-accent";
             if (answered) {
               if (correctIndex !== null && i === correctIndex) {
                 optionClass = "border-emerald-500 bg-emerald-50 text-emerald-900";
               } else if (isSelected) {
                 optionClass = "border-rose-500 bg-rose-50 text-rose-900";
               } else {
-                optionClass = "border-zinc-200 bg-white text-zinc-400";
+                optionClass = "border-line bg-surface text-muted";
               }
             } else if (isSelected) {
-              optionClass = "border-violet-500 bg-violet-100 text-violet-900";
+              optionClass = "border-accent bg-accent/10 text-foreground";
             }
             return (
               <button
@@ -138,7 +138,7 @@ function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
                 disabled={answered}
                 className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-sm transition ${optionClass}`}
               >
-                <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-xs font-semibold text-zinc-600">
+                <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-muted text-xs font-semibold text-muted">
                   {String.fromCharCode(65 + i)}
                 </span>
                 <span className="flex-1 whitespace-pre-wrap">{opt}</span>
@@ -162,8 +162,8 @@ function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
           </p>
         )}
         {answered && explanation && (
-          <div className="mt-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
-            <span className="font-medium text-zinc-700">解析：</span>
+          <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-xs text-muted">
+            <span className="font-medium text-foreground">解析：</span>
             <span className="whitespace-pre-wrap">{explanation}</span>
           </div>
         )}
@@ -199,7 +199,7 @@ export function useCogniaFrontendTools() {
 
 /** 认知状态五态 → 中文标签与颜色。 */
 const STATE_META: Record<string, { label: string; color: string }> = {
-  unassessed: { label: "未评估", color: "text-zinc-500 bg-zinc-100" },
+  unassessed: { label: "未评估", color: "text-muted bg-surface-muted" },
   mastered: { label: "已掌握", color: "text-emerald-700 bg-emerald-100" },
   partial: { label: "部分掌握", color: "text-amber-700 bg-amber-100" },
   misconception: { label: "错误理解", color: "text-rose-700 bg-rose-100" },
@@ -231,7 +231,7 @@ const diagnosisRenderer = defineToolCallRenderer({
   render: ({ args, status, result }) => {
     if (status !== "complete") {
       return (
-        <div className="my-2 animate-pulse rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-400">
+        <div className="my-2 animate-pulse rounded-xl border border-line bg-surface-muted px-4 py-3 text-xs text-muted">
           正在诊断…
         </div>
       );
@@ -245,13 +245,13 @@ const diagnosisRenderer = defineToolCallRenderer({
     const migrated = Boolean(data.migrated);
     const finalState = String(data.final_state ?? "");
     const evidence = Array.isArray(data.evidence) ? (data.evidence as string[]) : [];
-    const meta = STATE_META[diagnosed] ?? { label: diagnosed || "未知", color: "text-zinc-500 bg-zinc-100" };
+    const meta = STATE_META[diagnosed] ?? { label: diagnosed || "未知", color: "text-muted bg-surface-muted" };
 
     return (
-      <div className="my-2 overflow-hidden rounded-xl border border-blue-200 bg-blue-50/50">
-        <div className="flex items-center gap-2 border-b border-blue-200 bg-blue-100/60 px-4 py-2">
+      <div className="my-2 overflow-hidden rounded-xl border border-line bg-surface">
+        <div className="flex items-center gap-2 border-b border-line bg-surface-muted px-4 py-2">
           <span className="text-sm">🧠</span>
-          <span className="text-xs font-medium text-blue-700">
+          <span className="text-xs font-medium text-accent">
             认知诊断 · {args.point_name ?? args.point_id ?? ""}
           </span>
         </div>
@@ -260,7 +260,7 @@ const diagnosisRenderer = defineToolCallRenderer({
             <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${meta.color}`}>
               {meta.label}
             </span>
-            <span className="text-xs text-zinc-500">置信度 {confidence}</span>
+            <span className="text-xs text-muted">置信度 {confidence}</span>
             {migrated && (
               <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
                 状态已迁移 → {STATE_META[finalState]?.label ?? finalState}
@@ -268,10 +268,10 @@ const diagnosisRenderer = defineToolCallRenderer({
             )}
           </div>
           {evidence.length > 0 && (
-            <div className="text-xs text-zinc-500">
-              <span className="font-medium text-zinc-600">依据：</span>
+            <div className="text-xs text-muted">
+              <span className="font-medium text-muted">依据：</span>
               {evidence.map((e, i) => (
-                <span key={i} className="mr-2 inline-block rounded bg-white px-1.5 py-0.5">
+                <span key={i} className="mr-2 inline-block rounded bg-surface px-1.5 py-0.5">
                   “{e}”
                 </span>
               ))}
@@ -290,7 +290,7 @@ const knowledgeModelRenderer = defineToolCallRenderer({
   render: ({ status, result }) => {
     if (status !== "complete") {
       return (
-        <div className="my-2 animate-pulse rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-400">
+        <div className="my-2 animate-pulse rounded-xl border border-line bg-surface-muted px-4 py-3 text-xs text-muted">
           正在构建知识模型…
         </div>
       );
@@ -305,17 +305,17 @@ const knowledgeModelRenderer = defineToolCallRenderer({
     const points = Array.isArray(data.points) ? (data.points as string[]) : [];
 
     return (
-      <div className="my-2 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50/50">
-        <div className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-100/60 px-4 py-2">
+      <div className="my-2 overflow-hidden rounded-xl border border-line bg-surface">
+        <div className="flex items-center gap-2 border-b border-line bg-surface-muted px-4 py-2">
           <span className="text-sm">🗺️</span>
-          <span className="text-xs font-medium text-emerald-700">
+          <span className="text-xs font-medium text-accent">
             知识模型{action ? ` · ${action}` : ""}
           </span>
         </div>
         <div className="px-4 py-3 text-sm">
-          <p className="mb-2 font-medium text-zinc-800">{goal}</p>
-          <p className="mb-2 text-xs text-zinc-500">共 {count} 个知识点</p>
-          <ol className="list-inside list-decimal space-y-1 text-xs text-zinc-600">
+          <p className="mb-2 font-medium text-foreground">{goal}</p>
+          <p className="mb-2 text-xs text-muted">共 {count} 个知识点</p>
+          <ol className="list-inside list-decimal space-y-1 text-xs text-muted">
             {points.map((p, i) => (
               <li key={i}>{p}</li>
             ))}
@@ -342,7 +342,7 @@ const explainRenderer = defineToolCallRenderer({
   render: ({ args, status, result }) => {
     if (status !== "complete") {
       return (
-        <div className="my-2 animate-pulse rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-400">
+        <div className="my-2 animate-pulse rounded-xl border border-line bg-surface-muted px-4 py-3 text-xs text-muted">
           正在讲解…
         </div>
       );
@@ -352,14 +352,14 @@ const explainRenderer = defineToolCallRenderer({
     if (!text.trim()) return null;
 
     return (
-      <div className="my-2 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50/50">
-        <div className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-100/60 px-4 py-2">
+      <div className="my-2 overflow-hidden rounded-xl border border-line bg-surface">
+        <div className="flex items-center gap-2 border-b border-line bg-surface-muted px-4 py-2">
           <span className="text-sm">📖</span>
-          <span className="text-xs font-medium text-emerald-700">
+          <span className="text-xs font-medium text-accent">
             讲解{args.point_name ? ` · ${args.point_name}` : ""}
           </span>
         </div>
-        <div className="px-4 py-3 text-sm text-zinc-800">
+        <div className="px-4 py-3 text-sm text-foreground">
           <Markdown content={text} />
         </div>
       </div>

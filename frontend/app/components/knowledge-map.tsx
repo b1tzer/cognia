@@ -247,11 +247,11 @@ function GoalGalaxy({ goal }: { goal: KnowledgeMapGoal }) {
   const focusPoint = focusId ? byId.get(focusId) : undefined;
 
   return (
-    <section className="rounded-xl border border-zinc-200 bg-white p-4">
-      <h3 className="mb-2 text-base font-semibold text-zinc-900">{goal.goal}</h3>
+    <section className="rounded-xl border border-line bg-surface p-4">
+      <h3 className="mb-2 text-base font-semibold text-foreground">{goal.goal}</h3>
       <div
         ref={containerRef}
-        className="relative h-[520px] overflow-hidden rounded-lg border border-zinc-100 bg-gradient-to-br from-zinc-50 to-white"
+        className="relative h-[520px] overflow-hidden rounded-lg border border-line bg-gradient-to-br from-surface-muted to-surface"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -346,13 +346,13 @@ function GoalGalaxy({ goal }: { goal: KnowledgeMapGoal }) {
 
         {/* 详情卡 */}
         {focusPoint && (
-          <div className="absolute right-3 top-3 w-64 rounded-lg border border-zinc-200 bg-white p-3 shadow-lg">
+          <div className="absolute right-3 top-3 w-64 rounded-lg border border-line bg-surface p-3 shadow-lg">
             <div className="flex items-start justify-between gap-2">
-              <span className="text-sm font-semibold text-zinc-900">
+              <span className="text-sm font-semibold text-foreground">
                 {focusPoint.name}
               </span>
               <button
-                className="text-zinc-400 transition hover:text-zinc-600"
+                className="text-muted transition hover:text-foreground"
                 onClick={() => setFocusId(null)}
                 aria-label="关闭"
               >
@@ -360,20 +360,20 @@ function GoalGalaxy({ goal }: { goal: KnowledgeMapGoal }) {
               </button>
             </div>
             {focusPoint.description && (
-              <p className="mt-1 text-xs leading-relaxed text-zinc-600">
+              <p className="mt-1 text-xs leading-relaxed text-muted">
                 {focusPoint.description}
               </p>
             )}
-            <div className="mt-2 text-xs text-zinc-500">
+            <div className="mt-2 text-xs text-muted">
               当前状态：
-              <span className="ml-1 font-medium text-zinc-700">
+              <span className="ml-1 font-medium text-foreground">
                 {STATE_STYLE[stateOf(proficiencies, focusPoint.id)]?.label ??
                   "未探索"}
               </span>
             </div>
             {focusPoint.prerequisites &&
               focusPoint.prerequisites.length > 0 && (
-                <div className="mt-1 text-xs text-zinc-500">
+                <div className="mt-1 text-xs text-muted">
                   前置依赖：
                   {focusPoint.prerequisites
                     .map((id) => byId.get(id)?.name ?? id)
@@ -384,7 +384,7 @@ function GoalGalaxy({ goal }: { goal: KnowledgeMapGoal }) {
         )}
 
         {/* 图例 */}
-        <div className="pointer-events-none absolute bottom-2 left-3 flex flex-wrap gap-3 text-[10px] text-zinc-500">
+        <div className="pointer-events-none absolute bottom-2 left-3 flex flex-wrap gap-3 text-[10px] text-muted">
           {Object.keys(STATE_STYLE).map((k) => (
             <span key={k} className="flex items-center gap-1">
               <span

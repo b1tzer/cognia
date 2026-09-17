@@ -17,6 +17,7 @@ import KnowledgeMap, {
 } from "./components/knowledge-map";
 import {
   cogniaToolRenderers,
+  consumePendingPracticeAnswer,
   useCogniaFrontendTools,
 } from "./components/cognia-frontend-tools";
 import {
@@ -146,6 +147,9 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
 
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
+
+    // 隐藏消息（如「练习作答记录」）只回传后端供 Agent 推理，不在此渲染。
+    if (m.hidden) continue;
 
     // tool 结果不在此处输出，由对应的 assistant 工具调用消息统一插入，
     // 以保证它位于最终回答之前。
@@ -425,6 +429,29 @@ function ChatApp() {
     setInput("");
     setSending(true);
     try {
+      // 若上一道练习有作答结果，先作为一条隐藏的「练习作答记录」注入，
+      // 让 Agent 在下一轮能读到学生选了哪个、对错如何（非阻塞方案）。
+      const practice = consumePendingPracticeAnswer();
+      if (practice) {
+        const selectedOpt = practice.options[practice.selected_index] ?? "";
+        const correctOpt =
+          practice.correct_index != null
+            ? (practice.options[practice.correct_index] ?? "")
+            : "";
+        const recordText =
+          `【练习作答记录】题目：「${practice.question}」；` +
+          `我选择了「${selectedOpt}」，` +
+          (practice.is_correct
+            ? "答对了。"
+            : `答错了，正确答案是「${correctOpt}」。`);
+        agent.addMessage({
+          id: crypto.randomUUID(),
+          role: "user",
+          content: recordText,
+          hidden: true,
+        } as any);
+      }
+
       agent.addMessage({
         id: crypto.randomUUID(),
         role: "user",

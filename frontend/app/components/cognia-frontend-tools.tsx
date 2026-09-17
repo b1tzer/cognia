@@ -13,7 +13,9 @@ import { z } from "zod";
  *
  * 1. 前端工具（三）：useFrontendTool 注册 `practice_choice`，让后端 Cognia
  *    Agent 在诊断/干预后调用它，把「选择题练习」渲染成前端可交互卡片，
- *    而不是只能输出纯文本 Markdown。
+ *    而不是只能输出纯文本 Markdown。学生作答后前端本地判对错并展示解析（非阻塞、
+ *    不主动触发 Agent 回答）；作答结果会暂存，待学生下次发言时作为一条
+ *    「练习作答记录」消息带回给 Agent 继续推理。
  * 2. Generative UI（五）：defineToolCallRenderer 为 Cognia 已有后端工具
  *    （propose_diagnosis / build_learning_goal）注册自定义渲染器，把原本
  *    以 JSON 文本回流的工具结果渲染成结构化卡片。
@@ -30,20 +32,51 @@ type PracticeChoiceArgs = {
   question?: string;
   options?: string[];
   point_name?: string;
+  correct_index?: number;
+  explanation?: string;
 };
 
-function PracticeChoiceCard({
-  args,
-  status,
-}: {
+/** 一次练习作答的结果，暂存后待用户下次发言时作为记录带回给 Agent。 */
+export type PracticeAnswerRecord = {
+  question: string;
+  options: string[];
+  point_name: string;
+  selected_index: number;
+  correct_index: number | null;
+  is_correct: boolean;
+};
+
+// 模块级暂存：只保留「最近一次」作答结果（非阻塞方案，不在本轮触发 Agent）。
+let pendingPracticeAnswer: PracticeAnswerRecord | null = null;
+
+/** 取走并清空最近一次练习作答结果，供发送消息时带回 AI。 */
+export function consumePendingPracticeAnswer(): PracticeAnswerRecord | null {
+  const rec = pendingPracticeAnswer;
+  pendingPracticeAnswer = null;
+  return rec;
+}
+
+type PracticeChoiceRenderProps = {
   args: PracticeChoiceArgs;
   status: "inProgress" | "executing" | "complete";
-}) {
+};
+
+function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
   const [selected, setSelected] = useState<number | null>(null);
 
   const question = args?.question ?? "";
   const options = Array.isArray(args?.options) ? args.options : [];
   const pointName = args?.point_name ?? "";
+  const rawCorrectIndex =
+    typeof args?.correct_index === "number" ? args.correct_index : null;
+  const correctIndex =
+    rawCorrectIndex !== null && rawCorrectIndex >= 0 && rawCorrectIndex < options.length
+      ? rawCorrectIndex
+      : null;
+  const explanation = args?.explanation ?? "";
+
+  const answered = selected !== null;
+  const isCorrect = answered && correctIndex !== null && selected === correctIndex;
 
   // 参数还在流式生成中，先给占位，避免渲染残缺内容。
   if (status === "inProgress" && !question && options.length === 0) {
@@ -53,6 +86,21 @@ function PracticeChoiceCard({
       </div>
     );
   }
+
+  const handleSelect = (i: number) => {
+    if (answered) return;
+    setSelected(i);
+    const correct = correctIndex !== null && i === correctIndex;
+    // 非阻塞：不主动触发 Agent 回答，只把作答结果暂存，待下次发言时带回。
+    pendingPracticeAnswer = {
+      question,
+      options,
+      point_name: pointName,
+      selected_index: i,
+      correct_index: correctIndex,
+      is_correct: correct,
+    };
+  };
 
   return (
     <div className="my-2 overflow-hidden rounded-xl border border-violet-200 bg-violet-50/50">
@@ -69,25 +117,56 @@ function PracticeChoiceCard({
         <div className="space-y-2">
           {options.map((opt, i) => {
             const isSelected = selected === i;
+            let optionClass =
+              "border-zinc-200 bg-white text-zinc-700 hover:border-violet-300";
+            if (answered) {
+              if (correctIndex !== null && i === correctIndex) {
+                optionClass = "border-emerald-500 bg-emerald-50 text-emerald-900";
+              } else if (isSelected) {
+                optionClass = "border-rose-500 bg-rose-50 text-rose-900";
+              } else {
+                optionClass = "border-zinc-200 bg-white text-zinc-400";
+              }
+            } else if (isSelected) {
+              optionClass = "border-violet-500 bg-violet-100 text-violet-900";
+            }
             return (
               <button
                 key={i}
                 type="button"
-                onClick={() => setSelected(i)}
-                className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-sm transition ${
-                  isSelected
-                    ? "border-violet-500 bg-violet-100 text-violet-900"
-                    : "border-zinc-200 bg-white text-zinc-700 hover:border-violet-300"
-                }`}
+                onClick={() => handleSelect(i)}
+                disabled={answered}
+                className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-sm transition ${optionClass}`}
               >
                 <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-xs font-semibold text-zinc-600">
                   {String.fromCharCode(65 + i)}
                 </span>
-                <span className="whitespace-pre-wrap">{opt}</span>
+                <span className="flex-1 whitespace-pre-wrap">{opt}</span>
+                {answered && correctIndex !== null && i === correctIndex && (
+                  <span className="text-emerald-600">✓</span>
+                )}
+                {answered && isSelected && correctIndex !== i && (
+                  <span className="text-rose-600">✗</span>
+                )}
               </button>
             );
           })}
         </div>
+        {answered && (
+          <p
+            className={`mt-3 text-sm font-medium ${
+              isCorrect ? "text-emerald-700" : "text-rose-700"
+            }`}
+          >
+            {isCorrect ? "✓ 回答正确" : "✗ 回答错误"}
+          </p>
+        )}
+        {answered && explanation && (
+          <div className="mt-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs text-zinc-600">
+            <span className="font-medium text-zinc-700">解析：</span>
+            <span className="whitespace-pre-wrap">{explanation}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -98,13 +177,17 @@ export function useCogniaFrontendTools() {
   useFrontendTool({
     name: "practice_choice",
     description:
-      "向学生展示一道交互式选择题（单选），用于巩固知识点、检验理解或收集反馈。" +
-      "学生点击选项后前端本地高亮，无需返回结果。当你想更直观地检验或巩固某个" +
-      "知识点时，优先调用本工具而非只用文字提问。",
+      "向学生展示一道交互式选择题（单选），用于巩固知识点、检验理解。" +
+      "学生在前端点击作答后，前端会立即本地判对错并展示解析，不会阻塞你、也不会" +
+      "主动触发你回答；作答结果会在学生下次发言时以「练习作答记录」的形式出现在" +
+      "对话里，你届时据此推理即可。参数 correct_index 为正确选项的索引（从 0 开始），" +
+      "explanation 为作答后展示的解析说明（含正确原因）。",
     parameters: z.object({
       question: z.string().describe("选择题题干，简洁明确"),
       options: z.array(z.string()).describe("2-4 个互斥选项"),
       point_name: z.string().describe("关联的知识点名称"),
+      correct_index: z.number().describe("正确选项的索引（从 0 开始）"),
+      explanation: z.string().describe("作答后展示的解析说明，解释为什么正确/错误"),
     }),
     render: PracticeChoiceCard,
   });

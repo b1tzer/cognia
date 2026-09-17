@@ -19,9 +19,12 @@
   /* 边框 / 分隔线 */
   --line: #e4e5e9;
 
-  /* 单一强调色：全站唯一彩色，勿再引入其他装饰色 */
+  /* 单一强调色：全站唯一彩色，只做小面积点缀（链接/选中/focus/面板标题） */
   --accent: #4f6bff;
   --accent-hover: #3f5bf0;
+
+  /* 墨色：气泡 / 主按钮等大面积深色元素（与 accent 并列，勿用蓝色替换） */
+  --ink: #18181b;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -34,6 +37,7 @@
     --line: #2a2e37;
     --accent: #6c86ff;
     --accent-hover: #5b76f5;
+    --ink: #2a2e37;
   }
 }
 
@@ -46,6 +50,7 @@
   --color-line: var(--line);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
+  --color-ink: var(--ink);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }

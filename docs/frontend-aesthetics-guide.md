@@ -22,10 +22,11 @@
 | 边框/分隔线 | `--line` | `border-line` |
 | 强调（唯一彩色） | `--accent` | `bg-accent` / `text-accent` / `border-accent` |
 | 强调 hover | `--accent-hover` | `bg-accent-hover` |
+| 墨色（气泡/主按钮） | `--ink` | `bg-ink` |
 
 ## 3. 强制规则（MUST / NEVER）
 
-1. MUST 全站彩色只有 `--accent` 一个装饰色。按钮、链接、选中态、focus 环全部用 accent。
+1. MUST 全站彩色只有 `--accent` 一个装饰色。链接、选中态、focus 环、面板标题用 accent；大面积深色元素（消息气泡、主按钮）用 `ink` 墨色，不用 accent。
 2. NEVER 用 Tailwind 默认彩色系（`violet-*` `blue-*` `emerald-*` `rose-*` `amber-*` `sky-*`）做装饰。这些只允许出现在「语义色」里（见第 4 节）。
 3. MUST 中性色只用 token 映射（`bg-background` / `bg-surface` / `text-foreground` / `text-muted` / `border-line`），不要写 `bg-white` / `text-zinc-*`。
 4. MUST 支持深浅两种模式：写样式时用 token，禁止写死 `bg-white`、`text-black`。
@@ -34,7 +35,8 @@
 ## 4. 语义色 vs 装饰色（关键区分）
 
 - **语义色**（承载认知状态信息，允许彩色）：已掌握 `emerald`、部分掌握 `amber`、错误理解 `rose`、盲区 `sky`、未评估 `zinc`。这些只用于知识图谱节点/状态徽标，一个状态一个色，全站统一。
-- **装饰色**（按钮/边框/链接/选中/分割，只允许一种）：`--accent`。
+- **装饰色**（链接/选中/focus/面板标题，只允许一种彩色）：`--accent`。
+- **深色元素**（消息气泡/主按钮/标题文字）：`--ink` 墨色，中性非彩色。
 
 判据：这个颜色是不是在传达「认知状态」？是 → 语义色；否 → 只能用 accent 或中性色。
 
@@ -63,7 +65,7 @@
 | `text-zinc-900` / `text-zinc-800` | `text-foreground` |
 | `text-zinc-500` / `text-zinc-400` / `text-zinc-600` | `text-muted` |
 | `border-zinc-200` / `border-zinc-300` | `border-line` |
-| `bg-zinc-900`（发消息按钮/气泡） | `bg-accent` + `text-white` |
+| `bg-zinc-900`（发消息按钮/气泡） | `bg-ink` + `text-white` |
 | `violet-*`（选择题交互）、`blue-*`（诊断面板）、`emerald-*`（地图面板）三种装饰彩色 | 统一收编为 `accent`；其中「已掌握/错误理解」等状态色保留语义色不动 |
 
 ## 8. 派活 prompt 模板（复制即用）

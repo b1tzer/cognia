@@ -82,7 +82,7 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-4 py-2`}>
       {isUser ? (
-        <div className="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-accent px-4 py-2 text-sm text-white">
+        <div className="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-ink px-4 py-2 text-sm text-white">
           {text}
         </div>
       ) : (
@@ -658,7 +658,7 @@ function ChatApp() {
               <button
                 onClick={() => void handleSend()}
                 disabled={sending || !input.trim()}
-                className="rounded-xl bg-accent px-5 py-2 text-sm font-medium text-white transition hover:bg-accent-hover disabled:opacity-40"
+                className="rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90 disabled:opacity-40"
               >
                 {sending ? "发送中…" : "发送"}
               </button>

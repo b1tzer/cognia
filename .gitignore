@@ -13,6 +13,7 @@ venv/
 
 # 数据 / 数据库
 data/*.db
+data/search_cache/
 *.sqlite
 *.sqlite3
 

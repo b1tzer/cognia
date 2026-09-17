@@ -151,11 +151,19 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
         consumedToolCallIds.add(tc.id);
       }
 
-      // 再输出该 assistant 的正式回答（如有文本）
+      // 带工具调用的 assistant 消息，其 content 是「过渡思考」而非最终回答，
+      // 折叠进思考过程框，避免被渲染成正式回答气泡。
       const content =
-        typeof m.content === "string" && m.content.trim() ? m.content : "";
+        typeof m.content === "string" && m.content.trim() ? m.content.trim() : "";
       if (content) {
-        display.push({ message: { ...m, content } });
+        display.push({
+          message: {
+            id: `${m.id || `transition-${i}`}-transition`,
+            role: "reasoning",
+            content,
+          },
+          isActiveReasoning: false,
+        });
       }
       // 纯工具调用（无文本）不额外输出空气泡
     } else if (m.role === "reasoning") {
@@ -543,7 +551,7 @@ function ChatApp() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     void handleSend();
                   }

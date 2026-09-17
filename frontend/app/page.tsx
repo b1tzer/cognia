@@ -73,6 +73,10 @@ function MessageBubble({
   const text = typeof message.content === "string" ? message.content : "";
   if (!text) return null;
 
+  // 纯 JSON 内容（如模型复述的知识点列表）用 ```json 代码块包裹，
+  // 让 Markdown 以代码块形式高亮展示，而不是折叠/消失。
+  const markdown = !isUser && isJsonBlob(text) ? `\`\`\`json\n${text}\n\`\`\`` : text;
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-4 py-2`}>
       {isUser ? (
@@ -81,7 +85,7 @@ function MessageBubble({
         </div>
       ) : (
         <div className="max-w-[85%] rounded-2xl bg-zinc-100 px-4 py-2 text-sm text-zinc-800">
-          <Markdown content={text} />
+          <Markdown content={markdown} />
         </div>
       )}
     </div>
@@ -96,6 +100,20 @@ function MessageBubble({
 //    携带 toolCalls 和 content，直接按数组顺序渲染会让 content 排在 tool 结果前面。
 // 2. tool 消息本身没有工具名，需从 assistant.toolCalls[].function.name 映射。
 // 3. reasoning 只有在「agent 仍在运行且后面还没有正式回答」时展开，其余默认折叠。
+
+// 判断文本是否为「纯 JSON」（数组或对象）。若最终回答里出现纯 JSON，应当用
+// Markdown 代码块（```json）高亮展示，而不是折叠/丢弃。
+function isJsonBlob(text: string): boolean {
+  const t = text.trim();
+  if (!(t.startsWith("[") || t.startsWith("{"))) return false;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function buildDisplayMessages(messages: any[], isRunning: boolean) {
   // toolCallId -> 工具名
   const toolNames = new Map<string, string>();
@@ -151,11 +169,19 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
         consumedToolCallIds.add(tc.id);
       }
 
-      // 再输出该 assistant 的正式回答（如有文本）
+      // 带工具调用的 assistant 消息，其 content 是「过渡思考」而非最终回答，
+      // 折叠进思考过程框，避免被渲染成正式回答气泡。
       const content =
-        typeof m.content === "string" && m.content.trim() ? m.content : "";
+        typeof m.content === "string" && m.content.trim() ? m.content.trim() : "";
       if (content) {
-        display.push({ message: { ...m, content } });
+        display.push({
+          message: {
+            id: `${m.id || `transition-${i}`}-transition`,
+            role: "reasoning",
+            content,
+          },
+          isActiveReasoning: false,
+        });
       }
       // 纯工具调用（无文本）不额外输出空气泡
     } else if (m.role === "reasoning") {
@@ -511,7 +537,9 @@ function ChatApp() {
                 });
                 if (rendered) {
                   return (
-                    <div key={item.toolCall.id ?? `tool-${idx}`}>{rendered}</div>
+                    <div key={item.toolCall.id ?? `tool-${idx}`} className="px-4">
+                      {rendered}
+                    </div>
                   );
                 }
               }
@@ -543,7 +571,7 @@ function ChatApp() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     void handleSend();
                   }

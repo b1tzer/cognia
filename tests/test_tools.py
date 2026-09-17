@@ -229,8 +229,13 @@ def test_explain():
 
 # ---- 知识模型 load-or-build ----
 
-def test_build_learning_goal_builds_then_reuses():
-    """首次构建知识模型并冻结，第二次复用（planner 不再被调用）。"""
+def test_build_learning_goal_builds_then_reuses(monkeypatch):
+    """首次构建知识模型并冻结，第二次复用（planner 不再被调用）。
+
+    point_id 会被重写为跨对话全局稳定 id（concept: 前缀），而非 LLM 裸 id。
+    """
+    # mock embedding：单测不触发真实模型下载，merge 退化为归一化 name 精确匹配
+    monkeypatch.setattr("cognia.embedding.embed_text", lambda t: None)
     planner = ScriptedLLM([
         KnowledgeModel(goal="Spring AOP", points=[
             KnowledgePoint(id="aop-concept", name="AOP 概念", description="面向切面编程"),
@@ -246,12 +251,13 @@ def test_build_learning_goal_builds_then_reuses():
 
     first = json.loads(tools["build_learning_goal"].invoke({"goal": "Spring AOP"}, config=_cfg()))
     assert first["action"] == "构建"
-    assert first["first_point_id"] == "aop-concept"
+    assert first["first_point_id"].startswith("concept:")
+    first_id = first["first_point_id"]
 
     # 第二次：复用，planner 不再被调用（队列已空，若重建会 assert 耗尽）
     second = json.loads(tools["build_learning_goal"].invoke({"goal": "Spring AOP"}, config=_cfg()))
     assert second["action"] == "复用"
-    assert second["first_point_id"] == "aop-concept"
+    assert second["first_point_id"] == first_id
 
 
 # ---- 写工具：record_observation（观察样本，只追加不改结论）----

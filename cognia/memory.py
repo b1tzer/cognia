@@ -29,12 +29,14 @@ from cognia.schemas import (
 )
 
 from cognia.proficiency_engine import compute_proficiency
+from cognia import concept_merge, embedding
 
 # namespace 第一段（Store 的 namespace 是 tuple：类别 + user_id）
 PROFICIENCY_NS = "proficiency"
 PROFILE_NS = "profile"
 KNOWLEDGE_MODEL_NS = "knowledge_model"
 OBSERVATION_NS = "observation"
+CONCEPT_NS = "concept"
 
 # 模块级单例缓存：生产环境整个进程只建一个共享 AsyncConnectionPool，并让
 # Checkpointer 与 Store 复用同一个池。否则每次请求都新建 ConnectionPool 会导致
@@ -435,6 +437,64 @@ def query_dependents(store, user_id: str, goal_key: str, point_id: str) -> list[
     if km is None:
         return []
     return [p for p in km.points if point_id in p.prerequisites]
+
+
+# ---- 全局概念注册表（concept）：跨对话概念身份归一 ----
+
+def put_concept(store, user_id: str, global_id: str, name: str, embedding_vec: list[float] | None) -> None:
+    """写 / 更新一个全局概念（key = global_id，value 含 name + embedding）。
+
+    store / user_id 缺失 → 安全降级（不落库）。embedding 为 None 时存空列表。
+    namespace = ("concept", user_id)，天然按 user 隔离。
+    """
+    if store is None or not user_id:
+        return
+    store.put((CONCEPT_NS, user_id), global_id, {
+        "id": global_id,
+        "name": name,
+        "embedding": embedding_vec or [],
+    })
+
+
+def list_concepts(store, user_id: str) -> list[dict]:
+    """读某 user 的全部全局概念（每个元素 {id, name, embedding}）。"""
+    if store is None or not user_id:
+        return []
+    items = store.search((CONCEPT_NS, user_id))
+    return [item.value for item in items if item.value is not None]
+
+
+def merge_knowledge_model_concepts(store, user_id: str, km: KnowledgeModel) -> KnowledgeModel:
+    """对知识模型的全部点做语义合并，重写 point_id 为全局稳定 id（原地 + 返回）。
+
+    - 读 user 已有全局概念 → 每个点按 name 语义合并（同义不同名合并到同一 id）。
+    - 新概念计算 embedding 落库（concept namespace）。
+    - 同步重写 point.prerequisites 里的裸 id 引用为全局 id。
+    - store / user_id 缺失 → 保持原样返回（不合并，安全降级）。
+
+    这是「以 user 为单位构建知识星图」的落点：同一概念跨对话复用同一 point_id，
+    熟练度 / 观察历史按全局 id 自然聚合。
+    """
+    if store is None or not user_id:
+        return km
+
+    existing = list_concepts(store, user_id)
+    id_map: dict[str, str] = {}
+
+    for p in km.points:
+        global_id, is_new, canonical = concept_merge.merge_concept(p.name, existing)
+        id_map[p.id] = global_id
+        if is_new:
+            vec = embedding.embed_text(canonical)
+            put_concept(store, user_id, global_id, canonical, vec)
+            existing.append({"id": global_id, "name": canonical, "embedding": vec})
+        p.id = global_id
+
+    # 重写前置依赖引用：旧裸 id → 全局 id（跨 goal 的历史点 id 不在本批，保持不变）
+    for p in km.points:
+        p.prerequisites = [id_map.get(pid, pid) for pid in p.prerequisites]
+
+    return km
 
 
 # ---- 聚合读取（供个人页 / 知识版图拉取，纯函数无副作用）----

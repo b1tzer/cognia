@@ -37,6 +37,7 @@ from cognia.memory import (
     get_current_proficiency,
     get_knowledge_model,
     get_user_id,
+    merge_knowledge_model_concepts,
     normalize_goal,
     put_knowledge_model,
     query_proficiency as _query_proficiency,
@@ -235,6 +236,9 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
             km = build_knowledge_model(_get_planner(), goal)
             km.goal = goal
             if store and user_id:
+                # 语义合并：把 LLM 裸生成的 point_id 重写为跨对话全局稳定 id，
+                # 同一概念（含同义不同名）复用同一 point_id，熟练度跨对话聚合。
+                merge_knowledge_model_concepts(store, user_id, km)
                 put_knowledge_model(store, user_id, goal_key, km.model_dump(mode="json"))
             verb = "构建"
 

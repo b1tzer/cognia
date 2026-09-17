@@ -10,6 +10,9 @@ dependencies:
   '@copilotkit/runtime':
     specifier: ^1.71.2
     version: 1.71.2(@langchain/core@1.2.11)(react-dom@19.2.8)(react@19.2.8)
+  '@tanstack/react-virtual':
+    specifier: ^3.14.13
+    version: 3.14.13(react-dom@19.2.8)(react@19.2.8)
   next:
     specifier: 16.3.5
     version: 16.3.5(@babel/core@7.29.7)(@types/node@20.0.0)(react-dom@19.2.8)(react@19.2.8)

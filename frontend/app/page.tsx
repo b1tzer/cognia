@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   CopilotKit,
   useAgent,
@@ -34,7 +35,7 @@ import { getOrCreateUserId } from "./lib/user-id";
 // 都在服务端 PostgreSQL；localStorage 不保存线程列表。
 const THREAD_ID_KEY = "cognia:threadId";
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
   toolName,
   isActiveReasoning,
@@ -91,7 +92,7 @@ function MessageBubble({
       )}
     </div>
   );
-}
+});
 
 // 把 agent.messages 重排为「显示顺序」，并补出工具名称 / reasoning 活跃状态。
 //
@@ -133,6 +134,22 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
   for (const m of messages) {
     if (m.role === "tool" && m.toolCallId) {
       toolResultByCallId.set(m.toolCallId, m);
+    }
+  }
+
+  // 预计算：从下标 i 之后是否存在 assistant 正式回答。
+  // 一次倒序遍历 O(n)，替代原先 reasoning 分支里 messages.slice(i+1).some() 的 O(n²)。
+  const hasAnswerAfterFrom = new Array<boolean>(messages.length).fill(false);
+  let seenAnswer = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    hasAnswerAfterFrom[i] = seenAnswer;
+    const x = messages[i];
+    if (
+      x.role === "assistant" &&
+      typeof x.content === "string" &&
+      x.content.trim()
+    ) {
+      seenAnswer = true;
     }
   }
 
@@ -189,16 +206,9 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
       }
       // 纯工具调用（无文本）不额外输出空气泡
     } else if (m.role === "reasoning") {
-      // 该 reasoning 之后是否已经出现 assistant 正式回答
-      const hasAnswerAfter = messages.slice(i + 1).some(
-        (x) =>
-          x.role === "assistant" &&
-          typeof x.content === "string" &&
-          x.content.trim(),
-      );
       display.push({
         message: m,
-        isActiveReasoning: !hasAnswerAfter && isRunning,
+        isActiveReasoning: !hasAnswerAfterFrom[i] && isRunning,
       });
     } else {
       display.push({ message: m });
@@ -348,10 +358,14 @@ function ChatApp() {
     const container = scrollContainerRef.current;
     if (!container) return;
     container.addEventListener("scroll", handleScroll);
+    // 流式输出时 characterData 高频触发，用 rAF 合并同一帧内的多次滚动请求。
+    let rafId = 0;
     const observer = new MutationObserver(() => {
-      if (!isUserScrollUpRef.current) {
+      if (isUserScrollUpRef.current) return;
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
         scrollToBottom();
-      }
+      });
     });
     observer.observe(container, {
       childList: true,
@@ -360,14 +374,16 @@ function ChatApp() {
     });
     return () => {
       container.removeEventListener("scroll", handleScroll);
+      cancelAnimationFrame(rafId);
       observer.disconnect();
     };
   }, [handleScroll, scrollToBottom]);
 
   // 用户发送新消息时，重置「上滚」状态并强制滚到底部。
-  const userMessageCount = (agent?.messages ?? []).filter(
-    (m) => m.role === "user",
-  ).length;
+  const userMessageCount = useMemo(
+    () => (agent?.messages ?? []).filter((m) => m.role === "user").length,
+    [agent?.messages],
+  );
   useEffect(() => {
     isUserScrollUpRef.current = false;
     scrollToBottom();
@@ -500,6 +516,42 @@ function ChatApp() {
     [messages, agent?.isRunning],
   );
 
+  // 虚拟滚动：只渲染可视区域附近的消息，超长会话的 DOM 数量不再随消息数线性增长。
+  const virtualizer = useVirtualizer({
+    count: displayMessages.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 96,
+    overscan: 8,
+  });
+
+  const renderMessageItem = (item: (typeof displayMessages)[number]) => {
+    if (item.toolCall) {
+      const rendered = renderToolCall({
+        toolCall: item.toolCall,
+        toolMessage: item.toolMessage,
+      });
+      if (rendered) {
+        return <div className="px-4">{rendered}</div>;
+      }
+    }
+    if (!item.message) {
+      return (
+        <div className="px-4 py-1 text-xs text-zinc-400">
+          <span className="rounded bg-zinc-100 px-2 py-1">
+            🔧 {item.toolName || "工具"} 调用中…
+          </span>
+        </div>
+      );
+    }
+    return (
+      <MessageBubble
+        message={item.message}
+        toolName={item.toolName}
+        isActiveReasoning={item.isActiveReasoning}
+      />
+    );
+  };
+
   return (
     <div className="flex h-screen w-full">
       <ThreadSidebar
@@ -556,38 +608,35 @@ function ChatApp() {
               开始一段新对话吧
             </div>
           ) : (
-            displayMessages.map((item, idx) => {
-              if (item.toolCall) {
-                const rendered = renderToolCall({
-                  toolCall: item.toolCall,
-                  toolMessage: item.toolMessage,
-                });
-                if (rendered) {
-                  return (
-                    <div key={item.toolCall.id ?? `tool-${idx}`} className="px-4">
-                      {rendered}
-                    </div>
-                  );
-                }
-              }
-              if (!item.message) {
+            <div
+              style={{
+                height: virtualizer.getTotalSize(),
+                width: "100%",
+                position: "relative",
+              }}
+            >
+              {virtualizer.getVirtualItems().map((vItem) => {
+                const item = displayMessages[vItem.index];
+                const key =
+                  item.toolCall?.id ?? item.message?.id ?? `item-${vItem.index}`;
                 return (
-                  <div key={`tool-${idx}`} className="px-4 py-1 text-xs text-zinc-400">
-                    <span className="rounded bg-zinc-100 px-2 py-1">
-                      🔧 {item.toolName || "工具"} 调用中…
-                    </span>
+                  <div
+                    key={key}
+                    data-index={vItem.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${vItem.start}px)`,
+                    }}
+                  >
+                    {renderMessageItem(item)}
                   </div>
                 );
-              }
-              return (
-                <MessageBubble
-                  key={item.message.id ?? `msg-${idx}`}
-                  message={item.message}
-                  toolName={item.toolName}
-                  isActiveReasoning={item.isActiveReasoning}
-                />
-              );
-            })
+              })}
+            </div>
           )}
         </div>
 

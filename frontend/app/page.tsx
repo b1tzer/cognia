@@ -96,6 +96,20 @@ function MessageBubble({
 //    携带 toolCalls 和 content，直接按数组顺序渲染会让 content 排在 tool 结果前面。
 // 2. tool 消息本身没有工具名，需从 assistant.toolCalls[].function.name 映射。
 // 3. reasoning 只有在「agent 仍在运行且后面还没有正式回答」时展开，其余默认折叠。
+
+// 判断文本是否为「纯 JSON」（数组或对象）。用于识别模型把工具数据（如知识点列表）
+// 以 JSON 原文复述进正式回答的泄漏场景，这类内容应折叠而非当作正式回答展示。
+function isJsonBlob(text: string): boolean {
+  const t = text.trim();
+  if (!(t.startsWith("[") || t.startsWith("{"))) return false;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function buildDisplayMessages(messages: any[], isRunning: boolean) {
   // toolCallId -> 工具名
   const toolNames = new Map<string, string>();
@@ -179,7 +193,25 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
         isActiveReasoning: !hasAnswerAfter && isRunning,
       });
     } else {
-      display.push({ message: m });
+      // 最终回答（不带 toolCalls 的 assistant 消息）：若 content 是纯 JSON，
+      // 说明模型把工具数据（知识点列表等）以 JSON 原文泄漏进了正式回答，
+      // 折叠进「思考过程」框，不作为正式回答气泡展示。
+      const content =
+        m.role === "assistant" && typeof m.content === "string"
+          ? m.content.trim()
+          : "";
+      if (m.role === "assistant" && content && isJsonBlob(content)) {
+        display.push({
+          message: {
+            id: `${m.id || `json-${i}`}-json`,
+            role: "reasoning",
+            content,
+          },
+          isActiveReasoning: false,
+        });
+      } else {
+        display.push({ message: m });
+      }
     }
   }
 

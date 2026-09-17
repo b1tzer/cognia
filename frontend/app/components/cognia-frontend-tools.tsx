@@ -3,7 +3,7 @@
 import { useState } from "react";
 import {
   defineToolCallRenderer,
-  useHumanInTheLoop,
+  useFrontendTool,
 } from "@copilotkit/react-core/v2";
 import { Markdown } from "@copilotkit/react-ui";
 import { z } from "zod";
@@ -11,9 +11,11 @@ import { z } from "zod";
 /**
  * Cognia 前端能力封装（CopilotKit 能力「三 + 五」）：
  *
- * 1. 前端工具（三）：useHumanInTheLoop 注册 `practice_choice`，让后端 Cognia
+ * 1. 前端工具（三）：useFrontendTool 注册 `practice_choice`，让后端 Cognia
  *    Agent 在诊断/干预后调用它，把「选择题练习」渲染成前端可交互卡片，
- *    而不是只能输出纯文本 Markdown；学生作答后会把选择结果回传给 Agent 继续推理。
+ *    而不是只能输出纯文本 Markdown。学生作答后前端本地判对错并展示解析（非阻塞、
+ *    不主动触发 Agent 回答）；作答结果会暂存，待学生下次发言时作为一条
+ *    「练习作答记录」消息带回给 Agent 继续推理。
  * 2. Generative UI（五）：defineToolCallRenderer 为 Cognia 已有后端工具
  *    （propose_diagnosis / build_learning_goal）注册自定义渲染器，把原本
  *    以 JSON 文本回流的工具结果渲染成结构化卡片。
@@ -34,13 +36,32 @@ type PracticeChoiceArgs = {
   explanation?: string;
 };
 
+/** 一次练习作答的结果，暂存后待用户下次发言时作为记录带回给 Agent。 */
+export type PracticeAnswerRecord = {
+  question: string;
+  options: string[];
+  point_name: string;
+  selected_index: number;
+  correct_index: number | null;
+  is_correct: boolean;
+};
+
+// 模块级暂存：只保留「最近一次」作答结果（非阻塞方案，不在本轮触发 Agent）。
+let pendingPracticeAnswer: PracticeAnswerRecord | null = null;
+
+/** 取走并清空最近一次练习作答结果，供发送消息时带回 AI。 */
+export function consumePendingPracticeAnswer(): PracticeAnswerRecord | null {
+  const rec = pendingPracticeAnswer;
+  pendingPracticeAnswer = null;
+  return rec;
+}
+
 type PracticeChoiceRenderProps = {
   args: PracticeChoiceArgs;
   status: "inProgress" | "executing" | "complete";
-  respond?: (result: unknown) => Promise<void>;
 };
 
-function PracticeChoiceCard({ args, status, respond }: PracticeChoiceRenderProps) {
+function PracticeChoiceCard({ args, status }: PracticeChoiceRenderProps) {
   const [selected, setSelected] = useState<number | null>(null);
 
   const question = args?.question ?? "";
@@ -66,21 +87,19 @@ function PracticeChoiceCard({ args, status, respond }: PracticeChoiceRenderProps
     );
   }
 
-  const handleSelect = async (i: number) => {
+  const handleSelect = (i: number) => {
     if (answered) return;
     setSelected(i);
     const correct = correctIndex !== null && i === correctIndex;
-    if (respond && status === "executing") {
-      try {
-        await respond({
-          selected_index: i,
-          correct_index: correctIndex,
-          is_correct: correct,
-        });
-      } catch {
-        // 回传失败不影响本地判对错的展示。
-      }
-    }
+    // 非阻塞：不主动触发 Agent 回答，只把作答结果暂存，待下次发言时带回。
+    pendingPracticeAnswer = {
+      question,
+      options,
+      point_name: pointName,
+      selected_index: i,
+      correct_index: correctIndex,
+      is_correct: correct,
+    };
   };
 
   return (
@@ -155,14 +174,14 @@ function PracticeChoiceCard({ args, status, respond }: PracticeChoiceRenderProps
 
 /** 注册 Cognia 的前端交互工具（三）。必须在 <CopilotKit> 内部调用。 */
 export function useCogniaFrontendTools() {
-  useHumanInTheLoop({
+  useFrontendTool({
     name: "practice_choice",
     description:
       "向学生展示一道交互式选择题（单选），用于巩固知识点、检验理解。" +
-      "学生作答后，本工具会把选择结果（含所选选项索引、正确选项索引、是否正确）" +
-      "返回给你，你据此继续推理：答对则简短肯定并衔接推进到下一步，答错则针对" +
-      "该错误点讲解或再出一题。参数 correct_index 为正确选项的索引（从 0 开始），" +
-      "explanation 为作答后的解析说明。",
+      "学生在前端点击作答后，前端会立即本地判对错并展示解析，不会阻塞你、也不会" +
+      "主动触发你回答；作答结果会在学生下次发言时以「练习作答记录」的形式出现在" +
+      "对话里，你届时据此推理即可。参数 correct_index 为正确选项的索引（从 0 开始），" +
+      "explanation 为作答后展示的解析说明（含正确原因）。",
     parameters: z.object({
       question: z.string().describe("选择题题干，简洁明确"),
       options: z.array(z.string()).describe("2-4 个互斥选项"),

@@ -32,27 +32,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from ag_ui.core.types import RunAgentInput
 from ag_ui.encoder import EventEncoder
-from ag_ui_langgraph.utils import langchain_messages_to_agui
 from copilotkit import CopilotKitMiddleware, CopilotKitState, LangGraphAGUIAgent
 
 from cognia import memory, models, threads
 from cognia.prompts.teacher import TEACHER_SYSTEM_PROMPT
+from cognia.routers.knowledge_map import router as knowledge_map_router
+from cognia.routers.threads import auto_title_thread, router as threads_router
 from cognia.tools import build_cognia_tools
-
-
-class RenameThreadRequest(BaseModel):
-    """重命名会话请求体。"""
-
-    title: str
 
 
 def build_agent(checkpointer=None, store=None):
@@ -132,49 +125,12 @@ async def lifespan(app: FastAPI):
         app.state.store = None
         app.state.threads_available = False
     _agent.graph = build_agent(checkpointer=checkpointer, store=store)
+    app.state.graph = _agent.graph
     yield
 
 
 app = FastAPI(title="Cognia AG-UI Agent Server", lifespan=lifespan)
 
-
-def _extract_first_user_text(input_data: RunAgentInput) -> str | None:
-    """从 AG-UI 输入中提取首条用户文本消息，用于生成会话标题。"""
-    for msg in input_data.messages or []:
-        role = getattr(msg, "role", None)
-        if role != "user":
-            continue
-        content = getattr(msg, "content", None)
-        if isinstance(content, str):
-            text = content.strip()
-            if text:
-                return text
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text = str(part.get("text", "")).strip()
-                    if text:
-                        return text
-    return None
-
-
-async def _auto_title_thread(request: Request, input_data: RunAgentInput) -> None:
-    """thread title 为空时，用首条用户消息截断作为临时标题。
-
-    只调用一次即可：auto_title_if_empty 在 SQL 层保证 title 非空时不覆盖，
-    用户手动重命名后保持不被改写。
-    """
-    app_state = request.app.state
-    if not getattr(app_state, "threads_available", False):
-        return
-    thread_id = getattr(input_data, "thread_id", None)
-    if not thread_id:
-        return
-    text = _extract_first_user_text(input_data)
-    if not text:
-        return
-    title = text[:30] + ("…" if len(text) > 30 else "")
-    await threads.auto_title_if_empty(app_state.pool, thread_id, title)
 
 def _extract_user_id(input_data: RunAgentInput) -> str:
     """从 AG-UI 输入的 forwarded_props 解析匿名 user_id。
@@ -196,7 +152,7 @@ def _extract_user_id(input_data: RunAgentInput) -> str:
 # 等价，但多了「进入时自动生成会话标题」这一步；健康检查端点一并保留。
 @app.post("/")
 async def cognia_agent_endpoint(input_data: RunAgentInput, request: Request):
-    await _auto_title_thread(request, input_data)
+    await auto_title_thread(request, input_data)
 
     accept_header = request.headers.get("accept")
     encoder = EventEncoder(accept=accept_header)
@@ -230,161 +186,9 @@ def health():
     }
 
 
-@app.get("/knowledge-map")
-async def knowledge_map_endpoint(request: Request, user_id: str | None = None):
-    """聚合当前匿名用户的全局知识星图（跨对话概念合并 + 熟练度），供个人页渲染。
-
-    - `user_id` 缺失 → 400（前端必须先建立匿名标识）。
-    - store 为 None（Postgres 降级）→ 返回空版图 `goals: []`，不 500。
-    - 以 user 为单位：跨 goal 按 point_id（全局稳定 id）去重合并为**单张全局图**，
-      同一概念只保留一个节点，依赖边去重，熟练度按全局 id 对齐（缺失补 unassessed）。
-    """
-    if not user_id:
-        raise HTTPException(status_code=400, detail="缺少 user_id 参数")
-
-    store = getattr(request.app.state, "store", None)
-    if store is None:
-        return {"user_id": user_id, "goals": []}
-
-    kms = await memory.alist_knowledge_models(store, user_id)
-    proficiencies = await memory.alist_authoritative_proficiencies(store, user_id)
-
-    # 跨 goal 聚合：按全局 point_id 去重合并（同一概念只保留一个节点）
-    points_by_id: dict[str, dict] = {}
-    for km in kms:
-        for p in (km.get("points") or []):
-            pid = p.get("id")
-            if not pid:
-                continue
-            if pid not in points_by_id:
-                points_by_id[pid] = {
-                    "id": pid,
-                    "name": p.get("name"),
-                    "description": p.get("description"),
-                    "prerequisites": [],
-                }
-            # 合并依赖边（去重）
-            for pre in (p.get("prerequisites") or []):
-                if pre not in points_by_id[pid]["prerequisites"]:
-                    points_by_id[pid]["prerequisites"].append(pre)
-
-    points = list(points_by_id.values())
-    global_proficiencies = {
-        pid: proficiencies.get(pid, "unassessed") for pid in points_by_id
-    }
-
-    return {
-        "user_id": user_id,
-        "goals": [{
-            "goal": "我的知识星图",
-            "points": points,
-            "proficiencies": global_proficiencies,
-        }],
-    }
-
-
-# ---- 会话管理端点（多会话列表 / 新建 / 重命名 / 删除）----
-# 权威数据在服务端 PostgreSQL：会话列表 = cognia_threads 元数据 ∪ checkpoints
-# 真实会话；删除会话会同时清理 checkpointer 里的 checkpoint / blobs / writes。
-
-def _threads_available(request: Request) -> bool:
-    """Postgres 降级为 InMemorySaver 时关闭会话管理，返回 False。"""
-    return bool(getattr(request.app.state, "threads_available", False))
-
-
-def _history_to_agui(messages) -> list:
-    """把 checkpoint 历史消息转换为 AG-UI 消息，并补出思考过程。
-
-    ag-ui-langgraph 的 ``langchain_messages_to_agui`` 只处理 AIMessage 的
-    ``content`` 列表里的 reasoning block；而 DeepSeek 的思考链存放在
-    ``additional_kwargs.reasoning_content``，不在这里补出来的话，刷新页面
-    回填历史时就看不到思考过程。这里在每个 AIMessage 之前插入一条
-    role="reasoning" 的 dict（与前端 AG-UI 消息结构一致）。
-    """
-    out = []
-    for raw in messages:
-        if isinstance(raw, AIMessage):
-            reasoning = (raw.additional_kwargs or {}).get("reasoning_content")
-            if isinstance(reasoning, str) and reasoning.strip():
-                out.append({
-                    "id": f"{raw.id}-reasoning",
-                    "role": "reasoning",
-                    "content": reasoning,
-                })
-        out.extend(langchain_messages_to_agui([raw]))
-    return out
-
-
-@app.get("/threads")
-async def list_threads_endpoint(request: Request):
-    """列出当前用户全部会话（按最近活动时间降序）。"""
-    if not _threads_available(request):
-        return []
-    return await threads.list_threads(request.app.state.pool)
-
-
-@app.get("/threads/{thread_id}/messages")
-async def get_thread_messages_endpoint(thread_id: str, request: Request):
-    """读取某会话的历史消息（权威数据在 PostgreSQL checkpointer）。
-
-    供前端切换会话时回填聊天记录：CopilotKit 的 connect 走进程内存回放，
-    对连接外部 LangGraph 后端的场景拿不到 checkpointer 历史，因此前端
-    主动调用本端点读取并注入。返回 AG-UI 消息格式（user/assistant/tool）。
-    """
-    if not _threads_available(request):
-        return {"messages": []}
-
-    try:
-        graph = _agent.graph
-        config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
-        state = await graph.aget_state(config)
-        messages = (state.values or {}).get("messages", [])
-        agui_messages = _history_to_agui(messages)
-    except Exception as exc:
-        # 单个会话 checkpoint 数据异常 / 转换失败不应拖垮整个端点。
-        print(f"[Cognia] 读取会话 {thread_id} 历史失败：{exc}")
-        return {"messages": []}
-
-    # 过滤掉 system 消息（系统提示词无需回显），并以 camelCase alias 序列化
-    # （AG-UI 前端消息字段为 toolCalls / toolCallId 等 camelCase）。
-    # reasoning 消息是我们手工构造的 dict，没有 model_dump，直接透传。
-    result = []
-    for m in agui_messages:
-        if getattr(m, "role", None) == "system":
-            continue
-        result.append(m.model_dump(by_alias=True, mode="json") if hasattr(m, "model_dump") else m)
-    return {"messages": result}
-
-
-@app.post("/threads")
-async def create_thread_endpoint(request: Request):
-    """创建新会话，返回后端生成的 thread_id（元数据先落库）。"""
-    if not _threads_available(request):
-        raise HTTPException(status_code=503, detail="会话管理暂不可用（Postgres 未连接）")
-    return await threads.create_thread(request.app.state.pool)
-
-
-@app.patch("/threads/{thread_id}")
-async def rename_thread_endpoint(
-    thread_id: str, payload: RenameThreadRequest, request: Request
-):
-    """重命名会话（title 持久化到 cognia_threads 表）。"""
-    if not _threads_available(request):
-        raise HTTPException(status_code=503, detail="会话管理暂不可用（Postgres 未连接）")
-    return await threads.rename_thread(request.app.state.pool, thread_id, payload.title)
-
-
-@app.delete("/threads/{thread_id}")
-async def delete_thread_endpoint(thread_id: str, request: Request):
-    """删除会话及其 checkpoint（含 blobs / writes）。"""
-    if not _threads_available(request):
-        raise HTTPException(status_code=503, detail="会话管理暂不可用（Postgres 未连接）")
-    await threads.delete_thread(
-        request.app.state.pool,
-        request.app.state.checkpointer,
-        thread_id,
-    )
-    return {"deleted": True, "thread_id": thread_id}
+# 挂载业务查询与会话管理 router（与 AG-UI 接入解耦）。
+app.include_router(knowledge_map_router)
+app.include_router(threads_router)
 
 
 def main() -> None:

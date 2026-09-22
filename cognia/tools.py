@@ -48,19 +48,21 @@ from cognia.schemas import (
     KnowledgePoint,
     Observation,
 )
+from cognia.wiki_summarize import summarize_thread_to_wiki
 
 
 def _model_to_lines(km: KnowledgeModel) -> list[str]:
     """知识模型 → 便于 LLM 阅读的单行描述列表。"""
     return [f"[{p.id}] {p.name}（{p.description}）" for p in km.points]
 
-def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
+def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, checkpointer=None):
     """构建认知模型工具集（闭包注入模型与存储依赖）。
 
     - diagnoser：诊断（run_diagnosis，产出候选观察值）
     - planner：知识模型构建
     - teacher：探针问题 / 讲解生成
-    - store：长期 Store（熟练度 / 知识模型持久化），None 时跳过持久化（测试 / 纯推理）
+    - store：长期 Store（熟练度 / 知识模型 / wiki 持久化），None 时跳过持久化（测试 / 纯推理）
+    - checkpointer：会话历史（summarize_session_to_wiki 读对话用），None 时该工具降级
     - user_id：**不在此闭包注入**，由每个工具通过 `RunnableConfig` 从 runtime context
       读取（宪法 §5：user_id 走 runtime context，不塞 State、不进闭包；LLM 只填写
       业务参数，不能伪造身份）。
@@ -365,6 +367,24 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
             "results": results,
         }, ensure_ascii=False)
 
+    @tool
+    async def summarize_session_to_wiki(title: str, config: RunnableConfig) -> str:
+        """把当前学习会话的对话总结为一篇 wiki 草稿文章。
+
+        当用户表示要「总结成 wiki / 沉淀本次学习 / 保存笔记」时调用：读当前会话
+        对话历史 → 提炼为 markdown wiki 草稿（author=ai，含溯源证据）。
+
+        Args:
+            title: 期望的 wiki 标题（供提炼参考，最终标题由模型生成）。
+        """
+        user_id = get_user_id(config)
+        thread_id = (config.get("configurable") or {}).get("thread_id")
+        result = await summarize_thread_to_wiki(
+            checkpointer, store, user_id, thread_id, model=_get_teacher(),
+            title_hint=title,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
     return {
         "read_learner_state": read_learner_state,
         "build_learning_goal": build_learning_goal,
@@ -374,4 +394,5 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
         "generate_probe": generate_probe,
         "explain": explain,
         "web_search": web_search,
+        "summarize_session_to_wiki": summarize_session_to_wiki,
     }

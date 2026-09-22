@@ -66,6 +66,7 @@ def build_agent(checkpointer=None, store=None):
     tools = build_cognia_tools(
         store=store,         # 长期 Store；None 时工具内部跳过持久化
         teacher=teacher,
+        checkpointer=checkpointer,  # 会话历史（summarize_session_to_wiki 读对话用）
     )
     tool_list = list(tools.values())
 

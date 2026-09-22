@@ -195,3 +195,18 @@ class WikiRevision(BaseModel):
     author: WikiAuthor = WikiAuthor.AI
     summary: str = ""                             # 变更说明
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class WikiSummary(BaseModel):
+    """对话总结为 wiki 草稿的 LLM 结构化输出（供 summarize 提炼用）。"""
+
+    title: str
+    slug: str                                     # 英文小写连字符，作为 page_id
+    markdown: str                                 # 正文
+    evidence: list[str] = Field(default_factory=list)  # 溯源证据（用户原话，严禁脑补）
+    tags: list[str] = Field(default_factory=list)      # 英文小写标签
+
+    @field_validator("evidence", "tags", mode="before")
+    @classmethod
+    def _normalize_lists(cls, v):
+        return _coerce_str_list(v)

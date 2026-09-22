@@ -98,18 +98,16 @@ def _make_tools(diagnoser_responses, teacher_responses=None, store=None):
 # ---- 读工具 ----
 
 def test_read_learner_state():
-    """读工具返回当前五态（未评估时为 unassessed）。"""
-    from cognia.memory import append_proficiency_delta
-    from cognia.schemas import ProficiencyEntry
-    from datetime import datetime, timezone
+    """读工具返回系统权威五态（Observation → BKT → mapped_state；未评估为 unassessed）。"""
+    from cognia.memory import record_observation
+    from cognia.schemas import Observation
 
     store = InMemoryStore()
-    append_proficiency_delta(store, "u1", ProficiencyEntry(
+    record_observation(store, "u1", Observation(
         point_id="aop-concept",
-        from_state=None,
-        to_state=CognitiveState.PARTIAL,
+        observed_state=CognitiveState.PARTIAL,
+        confidence=Confidence.HIGH,
         evidence=["e"],
-        timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc),
     ))
     tools = build_cognia_tools(store=store)
 

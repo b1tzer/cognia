@@ -34,7 +34,6 @@ from cognia.learning_engine import (
     run_diagnosis,
 )
 from cognia.memory import (
-    get_current_proficiency,
     get_knowledge_model,
     get_user_id,
     merge_knowledge_model_concepts,
@@ -200,19 +199,24 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
 
     @tool
     def read_learner_state(point_id: str, config: RunnableConfig) -> str:
-        """读取当前用户对某知识点的认知状态（五态之一）。
+        """读取当前用户对某知识点的权威认知状态（BKT 融合观察历史后的五态）。
+
+        读系统权威状态（Observation → BKT → mapped_state），与 query_proficiency /
+        propose_diagnosis 的 authoritative_state 同源；不再读已废弃的 proficiency
+        delta（该 delta 已无生产方，读它永远返回 unassessed）。
 
         Args:
             point_id: 知识点唯一 id。
         """
         user_id = get_user_id(config)
-        state = (
-            get_current_proficiency(store, user_id, point_id)
+        prof = (
+            _query_proficiency(store, user_id, point_id)
             if (store and user_id)
             else None
         )
+        state = prof.mapped_state.value if prof is not None else "unassessed"
         # 返回 JSON 结构（而非纯文本），便于 CopilotKit Inspector 解析工具结果展示
-        return json.dumps({"state": state or "unassessed"}, ensure_ascii=False)
+        return json.dumps({"state": state}, ensure_ascii=False)
 
     @tool
     def build_learning_goal(goal: str, config: RunnableConfig) -> str:

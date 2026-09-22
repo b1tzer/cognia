@@ -46,24 +46,36 @@ def _has_evidence(observation: Observation) -> bool:
     return any(str(e).strip() for e in (observation.evidence or []))
 
 
-def record_observation(store, user_id: str, observation: Observation) -> bool:
-    """追加一条 AI 观察样本（只追加，不直接改权威状态）。
+def _should_record(store, user_id: str, observation: Observation) -> bool:
+    """观察样本是否应落库（guard 校验，纯判断，无 IO）。
 
-    - store / user_id 缺失 → 安全降级，返回 False（不落库）。
-    - observed_state == unassessed → 跳过（未评估不产生观测）。
-    - evidence 为空 → 拒绝写入（严禁脑补证据，spec §6）。
-
-    返回 True 表示已记录，False 表示跳过。key = point_id + timestamp，
-    历史不可变、可审计。namespace = ("observation", user_id)。
+    - store / user_id 缺失 → False（安全降级）。
+    - observed_state == unassessed → False（未评估不产生观测）。
+    - evidence 为空 → False（严禁脑补证据，spec §6）。
     """
     if store is None or not user_id:
         return False
     if observation.observed_state == CognitiveState.UNASSESSED:
         return False
-    if not _has_evidence(observation):
-        return False
+    return _has_evidence(observation)
+
+
+def _observation_key_payload(observation: Observation) -> tuple[str, dict]:
+    """构造观察样本的 store key 与 payload（key = point_id:timestamp，不可变）。"""
     key = f"{observation.point_id}:{observation.timestamp.isoformat()}"
-    store.put((OBSERVATION_NS, user_id), key, observation.model_dump(mode="json"))
+    return key, observation.model_dump(mode="json")
+
+
+def record_observation(store, user_id: str, observation: Observation) -> bool:
+    """追加一条 AI 观察样本（只追加，不直接改权威状态）。
+
+    返回 True 表示已记录，False 表示跳过。guard 校验见 _should_record，
+    历史不可变、可审计。namespace = ("observation", user_id)。
+    """
+    if not _should_record(store, user_id, observation):
+        return False
+    key, payload = _observation_key_payload(observation)
+    store.put((OBSERVATION_NS, user_id), key, payload)
     return True
 
 
@@ -71,44 +83,54 @@ async def arecord_observation(store, user_id: str, observation: Observation) -> 
     """record_observation 的异步版本（供主事件循环内调用）。
 
     AsyncPostgresStore 在主事件循环线程里必须用 `await store.aput`。
+    业务逻辑（guard / key 构造）与同步版共享，仅底层 IO 原语不同。
     """
-    if store is None or not user_id:
+    if not _should_record(store, user_id, observation):
         return False
-    if observation.observed_state == CognitiveState.UNASSESSED:
-        return False
-    if not _has_evidence(observation):
-        return False
-    key = f"{observation.point_id}:{observation.timestamp.isoformat()}"
-    await store.aput((OBSERVATION_NS, user_id), key, observation.model_dump(mode="json"))
+    key, payload = _observation_key_payload(observation)
+    await store.aput((OBSERVATION_NS, user_id), key, payload)
     return True
+
+
+def _filter_observations(items, point_id: str) -> list[dict]:
+    """过滤出某知识点的观察，并按 timestamp 升序排序（纯函数）。"""
+    obs = [item.value for item in items if item.value.get("point_id") == point_id]
+    obs.sort(key=lambda d: d.get("timestamp") or "")
+    return obs
 
 
 def query_observations(store, user_id: str, point_id: str) -> list[dict]:
     """读某 user 某知识点的完整观察历史（按 timestamp 升序，可审计）。"""
     if store is None or not user_id or not point_id:
         return []
-    items = store.search((OBSERVATION_NS, user_id))
-    obs = [item.value for item in items if item.value.get("point_id") == point_id]
-    obs.sort(key=lambda d: d.get("timestamp") or "")
-    return obs
+    return _filter_observations(store.search((OBSERVATION_NS, user_id)), point_id)
 
 
 async def aquery_observations(store, user_id: str, point_id: str) -> list[dict]:
-    """query_observations 的异步版本（主事件循环内用 asearch）。"""
+    """query_observations 的异步版本（主事件循环内用 asearch）。
+
+    过滤 + 排序逻辑与同步版共享（_filter_observations），仅 IO 原语不同。
+    """
     if store is None or not user_id or not point_id:
         return []
-    items = await store.asearch((OBSERVATION_NS, user_id))
-    obs = [item.value for item in items if item.value.get("point_id") == point_id]
-    obs.sort(key=lambda d: d.get("timestamp") or "")
-    return obs
+    return _filter_observations(await store.asearch((OBSERVATION_NS, user_id)), point_id)
 
 
 # ---- 权威熟练度（proficiency）查询：观察历史 → BKT 融合 → Proficiency ----
 
+def _build_proficiency(observations, point_id: str) -> Proficiency:
+    """由观察历史融合出权威 Proficiency（BKT 融合 + 补回 point_id）。"""
+    prof = compute_proficiency(observations, None)
+    if prof.point_id == "":
+        # 无观察时 compute_proficiency 返回空 point_id，这里补回真实 point_id
+        return prof.model_copy(update={"point_id": point_id})
+    return prof
+
+
 def query_proficiency(store, user_id: str, point_id: str) -> Proficiency | None:
     """读某 user 某知识点的权威熟练度（能力域 D：单点查询）。
 
-    内部：query_observations → compute_proficiency → Proficiency。
+    内部：query_observations → BKT 融合 → Proficiency（见 _build_proficiency）。
     这是系统计算产物，AI 只能查询、无权直接改写。
 
     - store / user_id / point_id 缺失 → 返回 None（安全降级）。
@@ -118,23 +140,17 @@ def query_proficiency(store, user_id: str, point_id: str) -> Proficiency | None:
     """
     if store is None or not user_id or not point_id:
         return None
-    observations = query_observations(store, user_id, point_id)
-    prof = compute_proficiency(observations, None)
-    if prof.point_id == "":
-        # 无观察时 compute_proficiency 返回空 point_id，这里补回真实 point_id
-        return prof.model_copy(update={"point_id": point_id})
-    return prof
+    return _build_proficiency(query_observations(store, user_id, point_id), point_id)
 
 
 async def aquery_proficiency(store, user_id: str, point_id: str) -> Proficiency | None:
-    """query_proficiency 的异步版本（主事件循环内用 asearch）。"""
+    """query_proficiency 的异步版本（主事件循环内用 asearch）。
+
+    BKT 融合逻辑与同步版共享（_build_proficiency），仅 IO 原语不同。
+    """
     if store is None or not user_id or not point_id:
         return None
-    observations = await aquery_observations(store, user_id, point_id)
-    prof = compute_proficiency(observations, None)
-    if prof.point_id == "":
-        return prof.model_copy(update={"point_id": point_id})
-    return prof
+    return _build_proficiency(await aquery_observations(store, user_id, point_id), point_id)
 
 
 # ---- 画像（profile）：基础偏好读写 ----
@@ -450,6 +466,11 @@ def merge_knowledge_model_concepts(store, user_id: str, km: KnowledgeModel) -> K
 
 # ---- 聚合读取（供个人页 / 知识版图拉取，纯函数无副作用）----
 
+def _non_null_values(items) -> list[dict]:
+    """取 store 项列表中所有非空 value（纯函数）。"""
+    return [item.value for item in items if item.value is not None]
+
+
 def list_knowledge_models(store: BaseStore, user_id: str) -> list[dict]:
     """读某 user 的全部知识模型（按 goal 冻结的 value 列表）。
 
@@ -458,20 +479,17 @@ def list_knowledge_models(store: BaseStore, user_id: str) -> list[dict]:
     """
     if store is None or not user_id:
         return []
-    items = store.search((KNOWLEDGE_MODEL_NS, user_id))
-    return [item.value for item in items if item.value is not None]
+    return _non_null_values(store.search((KNOWLEDGE_MODEL_NS, user_id)))
 
 
 async def alist_knowledge_models(store, user_id: str) -> list[dict]:
     """list_knowledge_models 的异步版本（供主事件循环内的 async endpoint 调用）。
 
-    AsyncPostgresStore 在主事件循环线程里禁止同步 store.search（抛
-    asyncio.InvalidStateError），必须 `await store.asearch(...)`。逻辑与同步版一致。
+    过滤逻辑与同步版共享（_non_null_values），仅 IO 原语（asearch）不同。
     """
     if store is None or not user_id:
         return []
-    items = await store.asearch((KNOWLEDGE_MODEL_NS, user_id))
-    return [item.value for item in items if item.value is not None]
+    return _non_null_values(await store.asearch((KNOWLEDGE_MODEL_NS, user_id)))
 
 
 async def alist_authoritative_proficiencies(store, user_id: str) -> dict[str, str]:

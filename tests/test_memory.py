@@ -13,6 +13,7 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from cognia import memory as memory_mod
+from cognia.infra import store as infra_store
 from cognia.memory import (
     add_prerequisite,
     alist_authoritative_proficiencies,
@@ -127,8 +128,8 @@ def test_factory_pool_has_autocommit(monkeypatch):
             pass
 
     # 重置单例缓存，避免被其他用例污染
-    memory_mod._checkpointer_cache = None
-    memory_mod._store_cache = None
+    infra_store._checkpointer_cache = None
+    infra_store._store_cache = None
 
     monkeypatch.setenv("LANGGRAPH_DATABASE_URL", "postgres://x:x@localhost/x")
     monkeypatch.setattr("psycopg_pool.AsyncConnectionPool", FakeAsyncPool)

@@ -316,13 +316,19 @@ function ChatApp() {
   const isProgrammaticScrollRef = useRef(false);
   // 输入框 ref：根据内容行数动态调整高度（参考 ChatGPT 多行输入体验）。
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 内容是否超出 max-h-48（192px）：未超出时用 overflow-hidden（不显示滚动条），
+  // 超出后才切换为 overflow-y-auto 允许内部滚动。
+  const [inputOverflowing, setInputOverflowing] = useState(false);
 
   // 输入框自适应高度：内容行数变化（或发送后清空）时，把高度收敛到实际内容高度。
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
+    const next = ta.scrollHeight;
+    ta.style.height = `${next}px`;
+    // max-h-48 = 12rem = 192px；达到上限才允许滚动。
+    setInputOverflowing(next >= 192);
   }, [input]);
 
   const persistCurrentThreadId = useCallback((id: string) => {
@@ -862,7 +868,9 @@ function ChatApp() {
                 }}
                 placeholder="输入消息，Enter 发送，Shift+Enter 换行"
                 rows={1}
-                className="max-h-48 flex-1 resize-none overflow-y-auto rounded-xl border border-line px-4 py-2 text-sm leading-relaxed text-foreground outline-none focus:border-accent"
+                className={`max-h-48 flex-1 resize-none rounded-xl border border-line px-4 py-2 text-sm leading-relaxed text-foreground outline-none focus:border-accent ${
+                  inputOverflowing ? "overflow-y-auto" : "overflow-hidden"
+                }`}
               />
               {sending ? (
                 <button

@@ -45,6 +45,7 @@ from cognia import memory, models, threads
 from cognia.prompts.teacher import TEACHER_SYSTEM_PROMPT
 from cognia.routers.knowledge_map import router as knowledge_map_router
 from cognia.routers.threads import auto_title_thread, router as threads_router
+from cognia.routers.wiki import router as wiki_router
 from cognia.tools import build_cognia_tools
 
 
@@ -189,6 +190,7 @@ def health():
 # 挂载业务查询与会话管理 router（与 AG-UI 接入解耦）。
 app.include_router(knowledge_map_router)
 app.include_router(threads_router)
+app.include_router(wiki_router)
 
 
 def main() -> None:

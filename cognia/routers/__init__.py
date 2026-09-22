@@ -7,5 +7,6 @@
 
 from cognia.routers.knowledge_map import router as knowledge_map_router
 from cognia.routers.threads import router as threads_router
+from cognia.routers.wiki import router as wiki_router
 
-__all__ = ["knowledge_map_router", "threads_router"]
+__all__ = ["knowledge_map_router", "threads_router", "wiki_router"]

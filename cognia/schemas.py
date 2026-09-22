@@ -155,3 +155,43 @@ class Proficiency(BaseModel):
     source_algorithm: str = "bkt"                   # 来源算法（当前仅 BKT，预留扩展）
     observation_count: int = 0                      # 已融合的有效观察次数
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# ---- 个人 Wiki（第三资产：人可读知识长文）----
+
+class WikiAuthor(str, Enum):
+    """wiki 页面最近一次写入者（决定 AI 是否可覆盖用户手改）。"""
+
+    AI = "ai"        # AI 生成的草稿
+    USER = "user"    # 用户手改（AI 只追加新版本、不覆盖）
+
+
+class WikiPage(BaseModel):
+    """个人 wiki 的一页：人可读、可在线编辑的知识长文。
+
+    正文（content_markdown）存 Git 仓库（版本真相），本模型作为元数据契约，
+    正文 + 溯源字段共同构成一个 wiki 页面。路线 B：wiki 有独立页面树
+    （parent_page_id / path），不复用知识版图 DAG。
+    """
+
+    page_id: str                                  # 稳定 id（slug）
+    title: str
+    content_markdown: str = ""                    # 正文（存 Git 文件）
+    path: str = ""                                # 页面树路径（独立体系）
+    tags: list[str] = Field(default_factory=list)
+    parent_page_id: str | None = None
+    author: WikiAuthor = WikiAuthor.AI            # 最近一次写入者
+    source_thread_id: str | None = None           # AI 生成时来源会话
+    source_turns: list[int] = Field(default_factory=list)  # 来源轮次（1-based）
+    evidence: list[str] = Field(default_factory=list)      # 溯源证据（用户原话）
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class WikiRevision(BaseModel):
+    """wiki 页面的一个版本（对应一次 git commit）。"""
+
+    page_id: str
+    commit_hash: str
+    author: WikiAuthor = WikiAuthor.AI
+    summary: str = ""                             # 变更说明
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

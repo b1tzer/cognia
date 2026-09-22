@@ -247,16 +247,25 @@ def invoke_structured(model, schema, messages):
 
 
 def structured_output(model, schema, messages):
-    """结构化输出的统一入口：优先 with_structured_output，返回 None 则降级解析。
+    """结构化输出的统一入口：优先 with_structured_output，失败/返回 None 则降级解析。
 
     背景见 invoke_structured：本地 adapter（工蜂 Gateway）对模糊/非常规输入可能
-    不调用工具（finish_reason=stop），导致 with_structured_output 返回 None。此函数
-    把「先尝试 function calling、失败再降级普通 invoke + 手动 JSON 解析」封装为单一
-    入口，供 learning_engine 等处复用，避免重复实现。
+    不调用工具（finish_reason=stop）导致 with_structured_output 返回 None；更严重的是，
+    对带嵌套对象引用（$defs/$ref，如含枚举字段的 Diagnosis schema）的 function calling
+    请求会被上游 MaaS 以 502/400 直接拒绝（"rejected by an internal MaaS component"），
+    抛 OpenAIAPIError 而不是返回 None。若不加捕获，该异常会沿 propose_diagnosis →
+    run_diagnosis 炸穿 tool 节点，导致整个 agent run 崩溃、SSE 流中断（前端表现为
+    SocketError "other side closed" / INCOMPLETE_STREAM）。
+
+    因此本函数把「先尝试 function calling、抛异常或返回 None 都降级到普通 invoke +
+    手动 JSON 解析」封装为单一入口，供 learning_engine 等处复用，避免重复实现。
     """
-    result = model.with_structured_output(schema).invoke(messages)
-    if result is not None:
-        return result
+    try:
+        result = model.with_structured_output(schema).invoke(messages)
+        if result is not None:
+            return result
+    except Exception as exc:  # MaaS 拒绝 function calling 等，降级而非崩溃
+        print(f"[Cognia] with_structured_output 失败，降级到普通 JSON 解析：{exc}")
     return invoke_structured(model, schema, messages)
 
 

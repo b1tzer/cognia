@@ -1,7 +1,6 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   CopilotKit,
   useAgent,
@@ -517,14 +516,6 @@ function ChatApp() {
     [messages, agent?.isRunning],
   );
 
-  // 虚拟滚动：只渲染可视区域附近的消息，超长会话的 DOM 数量不再随消息数线性增长。
-  const virtualizer = useVirtualizer({
-    count: displayMessages.length,
-    getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => 96,
-    overscan: 8,
-  });
-
   const renderMessageItem = (item: (typeof displayMessages)[number]) => {
     if (item.toolCall) {
       const rendered = renderToolCall({
@@ -631,30 +622,12 @@ function ChatApp() {
               开始一段新对话吧
             </div>
           ) : (
-            <div
-              style={{
-                height: virtualizer.getTotalSize(),
-                width: "100%",
-                position: "relative",
-              }}
-            >
-              {virtualizer.getVirtualItems().map((vItem) => {
-                const item = displayMessages[vItem.index];
+            <div>
+              {displayMessages.map((item, index) => {
                 const key =
-                  item.toolCall?.id ?? item.message?.id ?? `item-${vItem.index}`;
+                  item.toolCall?.id ?? item.message?.id ?? `item-${index}`;
                 return (
-                  <div
-                    key={key}
-                    data-index={vItem.index}
-                    ref={virtualizer.measureElement}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      transform: `translateY(${vItem.start}px)`,
-                    }}
-                  >
+                  <div key={key}>
                     {renderMessageItem(item)}
                   </div>
                 );

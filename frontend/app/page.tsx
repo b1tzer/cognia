@@ -98,12 +98,12 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-4 py-2`}>
       {isUser ? (
-        <div className="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-ink px-4 py-2 text-sm text-white">
+        <div className="max-w-[75%] whitespace-pre-wrap rounded-2xl bg-ink px-4 py-2.5 text-sm leading-relaxed text-white">
           {text}
         </div>
       ) : (
         <div className="flex max-w-[85%] flex-col items-start gap-1">
-          <div className="rounded-2xl bg-surface-muted px-4 py-2 text-sm text-foreground">
+          <div className="rounded-2xl bg-surface-muted px-4 py-2.5 text-sm text-foreground">
             <Markdown content={markdown} />
           </div>
           {showActions && (
@@ -314,6 +314,16 @@ function ChatApp() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isUserScrollUpRef = useRef(false);
   const isProgrammaticScrollRef = useRef(false);
+  // 输入框 ref：根据内容行数动态调整高度（参考 ChatGPT 多行输入体验）。
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // 输入框自适应高度：内容行数变化（或发送后清空）时，把高度收敛到实际内容高度。
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [input]);
 
   const persistCurrentThreadId = useCallback((id: string) => {
     window.localStorage.setItem(THREAD_ID_KEY, id);
@@ -840,7 +850,8 @@ function ChatApp() {
         {view === "chat" && (
           <div className="border-t border-line bg-surface p-4">
             <div className="flex gap-2">
-              <input
+              <textarea
+                ref={textareaRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -850,7 +861,8 @@ function ChatApp() {
                   }
                 }}
                 placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-                className="flex-1 rounded-xl border border-line px-4 py-2 text-sm text-foreground outline-none focus:border-accent"
+                rows={1}
+                className="max-h-48 flex-1 resize-none overflow-y-auto rounded-xl border border-line px-4 py-2 text-sm leading-relaxed text-foreground outline-none focus:border-accent"
               />
               {sending ? (
                 <button

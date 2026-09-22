@@ -58,6 +58,68 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  /* 英数用 Geist（精致几何无衬线），中文按平台降级到最耐看的系统字体：
+     Mac → 苹方 PingFang SC；Windows → 微软雅黑 Microsoft YaHei；
+     Linux/Android → 思源黑体 Noto Sans SC。 */
+  font-family:
+    var(--font-geist-sans),
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "Noto Sans SC",
+    system-ui,
+    -apple-system,
+    sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ============================================================
+   对话卡片内 Markdown 排版（覆盖 @copilotkit/react-ui 默认样式）
+   目标：大段文本行距舒适、段落间距紧凑、表格有边框
+   ============================================================ */
+.copilotKitMarkdown {
+  font-size: 0.9375rem;
+  line-height: 1.75;
+  letter-spacing: 0.01em;
+}
+
+/* 段落 / 列表 / 代码块之间的间距收紧，让长文本更「紧致」而不松散 */
+.copilotKitMarkdown .copilotKitParagraph:not(:last-child),
+.copilotKitMarkdown ul:not(:last-child),
+.copilotKitMarkdown ol:not(:last-child),
+.copilotKitMarkdown pre:not(:last-child),
+.copilotKitMarkdown blockquote:not(:last-child) {
+  margin-bottom: 0.9em;
+}
+
+.copilotKitMarkdown li {
+  line-height: 1.7;
+  margin-bottom: 0.25em;
+}
+
+/* 表格：补边框 + 表头底色 + 斑马纹，行距放宽 */
+.copilotKitMarkdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.9em 0;
+  font-size: 0.875rem;
+}
+
+.copilotKitMarkdown th,
+.copilotKitMarkdown td {
+  border: 1px solid var(--line);
+  padding: 0.5em 0.75em;
+  text-align: left;
+  line-height: 1.6;
+}
+
+.copilotKitMarkdown th {
+  background: var(--surface-muted);
+  font-weight: 600;
+}
+
+.copilotKitMarkdown tbody tr:nth-child(even) td {
+  background: var(--background);
 }

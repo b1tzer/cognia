@@ -1,9 +1,9 @@
 """Cognia 数据模型层。
 
-定义认知状态、置信度、验证结果等核心领域模型（Pydantic Schema）。
-与 state-machine.md 五态定义、plan.md §4 数据模型一一对应。
+定义认知状态、置信度等核心领域模型（Pydantic Schema）。
+与 spec v2.0 五态定义、plan.md §4 数据模型一一对应。
 
-注意分层：本模块只放「纯数据模型」，状态迁移逻辑（can_transition 等）放 state_machine.py（任务③）。
+注意分层：本模块只放「纯数据模型」，算法逻辑（BKT 融合等）放 proficiency_engine.py。
 """
 
 import json
@@ -30,15 +30,6 @@ class Confidence(str, Enum):
     HIGH = "high"      # 证据充分
     MEDIUM = "medium"  # 存在歧义
     LOW = "low"        # 证据不足
-
-
-class ValidationResult(str, Enum):
-    """单项验证结果（区分「未评估」与「验证失败」，避免 bool 混淆）。"""
-
-    UNASSESSED = "unassessed"  # 尚未验证
-    PASSED = "passed"          # 验证通过
-    FAILED = "failed"          # 验证失败
-
 
 class BloomLevel(str, Enum):
     """认知层级（布鲁姆分类，派生验证深度 verification_depth）。"""
@@ -129,27 +120,6 @@ class Diagnosis(BaseModel):
         return _coerce_str_list(v)
 
 
-class VerificationState(BaseModel):
-    """双重验证状态（plan §3.5：mastered 判定需「概念解释 + 场景辨析」双过）。"""
-
-    concept: ValidationResult = ValidationResult.UNASSESSED    # 概念解释验证结果
-    scenario: ValidationResult = ValidationResult.UNASSESSED   # 场景 / 反例辨析验证结果
-    concept_evidence: list[str] = Field(default_factory=list)  # 概念验证证据（用户原话）
-    scenario_evidence: list[str] = Field(default_factory=list)  # 场景验证证据（用户原话）
-    current_step: Literal["concept", "scenario", "done"] = "concept"  # 当前验证到哪一步
-
-
-class ProficiencyEntry(BaseModel):
-    """熟练度条目（增量 Delta，禁止全量重写，宪法 §5）。"""
-
-    point_id: str
-    from_state: CognitiveState | None = None  # 状态迁移起点（首次诊断时为 None）
-    to_state: CognitiveState                   # 状态迁移终点
-    evidence: list[str] = Field(default_factory=list)  # 支撑本次迁移的用户原话（非 AI 总结）
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    update_type: Literal["delta"] = "delta"   # 增量 Delta，严禁全量重写
-
-
 class Observation(BaseModel):
     """AI 对用户理解程度的一次观察样本（只追加，非最终结论）。
 
@@ -185,11 +155,3 @@ class Proficiency(BaseModel):
     source_algorithm: str = "bkt"                   # 来源算法（当前仅 BKT，预留扩展）
     observation_count: int = 0                      # 已融合的有效观察次数
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class Intervention(BaseModel):
-    """主动干预动作（追问 / 解释 / 纠错 / 回溯）。"""
-
-    point_id: str
-    intervention_type: Literal["probe", "explain", "correct", "backtrack"]
-    content: str

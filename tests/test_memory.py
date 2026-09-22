@@ -16,24 +16,19 @@ from cognia import memory as memory_mod
 from cognia.memory import (
     add_prerequisite,
     alist_authoritative_proficiencies,
-    alist_current_proficiencies,
     alist_knowledge_models,
-    append_proficiency_delta,
     aput_profile,
     arecord_observation,
     aquery_observations,
     aquery_proficiency,
     delete_point,
     get_checkpointer,
-    get_current_proficiency,
     get_knowledge_model,
     get_profile,
     get_profile_dict,
-    get_proficiency_history,
     get_store,
     get_user_id,
     insert_point,
-    list_current_proficiencies,
     list_knowledge_models,
     normalize_goal,
     put_knowledge_model,
@@ -57,63 +52,7 @@ from cognia.schemas import (
     Observation,
     PointAttributes,
     PointType,
-    ProficiencyEntry,
 )
-
-
-def _entry(point_id, from_state, to_state, day):
-    """构造带确定 timestamp 的 ProficiencyEntry，保证 key 唯一。"""
-    return ProficiencyEntry(
-        point_id=point_id,
-        from_state=from_state,
-        to_state=to_state,
-        evidence=[f"证据-{day}"],
-        timestamp=datetime(2026, 9, day, tzinfo=timezone.utc),
-    )
-
-
-def test_delta_append_preserves_history():
-    """同一点位多次 Delta 追加，历史完整保留（不覆盖，宪法 §5）。"""
-    store = InMemoryStore()
-    e1 = _entry("p1", None, CognitiveState.PARTIAL, 1)
-    e2 = _entry("p1", CognitiveState.PARTIAL, CognitiveState.MASTERED, 2)
-    append_proficiency_delta(store, "u1", e1)
-    append_proficiency_delta(store, "u1", e2)
-
-    history = get_proficiency_history(store, "u1", "p1")
-    assert len(history) == 2
-    assert history[0]["to_state"] == "partial"
-    assert history[1]["to_state"] == "mastered"
-    assert history[0]["from_state"] is None
-    assert history[1]["from_state"] == "partial"
-
-
-def test_current_proficiency_is_latest_delta():
-    """当前熟练度 = 最新 Delta 的 to_state。"""
-    store = InMemoryStore()
-    e1 = _entry("p1", None, CognitiveState.PARTIAL, 1)
-    e2 = _entry("p1", CognitiveState.PARTIAL, CognitiveState.MASTERED, 2)
-    append_proficiency_delta(store, "u1", e1)
-    append_proficiency_delta(store, "u1", e2)
-
-    assert get_current_proficiency(store, "u1", "p1") == "mastered"
-
-
-def test_user_isolation():
-    """不同 user_id 数据隔离：u1 的数据对 u2 不可见。"""
-    store = InMemoryStore()
-    e1 = _entry("p1", None, CognitiveState.PARTIAL, 1)
-    append_proficiency_delta(store, "u1", e1)
-
-    assert get_current_proficiency(store, "u2", "p1") is None
-    assert get_proficiency_history(store, "u2", "p1") == []
-
-
-def test_point_isolation():
-    """同 user 不同知识点互不串扰。"""
-    store = InMemoryStore()
-    append_proficiency_delta(store, "u1", _entry("p1", None, CognitiveState.PARTIAL, 1))
-    assert get_current_proficiency(store, "u1", "p2") is None
 
 
 def test_get_user_id_from_runtime_context():
@@ -261,27 +200,6 @@ def test_list_knowledge_models_isolation_and_empty():
     assert list_knowledge_models(None, "u1") == []  # store=None 安全降级
 
 
-def test_list_current_proficiencies_latest_only():
-    """list_current_proficiencies 每个 point 只取最新 Delta 的 to_state。"""
-    store = InMemoryStore()
-    append_proficiency_delta(store, "u1", _entry("p1", None, CognitiveState.PARTIAL, 1))
-    append_proficiency_delta(store, "u1", _entry("p1", CognitiveState.PARTIAL, CognitiveState.MASTERED, 2))
-    append_proficiency_delta(store, "u1", _entry("p2", None, CognitiveState.UNKNOWN, 1))
-
-    result = list_current_proficiencies(store, "u1")
-    assert result == {"p1": "mastered", "p2": "unknown"}
-
-
-def test_list_current_proficiencies_isolation_and_empty():
-    """list_current_proficiencies 按 user 隔离，空返回 {}。"""
-    store = InMemoryStore()
-    append_proficiency_delta(store, "u1", _entry("p1", None, CognitiveState.PARTIAL, 1))
-
-    assert list_current_proficiencies(store, "u2") == {}
-    assert list_current_proficiencies(None, "u1") == {}  # store=None 安全降级
-    assert list_current_proficiencies(store, "u1") == {"p1": "partial"}
-
-
 # ---- 异步聚合读取（主事件循环内必须用 asearch，防 InvalidStateError）----
 
 def test_alist_knowledge_models_async():
@@ -295,18 +213,6 @@ def test_alist_knowledge_models_async():
         return {km["goal"] for km in kms}
 
     assert asyncio.run(go()) == {"Spring AOP", "React Hooks"}
-
-
-def test_alist_current_proficiencies_async():
-    """alist_current_proficiencies 与同步版逻辑一致，走 asearch。"""
-    store = InMemoryStore()
-    append_proficiency_delta(store, "u1", _entry("p1", None, CognitiveState.PARTIAL, 1))
-    append_proficiency_delta(store, "u1", _entry("p1", CognitiveState.PARTIAL, CognitiveState.MASTERED, 2))
-
-    async def go():
-        return await alist_current_proficiencies(store, "u1")
-
-    assert asyncio.run(go()) == {"p1": "mastered"}
 
 
 # ---- 观察记录（observation）：AI 观察样本，只追加 ----

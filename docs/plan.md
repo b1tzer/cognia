@@ -89,15 +89,15 @@ flowchart TD
 依赖闭包注入，工具签名只暴露 LLM 能填写的简单参数；`user_id` 由工厂闭包注入，
 **不暴露给 LLM**（宪法 §5：LLM 只能填业务参数，不能伪造身份）。
 
-### 3.3 三层闸门：诊断 ≠ 迁移（安全边界核心）
+### 3.3 权威状态：观察样本 → BKT 融合（诊断 ≠ 权威状态）
 
-`propose_diagnosis` 内部完整复用学习引擎的三层闸门，Agent 无法旁路：
+> ⚠️ 本节描述的「三层闸门（诊断 → 双重验证 → 状态机裁决）」旧架构已于 2026-09 废弃，
+> 对应代码（`resolve_migration` / `run_verification` / `can_transition`）已删除。
+> 现行架构：`propose_diagnosis` / `record_observation` 只提交「观察样本」（Observation），
+> 权威认知状态由系统 BKT 算法融合观察历史后算出（`proficiency_engine` /
+> `memory.query_proficiency`），AI 只能提交观察值、无权直接改写。
 
-1. **诊断**（`run_diagnosis`）：独立严格 diagnoser prompt 判定五态 + 置信度（高/中/低）+ 用户原话证据。
-2. **双重验证**（`run_verification`）：仅当诊断候选为 `mastered` 时触发，要求「概念解释 + 场景辨析」两份独立正向证据全过。
-3. **状态机裁决**（`resolve_migration`）：高置信度是唯一迁移门槛；中/低置信度一律不迁移；拓扑合法性由 `can_transition` 锁定。
-
-任何 `proficiency[point_id] = diagnosis.state` 的直写都是旁路，属违规（state-machine §5 规则 1）。
+任何 `proficiency[point_id] = diagnosis.state` 的直写都是旁路，属违规（AI 无权改写权威状态）。
 
 ### 3.4 会话与身份的持久化边界
 

@@ -138,9 +138,8 @@ def test_propose_diagnosis_submits_observation_and_returns_authoritative():
     assert result["diagnosed_state"] == "partial"
     assert "authoritative_state" in result
 
-    from cognia.memory import get_current_proficiency, query_observations
-    # 关键：不直接写 proficiency Delta（AI 不能直接改结论），只追加观察
-    assert get_current_proficiency(store, "u1", "aop-concept") is None
+    from cognia.memory import query_observations
+    # 关键：只追加观察样本，权威状态由系统 BKT 融合算出
     assert len(query_observations(store, "u1", "aop-concept")) == 1
 
 
@@ -274,12 +273,10 @@ def test_record_observation_appends_only():
 
     assert result["recorded"] is True
 
-    from cognia.memory import query_observations, get_current_proficiency
+    from cognia.memory import query_observations
     obs = query_observations(store, "u1", "aop-concept")
     assert len(obs) == 1
     assert obs[0]["observed_state"] == "partial"
-    # 关键：没有直接写 proficiency Delta（AI 不能直接改结论）
-    assert get_current_proficiency(store, "u1", "aop-concept") is None
 
 
 def test_record_observation_unassessed_skipped():

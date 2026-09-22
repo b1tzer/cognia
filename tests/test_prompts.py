@@ -9,10 +9,8 @@
 
 from cognia import prompts
 from cognia.prompts.learning_engine import (
-    CONCEPT_VERIFIER_SYSTEM_PROMPT,
     DIAGNOSER_SYSTEM_PROMPT,
     KNOWLEDGE_MODELER_SYSTEM_PROMPT,
-    SCENARIO_VERIFIER_SYSTEM_PROMPT,
 )
 from cognia.prompts.teacher import TEACHER_SYSTEM_PROMPT
 
@@ -20,13 +18,11 @@ from cognia.prompts.teacher import TEACHER_SYSTEM_PROMPT
 # ---- 1. 关键 prompt 非空 ----
 
 def test_all_system_prompts_non_empty():
-    """五个策略性 system prompt 均非空。"""
+    """三个策略性 system prompt 均非空。"""
     for prompt in (
         TEACHER_SYSTEM_PROMPT,
         DIAGNOSER_SYSTEM_PROMPT,
         KNOWLEDGE_MODELER_SYSTEM_PROMPT,
-        CONCEPT_VERIFIER_SYSTEM_PROMPT,
-        SCENARIO_VERIFIER_SYSTEM_PROMPT,
     ):
         assert isinstance(prompt, str) and prompt.strip()
 
@@ -42,9 +38,9 @@ def test_teacher_prompt_keeps_diagnosis_guardrail():
 
 
 def test_teacher_prompt_keeps_web_search_guardrail():
-    """讲解专业知识前必须联网验证技术事实。"""
+    """讲解专业知识时对最新版本 / 技术事实存疑需用 web_search 验证。"""
     assert "web_search" in TEACHER_SYSTEM_PROMPT
-    assert "验证技术事实" in TEACHER_SYSTEM_PROMPT
+    assert "技术事实" in TEACHER_SYSTEM_PROMPT
 
 
 def test_diagnoser_prompt_keeps_evidence_rule():
@@ -59,13 +55,6 @@ def test_diagnoser_prompt_defines_five_states():
         assert state in DIAGNOSER_SYSTEM_PROMPT
 
 
-def test_verifier_prompts_keep_role():
-    """三个认知层辅助 prompt 保留各自角色定位。"""
-    assert "知识建模器" in KNOWLEDGE_MODELER_SYSTEM_PROMPT
-    assert "概念解释" in CONCEPT_VERIFIER_SYSTEM_PROMPT
-    assert "场景" in SCENARIO_VERIFIER_SYSTEM_PROMPT
-
-
 # ---- 3. 业务模块 import 的就是 prompts 包权威常量（防复制漂移）----
 
 def test_learning_engine_import_matches_prompts_package():
@@ -73,17 +62,15 @@ def test_learning_engine_import_matches_prompts_package():
     from cognia import learning_engine
     assert learning_engine.DIAGNOSER_SYSTEM_PROMPT == DIAGNOSER_SYSTEM_PROMPT
     assert learning_engine.KNOWLEDGE_MODELER_SYSTEM_PROMPT == KNOWLEDGE_MODELER_SYSTEM_PROMPT
-    assert learning_engine.CONCEPT_VERIFIER_SYSTEM_PROMPT == CONCEPT_VERIFIER_SYSTEM_PROMPT
-    assert learning_engine.SCENARIO_VERIFIER_SYSTEM_PROMPT == SCENARIO_VERIFIER_SYSTEM_PROMPT
 
 
 def test_prompts_package_exports_all():
-    """prompts 包统一导出全部五个 system prompt。"""
+    """prompts 包统一导出全部 system prompt。"""
     for name in (
         "TEACHER_SYSTEM_PROMPT",
+        "PROBE_GENERATOR_SYSTEM_PROMPT",
+        "EXPLAINER_SYSTEM_PROMPT",
         "DIAGNOSER_SYSTEM_PROMPT",
         "KNOWLEDGE_MODELER_SYSTEM_PROMPT",
-        "CONCEPT_VERIFIER_SYSTEM_PROMPT",
-        "SCENARIO_VERIFIER_SYSTEM_PROMPT",
     ):
         assert hasattr(prompts, name)

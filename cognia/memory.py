@@ -25,14 +25,12 @@ from cognia.schemas import (
     Observation,
     PointAttributes,
     Proficiency,
-    ProficiencyEntry,
 )
 
 from cognia.proficiency_engine import compute_proficiency
 from cognia import concept_merge, embedding
 
 # namespace 第一段（Store 的 namespace 是 tuple：类别 + user_id）
-PROFICIENCY_NS = "proficiency"
 PROFILE_NS = "profile"
 KNOWLEDGE_MODEL_NS = "knowledge_model"
 OBSERVATION_NS = "observation"
@@ -46,45 +44,6 @@ CONCEPT_NS = "concept"
 _pool_cache = None
 _checkpointer_cache = None
 _store_cache = None
-
-
-# ---- 熟练度（proficiency）：增量 Delta 读写 ----
-
-def append_proficiency_delta(store: BaseStore, user_id: str, entry: ProficiencyEntry) -> None:
-    """熟练度增量 Delta 追加（append，不覆盖，宪法 §5）。
-
-    每个 Delta 用「point_id + timestamp」做唯一 key，历史不可变、可审计。
-    namespace = ("proficiency", user_id)，天然按 user 隔离。
-    """
-    key = f"{entry.point_id}:{entry.timestamp.isoformat()}"
-    store.put((PROFICIENCY_NS, user_id), key, entry.model_dump(mode="json"))
-
-
-async def aappend_proficiency_delta(store, user_id: str, entry: ProficiencyEntry) -> None:
-    """append_proficiency_delta 的异步版本（供 AsyncPostgresStore 在事件循环内调用）。
-
-    同步 `store.put` 在 AsyncPostgresStore 上会因 @_check_loop 装饰器在主事件循环
-    线程里抛 InvalidStateError，因此在主事件循环线程内必须改用 `await store.aput`。
-    """
-    key = f"{entry.point_id}:{entry.timestamp.isoformat()}"
-    await store.aput((PROFICIENCY_NS, user_id), key, entry.model_dump(mode="json"))
-
-
-def get_proficiency_history(store: BaseStore, user_id: str, point_id: str) -> list[dict]:
-    """读某 user 某知识点的完整 Delta 历史（按 timestamp 升序）。"""
-    items = store.search((PROFICIENCY_NS, user_id))
-    deltas = [item.value for item in items if item.value.get("point_id") == point_id]
-    deltas.sort(key=lambda d: d["timestamp"])
-    return deltas
-
-
-def get_current_proficiency(store: BaseStore, user_id: str, point_id: str) -> str | None:
-    """读某 user 某知识点的当前熟练度状态（最新 Delta 的 to_state）。
-
-    None 表示从未评估（unassessed）。
-    """
-    history = get_proficiency_history(store, user_id, point_id)
-    return history[-1]["to_state"] if history else None
 
 
 # ---- 观察记录（observation）：AI 观察样本，只追加 ----
@@ -118,8 +77,7 @@ def record_observation(store, user_id: str, observation: Observation) -> bool:
 async def arecord_observation(store, user_id: str, observation: Observation) -> bool:
     """record_observation 的异步版本（供主事件循环内调用）。
 
-    与 aappend_proficiency_delta 同理：AsyncPostgresStore 在主事件循环线程里
-    必须用 `await store.aput`。
+    AsyncPostgresStore 在主事件循环线程里必须用 `await store.aput`。
     """
     if store is None or not user_id:
         return False
@@ -221,8 +179,8 @@ def get_profile_dict(store: BaseStore, user_id: str) -> dict:
 async def aput_profile(store, user_id: str, key: str, value: dict) -> None:
     """put_profile 的异步版本（供主事件循环内调用）。
 
-    与 aappend_proficiency_delta 同理：AsyncPostgresStore 在主事件循环线程里
-    必须用 `await store.aput`，同步 `store.put` 会抛 InvalidStateError。
+    AsyncPostgresStore 在主事件循环线程里必须用 `await store.aput`，
+    同步 `store.put` 会抛 InvalidStateError。
     """
     await store.aput((PROFILE_NS, user_id), key, value)
 
@@ -511,29 +469,6 @@ def list_knowledge_models(store: BaseStore, user_id: str) -> list[dict]:
     return [item.value for item in items if item.value is not None]
 
 
-def list_current_proficiencies(store: BaseStore, user_id: str) -> dict[str, str]:
-    """读某 user 所有知识点的当前熟练度（每个 point 最新 Delta 的 to_state）。
-
-    store 为 None / user_id 缺失时返回空 dict（安全降级）。
-    返回 `{point_id: state}`；从未评估过的 point 不在结果里（由调用方补 unassessed）。
-    """
-    if store is None or not user_id:
-        return {}
-    items = store.search((PROFICIENCY_NS, user_id))
-    latest: dict[str, dict] = {}
-    for item in items:
-        value = item.value or {}
-        point_id = value.get("point_id")
-        to_state = value.get("to_state")
-        ts = value.get("timestamp") or ""
-        if not point_id or not to_state:
-            continue
-        # ISO 8601 UTC 时间戳可字典序比较，取每个 point 的最新 Delta
-        if point_id not in latest or ts > latest[point_id]["ts"]:
-            latest[point_id] = {"ts": ts, "state": to_state}
-    return {pid: v["state"] for pid, v in latest.items()}
-
-
 async def alist_knowledge_models(store, user_id: str) -> list[dict]:
     """list_knowledge_models 的异步版本（供主事件循环内的 async endpoint 调用）。
 
@@ -546,34 +481,11 @@ async def alist_knowledge_models(store, user_id: str) -> list[dict]:
     return [item.value for item in items if item.value is not None]
 
 
-async def alist_current_proficiencies(store, user_id: str) -> dict[str, str]:
-    """list_current_proficiencies 的异步版本（供主事件循环内的 async endpoint 调用）。
-
-    同理：AsyncPostgresStore 必须用 `await store.asearch(...)`。逻辑与同步版一致。
-    """
-    if store is None or not user_id:
-        return {}
-    items = await store.asearch((PROFICIENCY_NS, user_id))
-    latest: dict[str, dict] = {}
-    for item in items:
-        value = item.value or {}
-        point_id = value.get("point_id")
-        to_state = value.get("to_state")
-        ts = value.get("timestamp") or ""
-        if not point_id or not to_state:
-            continue
-        if point_id not in latest or ts > latest[point_id]["ts"]:
-            latest[point_id] = {"ts": ts, "state": to_state}
-    return {pid: v["state"] for pid, v in latest.items()}
-
-
 async def alist_authoritative_proficiencies(store, user_id: str) -> dict[str, str]:
     """读某 user 全部知识点的权威熟练度（观察历史 → BKT 融合 → mapped_state）。
 
-    与 list_current_proficiencies / alist_current_proficiencies 的关键区别：
-    后者读旧 proficiency Delta 的 to_state（AI 诊断直接落库的结论），本函数读
-    observation 样本并经 BKT 算法融合出权威状态——知识版图子系统的核心语义
-    「AI 只提交观察值，系统算法定级」。
+    本函数读 observation 样本并经 BKT 算法融合出权威状态——知识版图子系统的
+    核心语义「AI 只提交观察值，系统算法定级」。
 
     返回 `{point_id: mapped_state}`；从未评估过的 point 不在结果里（由调用方补
     unassessed）。遍历 knowledge_model 的每个 point，用其 attributes（难度 /

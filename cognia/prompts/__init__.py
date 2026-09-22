@@ -5,7 +5,7 @@
 
 各文件对应原模块：
 - teacher.py：教学 Agent
-- learning_engine.py：诊断器 / 知识建模器 / 验证器（原 learning_engine.py）
+- learning_engine.py：诊断器 / 知识建模器（原 learning_engine.py）
 """
 
 from cognia.prompts.teacher import (
@@ -14,10 +14,8 @@ from cognia.prompts.teacher import (
     TEACHER_SYSTEM_PROMPT,
 )
 from cognia.prompts.learning_engine import (
-    CONCEPT_VERIFIER_SYSTEM_PROMPT,
     DIAGNOSER_SYSTEM_PROMPT,
     KNOWLEDGE_MODELER_SYSTEM_PROMPT,
-    SCENARIO_VERIFIER_SYSTEM_PROMPT,
 )
 
 __all__ = [
@@ -26,6 +24,4 @@ __all__ = [
     "EXPLAINER_SYSTEM_PROMPT",
     "DIAGNOSER_SYSTEM_PROMPT",
     "KNOWLEDGE_MODELER_SYSTEM_PROMPT",
-    "CONCEPT_VERIFIER_SYSTEM_PROMPT",
-    "SCENARIO_VERIFIER_SYSTEM_PROMPT",
 ]

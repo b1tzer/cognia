@@ -22,14 +22,6 @@ DIAGNOSER_SYSTEM_PROMPT = """你是 Cognia 的认知诊断器。你的唯一职�
 1. 证据必须来自用户原话片段，严禁脑补（spec §6）。
 2. 「不知道」≠「答不好」：unknown 必须有明确否定证据；有明显逻辑错误应判 misconception/partial，不得粗暴判 unknown。
 3. 无法区分时一律 unassessed。
-4. 你只输出诊断候选，不负责最终状态迁移（迁移由状态机裁决）。"""
+4. 你只输出诊断候选（观察值），不负责最终状态迁移（权威状态由系统 BKT 算法融合观察历史后算出）。"""
 
 KNOWLEDGE_MODELER_SYSTEM_PROMPT = "你是 Cognia 的知识建模器。将学习目标拆解为知识点。"
-
-CONCEPT_VERIFIER_SYSTEM_PROMPT = (
-    "你是 Cognia 的概念解释验证器。判断用户回答是否准确、完整地解释了当前知识点的核心概念。"
-)
-
-SCENARIO_VERIFIER_SYSTEM_PROMPT = (
-    "你是 Cognia 的场景辨析验证器。判断用户回答是否体现对场景/边界/反例的正确辨析能力。"
-)

@@ -3,19 +3,19 @@
 把认知模型的核心操作封装为 LangChain `@tool`，回归宪法 §1「有副作用的操作只允许
 放在 tool 节点」。工具分三类：
 
-1. **读**（无副作用，Agent 可自由调用）：读熟练度、读知识模型。
-2. **写**（有副作用，内部强制走三层闸门）：`propose_diagnosis` —— LLM 只能「提议
-   诊断」，最终状态迁移由「诊断 → 双重验证 → 状态机」在工具内部裁决，Agent 无法旁路。
+1. **读**（无副作用，Agent 可自由调用）：读权威熟练度、读知识模型。
+2. **写**（只追加观察样本，不直接改权威状态）：`propose_diagnosis` /
+   `record_observation` —— AI 只能「提交观察值」，权威认知状态由系统 BKT 算法
+   融合观察历史后算出（`query_proficiency`），AI 无法旁路、无权直接改写。
 3. **教学**（生成型，无长期副作用）：生成探针问题、生成讲解。
 
 工具通过工厂 `build_cognia_tools()` 构建，依赖（diagnoser / planner / teacher / store）
 以闭包注入，工具签名只暴露 LLM 能填写的简单参数（str / list / dict）。
 
 安全边界（不可破坏）：
-- `propose_diagnosis` 内部完整复用 `run_diagnosis` → `run_verification` →
-  `resolve_migration` 三层闸门；中 / 低置信度一律不迁移；mastered 必须双重验证全过。
-- 产生的 Proficiency Delta 直接增量写入 store（副作用隔离在 tool），幂等
-  （key = point_id:timestamp）。
+- `propose_diagnosis` / `record_observation` 内部 = 诊断 → 提交观察（只追加）→
+  查询权威状态；AI 只能提交观察值，权威状态由 BKT 算法融合观察历史算出。
+- 观察样本（observation）只追加、不覆盖，key = point_id:timestamp，幂等可审计。
 """
 
 import hashlib
@@ -164,7 +164,7 @@ def _search_web(query: str, max_results: int = 5) -> list[dict]:
 def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
     """构建认知模型工具集（闭包注入模型与存储依赖）。
 
-    - diagnoser：诊断 + 双重验证（run_diagnosis / run_verification）
+    - diagnoser：诊断（run_diagnosis，产出候选观察值）
     - planner：知识模型构建
     - teacher：探针问题 / 讲解生成
     - store：长期 Store（熟练度 / 知识模型持久化），None 时跳过持久化（测试 / 纯推理）

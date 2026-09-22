@@ -1,5 +1,11 @@
 # Cognia 五态认知状态转移矩阵（State Machine）
 
+> ⚠️ **已废弃（2026-09）**：本文档描述的「诊断 → 双重验证 → 状态机迁移」旧架构已被
+> 「观察样本 → BKT 融合 → 权威状态」新架构取代（见 `cognia/proficiency_engine.py`）。
+> 状态迁移裁决逻辑（`can_transition` / `is_mastered_migration_allowed`，原
+> `cognia/state_machine.py`）已删除；权威认知状态改由 BKT 算法融合观察历史算出，
+> AI 只能提交观察值、无权直接改写。本文档仅作历史记录保留，不再对应任何可执行代码。
+
 > 本文档定义 Cognia 的核心状态机——五种认知状态之间「哪些转换允许、需要什么证据、哪些禁止」。
 > 它是 spec v2.0 §2 五态定义与 plan §3 状态机设计的领域核心，被 spec 与 plan 共同引用。
 > 状态迁移的统一前提：所有迁移都要求「高置信度」（中 / 低置信度一律不迁移，见 clarifications Q4）。

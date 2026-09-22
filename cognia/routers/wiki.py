@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from cognia import wiki
 from cognia.schemas import WikiAuthor, WikiPage
 from cognia.wiki_repo import WikiRepoError
+from cognia.wiki_summarize import summarize_thread_to_wiki
 
 router = APIRouter()
 
@@ -40,6 +41,13 @@ class RollbackRequest(BaseModel):
     """回滚请求体。"""
 
     commit_hash: str
+
+
+class SummarizeRequest(BaseModel):
+    """总结会话为 wiki 草稿的请求体。"""
+
+    thread_id: str
+    title: str | None = None
 
 
 def _store(request: Request):
@@ -156,3 +164,31 @@ async def wiki_rollback(
     return await _call(
         wiki.rollback, store, user_id, page_id, req.commit_hash, WikiAuthor.USER.value,
     )
+
+
+@router.post("/wiki/summarize")
+async def summarize_wiki(request: Request, req: SummarizeRequest, user_id: str | None = None):
+    """把某会话总结为 wiki 草稿（前端「生成 wiki」按钮触发）。
+
+    读该 thread 对话历史 → LLM 提炼为 markdown → 写 wiki 草稿（author=ai +
+    溯源字段 source_thread_id/evidence）。空对话返回 ok=False/reason=empty
+    （边界，不算错误），前端据此提示「无可总结」；底层异常按语义转 400/503。
+    """
+    _require_user(user_id)
+    store = _require_store(request)
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    if checkpointer is None:
+        raise HTTPException(status_code=503, detail="会话历史不可用，无法总结")
+
+    result = await summarize_thread_to_wiki(
+        checkpointer, store, user_id, req.thread_id, title_hint=req.title,
+    )
+    if not result.get("ok"):
+        reason = result.get("reason", "unknown")
+        if reason == "empty":
+            return {"ok": False, "reason": "empty", "message": "本次会话无可总结内容"}
+        raise HTTPException(
+            status_code=400 if reason == "invalid_slug" else 503,
+            detail=result.get("reason", "总结失败"),
+        )
+    return result

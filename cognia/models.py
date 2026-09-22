@@ -247,16 +247,28 @@ def invoke_structured(model, schema, messages):
 
 
 def structured_output(model, schema, messages):
-    """结构化输出的统一入口：优先 with_structured_output，返回 None 则降级解析。
+    """结构化输出的统一入口：function calling（tool_choice=auto），失败/None 降级解析。
 
-    背景见 invoke_structured：本地 adapter（工蜂 Gateway）对模糊/非常规输入可能
-    不调用工具（finish_reason=stop），导致 with_structured_output 返回 None。此函数
-    把「先尝试 function calling、失败再降级普通 invoke + 手动 JSON 解析」封装为单一
-    入口，供 learning_engine 等处复用，避免重复实现。
+    实测定位（2026-09-22，见 scripts/bisect_502.py）：本地 adapter（工蜂 Gateway）
+    不支持 function calling 的「强制指定工具名」tool_choice（即
+    {"type":"function","function":{"name":...}}），会以 502/400
+    "rejected by an internal MaaS component" 拒绝请求。而 LangChain 的
+    with_structured_output(method="function_calling") 默认就是强制指定工具名
+    （tool_choice=tool_name），这正是此前诊断崩溃（SocketError "other side closed" /
+    INCOMPLETE_STREAM）的根因——不是 schema 嵌套引用问题，也不是模型不可控。
+
+    修复：显式传 tool_choice="auto" 覆盖 LangChain 默认，让模型自行决定是否调用工具，
+    实测 deepseek-v4-pro 走 auto 稳定返回结构化结果（Diagnosis）。
+
+    仍保留降级：若 function calling 返回 None（模糊输入，如「开始」）或抛异常，
+    降级到普通 invoke + JSON Schema 强约束 + 手动解析，避免炸穿 tool 节点中断 SSE 流。
     """
-    result = model.with_structured_output(schema).invoke(messages)
-    if result is not None:
-        return result
+    try:
+        result = model.with_structured_output(schema, tool_choice="auto").invoke(messages)
+        if result is not None:
+            return result
+    except Exception as exc:  # 网关异常等，降级而非崩溃
+        print(f"[Cognia] with_structured_output 失败，降级到普通 JSON 解析：{exc}")
     return invoke_structured(model, schema, messages)
 
 

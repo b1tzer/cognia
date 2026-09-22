@@ -47,7 +47,9 @@ class ScriptedLLM:
         self._responses = list(responses)
         self.calls = []
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, **kwargs):
+        # 对齐真实 LangChain 模型签名：structured_output 会传 tool_choice="auto"
+        # 等 kwargs，mock 需接受但忽略。
         return self
 
     def invoke(self, messages):

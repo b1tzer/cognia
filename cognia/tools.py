@@ -180,7 +180,24 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
             name=point_name,
             description=point_description,
         )
-        diagnosis = run_diagnosis(_get_diagnoser(), point, question, user_answer)
+        try:
+            diagnosis = run_diagnosis(_get_diagnoser(), point, question, user_answer)
+        except Exception as exc:
+            # 诊断模型彻底失败（如上游 MaaS 持续 502）时安全降级：不提交观察，
+            # 返回明确失败信号让 Agent 转讲解/追问，而不是让异常炸穿 tool 节点、
+            # 中断整个 SSE 流（前端表现为 SocketError "other side closed" /
+            # INCOMPLETE_STREAM）。
+            print(f"[Cognia] propose_diagnosis 诊断失败，安全降级：{exc}")
+            return json.dumps({
+                "diagnosed_state": CognitiveState.UNKNOWN.value,
+                "confidence": Confidence.LOW.value,
+                "evidence": [],
+                "recorded": False,
+                "authoritative_state": "unassessed",
+                "latent_value": None,
+                "observation_count": 0,
+                "error": "诊断模型调用失败，已跳过本次诊断",
+            }, ensure_ascii=False)
 
         # 诊断 = 提交观察样本（只追加，不直接改写权威状态）
         observation = Observation(

@@ -13,6 +13,9 @@ dependencies:
   '@tanstack/react-virtual':
     specifier: ^3.14.13
     version: 3.14.13(react-dom@19.2.8)(react@19.2.8)
+  lucide-react:
+    specifier: 0.525.0
+    version: 0.525.0(react@19.2.8)
   next:
     specifier: 16.3.5
     version: 16.3.5(@babel/core@7.29.7)(@types/node@20.0.0)(react-dom@19.2.8)(react@19.2.8)

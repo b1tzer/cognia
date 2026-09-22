@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RefreshCw, Square, ThumbsDown, ThumbsUp, Wrench } from "lucide-react";
 import {
   CopilotKit,
   useAgent,
@@ -62,8 +63,9 @@ const MessageBubble = memo(function MessageBubble({
   if (role === "tool") {
     return (
       <div className="px-4 py-1 text-xs text-muted">
-        <span className="rounded bg-surface-muted px-2 py-1">
-          🔧 {toolName || "工具"} 调用完成
+        <span className="inline-flex items-center gap-1 rounded bg-surface-muted px-2 py-1">
+          <Wrench className="h-3 w-3" aria-hidden />
+          {toolName || "工具"} 调用完成
         </span>
       </div>
     );
@@ -109,31 +111,32 @@ const MessageBubble = memo(function MessageBubble({
               <button
                 onClick={() => onFeedback?.("up")}
                 title="回答有帮助"
-                className={`rounded-md px-2 py-1 text-sm transition ${
+                className={`inline-flex items-center justify-center rounded-md p-1.5 transition ${
                   feedback === "up"
                     ? "bg-accent/15 text-accent"
-                    : "text-muted hover:bg-surface-muted"
+                    : "text-muted hover:bg-surface-muted hover:text-foreground"
                 }`}
               >
-                👍
+                <ThumbsUp className="h-4 w-4" />
               </button>
               <button
                 onClick={() => onFeedback?.("down")}
                 title="回答有误"
-                className={`rounded-md px-2 py-1 text-sm transition ${
+                className={`inline-flex items-center justify-center rounded-md p-1.5 transition ${
                   feedback === "down"
                     ? "bg-accent/15 text-accent"
-                    : "text-muted hover:bg-surface-muted"
+                    : "text-muted hover:bg-surface-muted hover:text-foreground"
                 }`}
               >
-                👎
+                <ThumbsDown className="h-4 w-4" />
               </button>
               <button
                 onClick={onRetry}
                 title="重新生成这条回答"
-                className="rounded-md px-2 py-1 text-xs text-muted transition hover:bg-surface-muted hover:text-foreground"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted transition hover:bg-surface-muted hover:text-foreground"
               >
-                ↻ 重新生成
+                <RefreshCw className="h-3.5 w-3.5" />
+                重新生成
               </button>
             </div>
           )}
@@ -296,6 +299,9 @@ function ChatApp() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // 上次 run 是否因报错中断（SSE 流中断 / terminated 等）：true 时在消息末尾
+  // 显示「回答中断」提示条，而非让操作栏错位挂到上一条完整回答。
+  const [runError, setRunError] = useState(false);
   // 消息反馈（点赞 / 点踩）：{ messageId: "up" | "down" }，权威数据在服务端。
   const [feedbackMap, setFeedbackMap] = useState<FeedbackMap>({});
   // 视图切换：chat（对话）/ map（知识版图）/ wiki（个人 Wiki）
@@ -397,6 +403,17 @@ function ChatApp() {
       cancelled = true;
     };
   }, [ready, currentThreadId]);
+
+  // 订阅 agent 的 run 生命周期：报错中断时标记 runError，新 run 开始时清除。
+  // 这样报错后能在消息末尾给出「重新生成」入口，而不是让操作栏错位到上一条。
+  useEffect(() => {
+    if (!agent) return;
+    const sub = agent.subscribe({
+      onRunInitialized: () => setRunError(false),
+      onRunErrorEvent: () => setRunError(true),
+    });
+    return () => sub.unsubscribe();
+  }, [agent]);
 
   // 滚动到底部（瞬时，避免流式输出时 smooth 滚动卡顿）。
   const scrollToBottom = useCallback(() => {
@@ -653,7 +670,7 @@ function ChatApp() {
   // 最后一条「正式回答」的 assistant 消息 id：只有它挂操作栏（重试 + 点赞点踩），
   // 中间的过渡思考 / 工具调用不提供这些操作。流式输出中暂不显示，等回答完整。
   const lastAssistantId = useMemo(() => {
-    if (agent?.isRunning) return null;
+    if (agent?.isRunning || runError) return null;
     for (let i = displayMessages.length - 1; i >= 0; i--) {
       const m = displayMessages[i].message;
       if (
@@ -665,7 +682,7 @@ function ChatApp() {
       }
     }
     return null;
-  }, [displayMessages, agent?.isRunning]);
+  }, [displayMessages, agent?.isRunning, runError]);
 
   const renderMessageItem = (item: (typeof displayMessages)[number]) => {
     if (item.toolCall) {
@@ -680,8 +697,9 @@ function ChatApp() {
     if (!item.message) {
       return (
         <div className="px-4 py-1 text-xs text-muted">
-          <span className="rounded bg-surface-muted px-2 py-1">
-            🔧 {item.toolName || "工具"} 调用中…
+          <span className="inline-flex items-center gap-1 rounded bg-surface-muted px-2 py-1">
+            <Wrench className="h-3 w-3" aria-hidden />
+            {item.toolName || "工具"} 调用中…
           </span>
         </div>
       );
@@ -797,6 +815,23 @@ function ChatApp() {
                   </div>
                 );
               })}
+              {runError && !agent?.isRunning && (
+                <div className="flex justify-start px-4 py-2">
+                  <div className="flex max-w-[85%] flex-col items-start gap-1.5">
+                    <div className="rounded-2xl bg-surface-muted px-4 py-2 text-sm text-muted">
+                      回答意外中断，请重新生成
+                    </div>
+                    <button
+                      onClick={() => void handleRetry()}
+                      title="重新生成"
+                      className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted transition hover:bg-surface-muted hover:text-foreground"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      重新生成
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -820,9 +855,10 @@ function ChatApp() {
               {sending ? (
                 <button
                   onClick={handleStop}
-                  className="rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90"
                 >
-                  ⏹ 停止
+                  <Square className="h-3.5 w-3.5 fill-current" aria-hidden />
+                  停止
                 </button>
               ) : (
                 <button

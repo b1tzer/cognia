@@ -41,8 +41,9 @@ from ag_ui.core.types import RunAgentInput
 from ag_ui.encoder import EventEncoder
 from copilotkit import CopilotKitMiddleware, CopilotKitState, LangGraphAGUIAgent
 
-from cognia import memory, models, threads
+from cognia import feedback, memory, models, threads
 from cognia.prompts.teacher import TEACHER_SYSTEM_PROMPT
+from cognia.routers.feedback import router as feedback_router
 from cognia.routers.knowledge_map import router as knowledge_map_router
 from cognia.routers.threads import auto_title_thread, router as threads_router
 from cognia.routers.wiki import router as wiki_router
@@ -113,6 +114,7 @@ async def lifespan(app: FastAPI):
         checkpointer = await memory.get_checkpointer()
         store = await memory.get_store()
         await threads.ensure_schema(pool)
+        await feedback.ensure_schema(pool)
         app.state.pool = pool
         app.state.checkpointer = checkpointer
         app.state.store = store
@@ -189,6 +191,7 @@ def health():
 
 
 # 挂载业务查询与会话管理 router（与 AG-UI 接入解耦）。
+app.include_router(feedback_router)
 app.include_router(knowledge_map_router)
 app.include_router(threads_router)
 app.include_router(wiki_router)

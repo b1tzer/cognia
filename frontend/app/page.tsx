@@ -29,6 +29,12 @@ import {
   renameThread,
   type Thread,
 } from "./lib/threads";
+import {
+  deleteFeedback,
+  listFeedback,
+  upsertFeedback,
+  type FeedbackMap,
+} from "./lib/feedback";
 import { getOrCreateUserId } from "./lib/user-id";
 
 // localStorage 只保存「当前选中的 threadId」。会话列表与历史消息的权威数据
@@ -39,10 +45,18 @@ const MessageBubble = memo(function MessageBubble({
   message,
   toolName,
   isActiveReasoning,
+  feedback,
+  onFeedback,
+  showActions,
+  onRetry,
 }: {
   message: any;
   toolName?: string;
   isActiveReasoning?: boolean;
+  feedback?: "up" | "down" | null;
+  onFeedback?: (value: "up" | "down") => void;
+  showActions?: boolean;
+  onRetry?: () => void;
 }) {
   const role = message.role as string;
   if (role === "tool") {
@@ -86,8 +100,43 @@ const MessageBubble = memo(function MessageBubble({
           {text}
         </div>
       ) : (
-        <div className="max-w-[85%] rounded-2xl bg-surface-muted px-4 py-2 text-sm text-foreground">
-          <Markdown content={markdown} />
+        <div className="flex max-w-[85%] flex-col items-start gap-1">
+          <div className="rounded-2xl bg-surface-muted px-4 py-2 text-sm text-foreground">
+            <Markdown content={markdown} />
+          </div>
+          {showActions && (
+            <div className="flex items-center gap-1 pl-1">
+              <button
+                onClick={() => onFeedback?.("up")}
+                title="回答有帮助"
+                className={`rounded-md px-2 py-1 text-sm transition ${
+                  feedback === "up"
+                    ? "bg-accent/15 text-accent"
+                    : "text-muted hover:bg-surface-muted"
+                }`}
+              >
+                👍
+              </button>
+              <button
+                onClick={() => onFeedback?.("down")}
+                title="回答有误"
+                className={`rounded-md px-2 py-1 text-sm transition ${
+                  feedback === "down"
+                    ? "bg-accent/15 text-accent"
+                    : "text-muted hover:bg-surface-muted"
+                }`}
+              >
+                👎
+              </button>
+              <button
+                onClick={onRetry}
+                title="重新生成这条回答"
+                className="rounded-md px-2 py-1 text-xs text-muted transition hover:bg-surface-muted hover:text-foreground"
+              >
+                ↻ 重新生成
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -247,6 +296,8 @@ function ChatApp() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // 消息反馈（点赞 / 点踩）：{ messageId: "up" | "down" }，权威数据在服务端。
+  const [feedbackMap, setFeedbackMap] = useState<FeedbackMap>({});
   // 视图切换：chat（对话）/ map（知识版图）/ wiki（个人 Wiki）
   const [view, setView] = useState<"chat" | "map" | "wiki">("chat");
   const [mapData, setMapData] = useState<KnowledgeMapGoal[]>([]);
@@ -330,6 +381,22 @@ function ChatApp() {
       cancelled = true;
     };
   }, [ready, currentThreadId, agent]);
+
+  // 切换会话时拉取该会话的消息反馈，恢复点赞 / 点踩高亮。
+  useEffect(() => {
+    if (!ready || !currentThreadId) return;
+    let cancelled = false;
+    listFeedback(currentThreadId, getOrCreateUserId())
+      .then((map) => {
+        if (!cancelled) setFeedbackMap(map);
+      })
+      .catch(() => {
+        // 拉取失败静默降级：feedback 高亮为空，不影响对话主流程。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, currentThreadId]);
 
   // 滚动到底部（瞬时，避免流式输出时 smooth 滚动卡顿）。
   const scrollToBottom = useCallback(() => {
@@ -486,6 +553,73 @@ function ChatApp() {
     }
   };
 
+  // 中断当前正在生成的回答（CopilotKit v2 原生 abortRun）。
+  const handleStop = useCallback(() => {
+    agent?.abortRun();
+  }, [agent]);
+
+  // 重试：截断到最后一条 user 消息，重新生成回答。
+  // 后端 ag_ui_langgraph 检测到「checkpoint 消息数 > 前端消息数」会自动
+  // time-travel 到该 user 消息之前 fork 出新分支重新生成，无需额外回滚。
+  const handleRetry = useCallback(async () => {
+    if (!agent || sending) return;
+    const msgs = agent.messages;
+    let lastUserIndex = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "user") {
+        lastUserIndex = i;
+        break;
+      }
+    }
+    if (lastUserIndex < 0) return;
+    // 保留最后一条 user 消息及其之前的历史，删除之后的 assistant / tool 回复。
+    agent.setMessages(msgs.slice(0, lastUserIndex + 1));
+    setSending(true);
+    try {
+      await copilotkit.runAgent({
+        agent,
+        forwardedProps: { user_id: getOrCreateUserId() },
+      });
+    } catch (err) {
+      console.error("重新生成失败", err);
+    } finally {
+      setSending(false);
+    }
+  }, [agent, copilotkit, sending]);
+
+  // 点赞 / 点踩：乐观更新 + 持久化；再点同一种取消，点另一种切换。
+  const handleFeedback = useCallback(
+    async (messageId: string, value: "up" | "down") => {
+      if (!currentThreadId) return;
+      const userId = getOrCreateUserId();
+      const current = feedbackMap[messageId];
+      if (current === value) {
+        setFeedbackMap((prev) => {
+          const next = { ...prev };
+          delete next[messageId];
+          return next;
+        });
+      } else {
+        setFeedbackMap((prev) => ({ ...prev, [messageId]: value }));
+      }
+      try {
+        if (current === value) {
+          await deleteFeedback(currentThreadId, messageId, userId);
+        } else {
+          await upsertFeedback(currentThreadId, messageId, userId, value);
+        }
+      } catch (err) {
+        console.error("反馈操作失败", err);
+        // 失败回滚：重新拉取权威状态，保证与服务端一致。
+        const map = await listFeedback(currentThreadId, userId).catch(
+          () => feedbackMap,
+        );
+        setFeedbackMap(map);
+      }
+    },
+    [currentThreadId, feedbackMap],
+  );
+
   const loadKnowledgeMap = useCallback(async () => {
     setMapLoading(true);
     setMapError(null);
@@ -516,6 +650,23 @@ function ChatApp() {
     [messages, agent?.isRunning],
   );
 
+  // 最后一条「正式回答」的 assistant 消息 id：只有它挂操作栏（重试 + 点赞点踩），
+  // 中间的过渡思考 / 工具调用不提供这些操作。流式输出中暂不显示，等回答完整。
+  const lastAssistantId = useMemo(() => {
+    if (agent?.isRunning) return null;
+    for (let i = displayMessages.length - 1; i >= 0; i--) {
+      const m = displayMessages[i].message;
+      if (
+        m?.role === "assistant" &&
+        typeof m.content === "string" &&
+        m.content.trim()
+      ) {
+        return m.id;
+      }
+    }
+    return null;
+  }, [displayMessages, agent?.isRunning]);
+
   const renderMessageItem = (item: (typeof displayMessages)[number]) => {
     if (item.toolCall) {
       const rendered = renderToolCall({
@@ -535,11 +686,25 @@ function ChatApp() {
         </div>
       );
     }
+    const isLastAssistant =
+      item.message?.role === "assistant" &&
+      item.message?.id != null &&
+      item.message.id === lastAssistantId;
     return (
       <MessageBubble
         message={item.message}
         toolName={item.toolName}
         isActiveReasoning={item.isActiveReasoning}
+        feedback={
+          isLastAssistant ? (feedbackMap[item.message.id] ?? null) : null
+        }
+        onFeedback={
+          isLastAssistant
+            ? (value) => void handleFeedback(item.message.id, value)
+            : undefined
+        }
+        showActions={isLastAssistant}
+        onRetry={isLastAssistant ? () => void handleRetry() : undefined}
       />
     );
   };
@@ -652,13 +817,22 @@ function ChatApp() {
                 placeholder="输入消息，Enter 发送，Shift+Enter 换行"
                 className="flex-1 rounded-xl border border-line px-4 py-2 text-sm text-foreground outline-none focus:border-accent"
               />
-              <button
-                onClick={() => void handleSend()}
-                disabled={sending || !input.trim()}
-                className="rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90 disabled:opacity-40"
-              >
-                {sending ? "发送中…" : "发送"}
-              </button>
+              {sending ? (
+                <button
+                  onClick={handleStop}
+                  className="rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90"
+                >
+                  ⏹ 停止
+                </button>
+              ) : (
+                <button
+                  onClick={() => void handleSend()}
+                  disabled={!input.trim()}
+                  className="rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90 disabled:opacity-40"
+                >
+                  发送
+                </button>
+              )}
             </div>
           </div>
         )}

@@ -16,6 +16,7 @@ import KnowledgeMap, {
   type KnowledgeMapData,
   type KnowledgeMapGoal,
 } from "./components/knowledge-map";
+import WikiView from "./components/wiki-view";
 import {
   cogniaToolRenderers,
   consumePendingPracticeAnswer,
@@ -247,8 +248,8 @@ function ChatApp() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  // 视图切换：chat（对话）/ map（知识版图）
-  const [view, setView] = useState<"chat" | "map">("chat");
+  // 视图切换：chat（对话）/ map（知识版图）/ wiki（个人 Wiki）
+  const [view, setView] = useState<"chat" | "map" | "wiki">("chat");
   const [mapData, setMapData] = useState<KnowledgeMapGoal[]>([]);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
@@ -573,14 +574,36 @@ function ChatApp() {
               主动发现认知盲区，动态引导掌握知识点
             </p>
           </div>
-          <button
-            onClick={() => (view === "chat" ? showMap() : setView("chat"))}
-            className="rounded-lg border border-line px-3 py-1.5 text-sm text-foreground transition hover:bg-surface-muted"
-          >
-            {view === "chat" ? "知识版图" : "返回对话"}
-          </button>
+          <div className="flex items-center gap-2">
+            {(
+              [
+                { key: "chat", label: "对话" },
+                { key: "map", label: "知识版图" },
+                { key: "wiki", label: "Wiki" },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() =>
+                  tab.key === "map" ? showMap() : setView(tab.key)
+                }
+                className={`rounded-lg px-3 py-1.5 text-sm transition ${
+                  view === tab.key
+                    ? "bg-ink text-white"
+                    : "text-foreground hover:bg-surface-muted"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </header>
 
+        {view === "wiki" ? (
+          <div className="min-h-0 flex-1 bg-surface">
+            <WikiView currentThreadId={currentThreadId} />
+          </div>
+        ) : (
         <div
           ref={scrollContainerRef}
           className="min-h-0 flex-1 overflow-y-auto bg-surface"
@@ -639,6 +662,7 @@ function ChatApp() {
             </div>
           )}
         </div>
+        )}
 
         {view === "chat" && (
           <div className="border-t border-line bg-surface p-4">

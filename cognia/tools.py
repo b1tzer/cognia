@@ -4,17 +4,17 @@
 放在 tool 节点」。工具分三类：
 
 1. **读**（无副作用，Agent 可自由调用）：读权威熟练度、读知识模型。
-2. **写**（只追加观察样本，不直接改权威状态）：`propose_diagnosis` /
-   `record_observation` —— AI 只能「提交观察值」，权威认知状态由系统 BKT 算法
-   融合观察历史后算出（`query_proficiency`），AI 无法旁路、无权直接改写。
+2. **写**（只追加观察样本，不直接改权威状态）：`propose_diagnosis` —— AI 诊断后
+   提交观察样本，权威认知状态由系统 BKT 算法融合观察历史后算出（`query_proficiency`），
+   AI 无法旁路、无权直接改写。
 3. **教学**（生成型，无长期副作用）：生成探针问题、生成讲解。
 
 工具通过工厂 `build_cognia_tools()` 构建，依赖（diagnoser / planner / teacher / store）
 以闭包注入，工具签名只暴露 LLM 能填写的简单参数（str / list / dict）。
 
 安全边界（不可破坏）：
-- `propose_diagnosis` / `record_observation` 内部 = 诊断 → 提交观察（只追加）→
-  查询权威状态；AI 只能提交观察值，权威状态由 BKT 算法融合观察历史算出。
+- `propose_diagnosis` 内部 = 诊断 → 提交观察（只追加）→ 查询权威状态；AI 只能
+  通过 `propose_diagnosis` 提交观察值，权威状态由 BKT 算法融合观察历史算出。
 - 观察样本（observation）只追加、不覆盖，key = point_id:timestamp，幂等可审计。
 """
 
@@ -208,64 +208,6 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
         return json.dumps(result, ensure_ascii=False)
 
     @tool
-    def record_observation(
-        point_id: str,
-        observed_state: str,
-        confidence: str,
-        evidence: list[str],
-        config: RunnableConfig,
-    ) -> str:
-        """记录一条对用户理解程度的观察样本（只追加，不直接改写权威熟练度）。
-
-        重要：本工具只「追加观察」，权威熟练度由系统用 BKT 算法融合观察历史后
-        计算得出。AI 无权直接改写权威状态，只能提交观察值，然后用 query_proficiency
-        查询系统计算出的权威结果。
-
-        Args:
-            point_id: 知识点唯一 id。
-            observed_state: AI 判定的五态（unassessed/unknown/partial/misconception/mastered）。
-            confidence: AI 的置信度（high/medium/low）。
-            evidence: 用户原话片段列表（严禁脑补）。
-        """
-        user_id = get_user_id(config)
-
-        try:
-            state = CognitiveState(observed_state)
-        except (ValueError, TypeError):
-            return json.dumps(
-                {"recorded": False, "error": f"非法 observed_state: {observed_state}"},
-                ensure_ascii=False,
-            )
-
-        try:
-            conf = Confidence(confidence)
-        except (ValueError, TypeError):
-            return json.dumps(
-                {"recorded": False, "error": f"非法 confidence: {confidence}"},
-                ensure_ascii=False,
-            )
-
-        observation = Observation(
-            point_id=point_id,
-            observed_state=state,
-            confidence=conf,
-            evidence=evidence,
-        )
-
-        # store / user_id 缺失 → 安全降级（不落库）；unassessed / 空 evidence 由
-        # memory.record_observation 内部跳过并返回 False。
-        recorded = bool(
-            store and user_id and _record_observation(store, user_id, observation)
-        )
-
-        return json.dumps({
-            "recorded": recorded,
-            "point_id": point_id,
-            "observed_state": state.value,
-            "confidence": conf.value,
-        }, ensure_ascii=False)
-
-    @tool
     def query_proficiency(point_id: str, config: RunnableConfig) -> str:
         """查询系统对某知识点的权威熟练度（BKT 算法融合观察历史后算出的结果）。
 
@@ -382,9 +324,8 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
         return json.dumps(result, ensure_ascii=False)
 
     return {
-    "build_learning_goal": build_learning_goal,
+        "build_learning_goal": build_learning_goal,
         "propose_diagnosis": propose_diagnosis,
-        "record_observation": record_observation,
         "query_proficiency": query_proficiency,
         "generate_probe": generate_probe,
         "explain": explain,

@@ -26,11 +26,10 @@ if _LANGFUSE_PUBLIC_KEY and _LANGFUSE_SECRET_KEY and _LANGFUSE_HOST:
     try:
         from langfuse.langchain import CallbackHandler
 
-        LANGFUSE_HANDLER: "CallbackHandler | None" = CallbackHandler(
-            public_key=_LANGFUSE_PUBLIC_KEY,
-            secret_key=_LANGFUSE_SECRET_KEY,
-            host=_LANGFUSE_HOST,
-        )
+        # langfuse 3.x 的 CallbackHandler 为无参构造，public_key/secret_key/host
+        # 均从环境变量（LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST）读取，
+        # 由 server.py 入口的 load_dotenv() 注入。以下仅做存在性校验 + 构造。
+        LANGFUSE_HANDLER: "CallbackHandler | None" = CallbackHandler()
     except Exception as exc:  # 导入/初始化失败不阻断主流程
         print(f"[Cognia] Langfuse 初始化失败，已关闭可观测：{exc}")
         LANGFUSE_HANDLER = None

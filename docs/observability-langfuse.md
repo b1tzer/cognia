@@ -35,13 +35,28 @@ Langfuse（MIT 开源、可自托管、UI 好看、自动剥离底层 OTel 传�
 git clone https://github.com/langfuse/langfuse
 cd langfuse && docker compose up -d
 ```
-- Web UI：http://localhost:3000
-- 在 UI 里创建 project，拿到 API Keys。
+
+> **本地部署实战踩坑（本机已部署，UI 在 http://localhost:3001）**
+> 1. **端口冲突**：官方 compose 默认 `web:3000 / postgres:5432 / clickhouse:8123`，
+>    本机已被 Cognia 前端(3000)、`cognia-pg`(5432)、其他服务(8123) 占用，需在
+>    `docker-compose.yml` 把宿主映射改为 `web 3001 / postgres 5433 / clickhouse 8124`
+>    （容器间内部端口不变）。
+> 2. **v4 必须开 dual write mode**：Langfuse v4 默认 `LANGFUSE_MIGRATION_V4_WRITE_MODE=events_only`，
+>    会拒绝旧 SDK（如 langfuse 3.x Python SDK）的 trace 写入，事件只进 `events_core`
+>    而不展开到 UI 读取的 `traces`/`observations` 表（worker 报 `No partitions available`）。
+>    必须在 compose 的 `langfuse-worker-env` anchor 里加 `LANGFUSE_MIGRATION_V4_WRITE_MODE: dual`
+>    并 `docker compose down && docker compose up -d` 重启才生效。
+> 3. **客户端 SDK 契约**：langfuse 3.x 的 `CallbackHandler()` 为**无参构造**，
+>    public_key/secret_key/host 全部从环境变量读取（见 `cognia/observability.py`）。
+> 4. **预置 project**：本机 `.env` 用 `LANGFUSE_INIT_*` 预设了 org/project/keys
+>    （project: `cognia-prod`），无需进 UI 手动建。
+
+- Web UI：http://localhost:3001
 - `.env` 填：
   ```
   LANGFUSE_PUBLIC_KEY=pk-lf-...
   LANGFUSE_SECRET_KEY=sk-lf-...
-  LANGFUSE_HOST=http://localhost:3000
+  LANGFUSE_HOST=http://localhost:3001
   ```
 
 ## 验证

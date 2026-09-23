@@ -22,7 +22,7 @@ from cognia.prompts.learning_engine import (
 
 # ---- 知识模型构建 ----
 
-def build_knowledge_model(planner, goal: str) -> KnowledgeModel:
+def build_knowledge_model(planner, goal: str, config=None) -> KnowledgeModel:
     """构建知识模型：普通文本调用 + 扁平 JSON 数组解析。
 
     背景：adapter 上游工蜂 Gateway 对带嵌套对象引用（$defs/$ref）的 JSON Schema 的
@@ -42,7 +42,7 @@ def build_knowledge_model(planner, goal: str) -> KnowledgeModel:
             '"prerequisites": ["依赖的知识点id"]}]'
         )),
     ]
-    result = planner.invoke(messages)
+    result = planner.invoke(messages, config)
     if isinstance(result, KnowledgeModel):
         return result
     text = result.content if hasattr(result, "content") else str(result)
@@ -57,7 +57,7 @@ def build_knowledge_model(planner, goal: str) -> KnowledgeModel:
                 f"你上一次的输出无法解析为合法 JSON，错误信息：{exc}\n"
                 "请重新只输出一个合法 JSON 数组，不要输出任何解释、注释或 markdown 代码块。"
             )),
-        ])
+        ], config)
         if isinstance(retry_result, KnowledgeModel):
             return retry_result
         retry_text = retry_result.content if hasattr(retry_result, "content") else str(retry_result)
@@ -68,7 +68,7 @@ def build_knowledge_model(planner, goal: str) -> KnowledgeModel:
 
 # ---- 诊断（LLM 判定，产出候选观察值）----
 
-def run_diagnosis(diagnoser, point: KnowledgePoint, question: str, user_answer: str) -> Diagnosis:
+def run_diagnosis(diagnoser, point: KnowledgePoint, question: str, user_answer: str, config=None) -> Diagnosis:
     """基于用户表达诊断五态 + 置信度 + 证据（独立严格 prompt）。
 
     产出的是「候选观察值」，仅作为 Observation 提交；最终权威状态由系统 BKT
@@ -81,6 +81,6 @@ def run_diagnosis(diagnoser, point: KnowledgePoint, question: str, user_answer: 
             f"探针问题：{question}\n"
             f"用户回答：{user_answer}\n\n请诊断。"
         )),
-    ])
+    ], config=config)
     diagnosis.point_id = point.id
     return diagnosis

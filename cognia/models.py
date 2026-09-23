@@ -221,7 +221,7 @@ def _extract_json(text: str):
         return json.loads(_repair_json(t))
 
 
-def invoke_structured(model, schema, messages):
+def invoke_structured(model, schema, messages, config=None):
     """结构化输出的降级兜底：普通 invoke + JSON Schema 强约束 + 手动解析。
 
     背景：本地 adapter（工蜂 Gateway）支持 function calling，但有两个不稳定点：
@@ -241,12 +241,12 @@ def invoke_structured(model, schema, messages):
         "markdown 代码块，只输出 JSON 本身：\n"
         f"{json_schema}"
     )
-    result = model.invoke([*messages, ("human", instruction)])
+    result = model.invoke([*messages, ("human", instruction)], config)
     content = result.content if hasattr(result, "content") else str(result)
     return schema.model_validate(_extract_json(content))
 
 
-def structured_output(model, schema, messages):
+def structured_output(model, schema, messages, config=None):
     """结构化输出的统一入口：function calling（tool_choice=auto），失败/None 降级解析。
 
     实测定位（2026-09-22，见 scripts/bisect_502.py）：本地 adapter（工蜂 Gateway）
@@ -264,12 +264,12 @@ def structured_output(model, schema, messages):
     降级到普通 invoke + JSON Schema 强约束 + 手动解析，避免炸穿 tool 节点中断 SSE 流。
     """
     try:
-        result = model.with_structured_output(schema, tool_choice="auto").invoke(messages)
+        result = model.with_structured_output(schema, tool_choice="auto").invoke(messages, config)
         if result is not None:
             return result
     except Exception as exc:  # 网关异常等，降级而非崩溃
         print(f"[Cognia] with_structured_output 失败，降级到普通 JSON 解析：{exc}")
-    return invoke_structured(model, schema, messages)
+    return invoke_structured(model, schema, messages, config)
 
 
 def get_conversation_agent_model() -> ChatDeepSeek:

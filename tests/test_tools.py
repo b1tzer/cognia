@@ -52,7 +52,7 @@ class ScriptedLLM:
         # 等 kwargs，mock 需接受但忽略。
         return self
 
-    def invoke(self, messages):
+    def invoke(self, messages, config=None):
         self.calls.append(messages)
         assert self._responses, "ScriptedLLM 响应队列耗尽"
         return self._responses.pop(0)

@@ -92,7 +92,7 @@ class _ScriptedPlanner:
         self._contents = list(contents)
         self.calls = 0
 
-    def invoke(self, messages):
+    def invoke(self, messages, config=None):
         self.calls += 1
         assert self._contents, "planner 响应队列耗尽"
         return _Msg(self._contents.pop(0))

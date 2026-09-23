@@ -132,7 +132,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
             km = KnowledgeModel.model_validate(km_dict)
             verb = "复用"
         else:
-            km = build_knowledge_model(_get_planner(), goal)
+            km = build_knowledge_model(_get_planner(), goal, config)
             km.goal = goal
             if store and user_id:
                 # 语义合并：把 LLM 裸生成的 point_id 重写为跨对话全局稳定 id，
@@ -181,7 +181,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
             description=point_description,
         )
         try:
-            diagnosis = run_diagnosis(_get_diagnoser(), point, question, user_answer)
+            diagnosis = run_diagnosis(_get_diagnoser(), point, question, user_answer, config)
         except Exception as exc:
             # 诊断模型彻底失败（如上游 MaaS 持续 502）时安全降级：不提交观察，
             # 返回明确失败信号让 Agent 转讲解/追问，而不是让异常炸穿 tool 节点、
@@ -316,7 +316,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
         }, ensure_ascii=False)
 
     @tool
-    def generate_probe(point_name: str, point_description: str) -> str:
+    def generate_probe(point_name: str, point_description: str, config: RunnableConfig) -> str:
         """生成一个针对某知识点的开放式探针问题，引导用户用自己的话表达理解。
 
         Args:
@@ -326,12 +326,12 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
         result = _get_teacher().invoke([
             ("system", PROBE_GENERATOR_SYSTEM_PROMPT),
             ("human", f"知识点：{point_name}（{point_description}）"),
-        ])
+        ], config)
         content = result.content if hasattr(result, "content") else str(result)
         return content.strip()
 
     @tool
-    def explain(point_name: str, point_description: str, user_state: str) -> str:
+    def explain(point_name: str, point_description: str, user_state: str, config: RunnableConfig) -> str:
         """针对用户当前认知状态，用通俗方式讲解一个知识点。
 
         本工具会**先强制联网检索官方 / 权威资料**，再基于检索结果讲解，
@@ -363,7 +363,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
                 f"教学策略：{style_hint}\n\n"
                 f"检索资料：\n{refs}"
             )),
-        ])
+        ], config)
         content = result.content if hasattr(result, "content") else str(result)
         return content.strip()
 
@@ -398,7 +398,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
         thread_id = (config.get("configurable") or {}).get("thread_id")
         result = await summarize_thread_to_wiki(
             checkpointer, store, user_id, thread_id, model=_get_teacher(),
-            title_hint=title,
+            title_hint=title, config=config,
         )
         return json.dumps(result, ensure_ascii=False)
 

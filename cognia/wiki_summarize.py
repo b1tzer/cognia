@@ -67,7 +67,7 @@ def _sanitize_slug(slug: str) -> str:
     return f"wiki-{int(time.time())}"
 
 
-def _summarize(model, dialogue: list[dict], title_hint: str | None = None) -> WikiSummary | None:
+def _summarize(model, dialogue: list[dict], title_hint: str | None = None, config=None) -> WikiSummary | None:
     """用 LLM 把对话提炼为结构化 wiki 草稿，失败返回 None。"""
     conv = "\n".join(f"【{d['role']}】{d['content']}" for d in dialogue)
     hint = f"（期望标题参考：{title_hint}）" if title_hint else ""
@@ -75,14 +75,14 @@ def _summarize(model, dialogue: list[dict], title_hint: str | None = None) -> Wi
         return models.invoke_structured(model, WikiSummary, [
             ("system", _SUMMARIZE_SYSTEM),
             ("human", f"请把以下学习对话总结为一篇体系化的 wiki 文章{hint}：\n\n{conv}"),
-        ])
+        ], config)
     except Exception:
         return None
 
 
 async def summarize_thread_to_wiki(
     checkpointer, store, user_id: str, thread_id: str, model=None,
-    title_hint: str | None = None,
+    title_hint: str | None = None, config=None,
 ) -> dict:
     """把某会话总结为 wiki 草稿，返回 ``{"ok": True, "page": meta}`` 或 ``{"ok": False, "reason": ...}``。"""
     if checkpointer is None or store is None or not user_id or not thread_id:
@@ -99,7 +99,7 @@ async def summarize_thread_to_wiki(
     if not turns:
         return {"ok": False, "reason": "empty"}
 
-    summary = _summarize(model or models.get_planner_model(), dialogue, title_hint)
+    summary = _summarize(model or models.get_planner_model(), dialogue, title_hint, config)
     if summary is None:
         return {"ok": False, "reason": "summarize_failed"}
 

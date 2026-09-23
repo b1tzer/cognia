@@ -42,6 +42,7 @@ from ag_ui.encoder import EventEncoder
 from copilotkit import CopilotKitMiddleware, CopilotKitState, LangGraphAGUIAgent
 
 from cognia import feedback, memory, models, threads
+from cognia.observability import LANGFUSE_HANDLER
 from cognia.prompts.teacher import TEACHER_SYSTEM_PROMPT
 from cognia.routers.feedback import router as feedback_router
 from cognia.routers.knowledge_map import router as knowledge_map_router
@@ -165,11 +166,20 @@ async def cognia_agent_endpoint(input_data: RunAgentInput, request: Request):
     # 既避免并发请求共享 active_run 状态，又让 user_id 走 runtime context
     # （宪法 §5）。clone() 不接受 config 参数，故此处重建轻量包装对象。
     user_id = _extract_user_id(input_data)
+    agent_config: dict = {"configurable": {"user_id": user_id}}
+    # 可观测（Langfuse，可选）：三变量齐全时才注入 callback + 会话元数据，
+    # 否则 LANGFUSE_HANDLER 为 None，以下分支跳过，零侵入。见 cognia/observability.py。
+    if LANGFUSE_HANDLER is not None:
+        agent_config["callbacks"] = [LANGFUSE_HANDLER]
+        agent_config["metadata"] = {
+            "langfuse_user_id": user_id,
+            "langfuse_session_id": input_data.thread_id or "",
+        }
     request_agent = LangGraphAGUIAgent(
         name=_agent.name,
         description=_agent.description,
         graph=_agent.graph,
-        config={"configurable": {"user_id": user_id}},
+        config=agent_config,
     )
 
     async def event_generator():

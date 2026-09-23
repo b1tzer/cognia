@@ -121,7 +121,7 @@ flowchart LR
   精确匹配读回历史熟练度会查空，读侧闭环无法闭合。
 - **做什么**：
   - 知识模型持久化：首次会话生成的 `KnowledgeModel` 按 `(user_id, 归一化 goal)` 冻结持久化到 Store，后续同目标 load-or-build（复用同一 km，`point_id` 跨会话天然稳定）
-  - 读侧补全：工具 `read_learner_state(point_id)` 读回某知识点历史态；知识模型
+  - 读侧补全：工具 `query_proficiency(point_id)` 读回某知识点历史态；知识模型
     load-or-build 复用同一 `point_id`，保证跨会话稳定
   - 归一化 goal 的锚定策略（同义目标的归一，如去空白/小写/同义映射），作为知识模型持久化的 key
 - **验收标准**：同一 `user_id` + 同一 goal，第二次会话能按知识点读回历史熟练度（`point_id` 跨会话稳定）；不同 goal / 不同 user 数据隔离；单会话内多知识点切换也能读回各自历史态。

@@ -68,7 +68,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
       业务参数，不能伪造身份）。
 
     模型为**惰性初始化**：只在对应工具真正被调用时才获取，避免构造工具集（含纯读
-    工具如 read_learner_state）时强制要求 LLM API 凭据，也便于测试只注入需要的假模型。
+    工具如 query_proficiency）时强制要求 LLM API 凭据，也便于测试只注入需要的假模型。
     """
 
     def _get_diagnoser():
@@ -91,27 +91,6 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
             from cognia import models as _models
             teacher = _models.get_teacher_model()
         return teacher
-
-    @tool
-    def read_learner_state(point_id: str, config: RunnableConfig) -> str:
-        """读取当前用户对某知识点的权威认知状态（BKT 融合观察历史后的五态）。
-
-        读系统权威状态（Observation → BKT → mapped_state），与 query_proficiency /
-        propose_diagnosis 的 authoritative_state 同源；不再读已废弃的 proficiency
-        delta（该 delta 已无生产方，读它永远返回 unassessed）。
-
-        Args:
-            point_id: 知识点唯一 id。
-        """
-        user_id = get_user_id(config)
-        prof = (
-            _query_proficiency(store, user_id, point_id)
-            if (store and user_id)
-            else None
-        )
-        state = prof.mapped_state.value if prof is not None else "unassessed"
-        # 返回 JSON 结构（而非纯文本），便于 CopilotKit Inspector 解析工具结果展示
-        return json.dumps({"state": state}, ensure_ascii=False)
 
     @tool
     def build_learning_goal(goal: str, config: RunnableConfig) -> str:
@@ -403,8 +382,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
         return json.dumps(result, ensure_ascii=False)
 
     return {
-        "read_learner_state": read_learner_state,
-        "build_learning_goal": build_learning_goal,
+    "build_learning_goal": build_learning_goal,
         "propose_diagnosis": propose_diagnosis,
         "record_observation": record_observation,
         "query_proficiency": query_proficiency,

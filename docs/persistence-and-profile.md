@@ -20,7 +20,7 @@
 由此 [tools.py](cognia/tools.py) 里所有 `if store and user_id` 判断恒为假：
 - `propose_diagnosis` → 诊断结果不落库，当场丢弃
 - `build_learning_goal` → 知识模型每次重生成，不冻结
-- `read_learner_state` → 永远返回 `unassessed`
+- `query_proficiency` → 永远返回 `unassessed`
 
 ## 2. 目标与范围
 
@@ -118,7 +118,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
     ...
 
     @tool
-    def read_learner_state(point_id: str, config: RunnableConfig) -> str:
+    def query_proficiency(point_id: str, config: RunnableConfig) -> str:
         user_id = get_user_id(config)
         ...
 
@@ -163,7 +163,7 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None):
 
 ## 7. 验收标准（AC）
 
-- **AC1 真实落库**：同 `user_id` 诊断后，`proficiency` namespace 有对应 Delta；重启后 `read_learner_state` 能读回非 `unassessed`。
+- **AC1 真实落库**：同 `user_id` 诊断后，`proficiency` namespace 有对应 Delta；重启后 `query_proficiency` 能读回非 `unassessed`。
 - **AC2 跨会话读回**：同 `user_id` + 同 goal，第二次会话 `build_learning_goal` 返回「复用」而非「构建」，`point_id` 稳定。
 - **AC3 多用户隔离**：不同 `user_id` 的熟练度互不可见。
 - **AC4 降级不静默**：Postgres 不可用 / user_id 缺失时，有显式告警日志，且不抛 500。

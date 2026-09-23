@@ -79,7 +79,7 @@ flowchart TD
 
 | 工具 | 类型 | 职责 | 副作用 |
 |------|------|------|--------|
-| `read_learner_state(point_id)` | 读 | 读取当前用户对某知识点的五态认知状态 | 无 |
+| `query_proficiency(point_id)` | 读 | 查询系统对某知识点的权威熟练度（BKT 融合观察历史后算出的连续概率 + 离散五态） | 无 |
 | `build_learning_goal(goal)` | 写 | load-or-build 构建/复用知识模型（`point_id` 跨会话稳定） | 首次构建冻结写 Store |
 | `generate_probe(point_name, point_description)` | 教学 | 生成开放式探针问题，引导学生表达 | 无 |
 | `propose_diagnosis(...)` | 写 | 提议诊断，内部强制三层闸门裁决是否迁移状态 | 迁移则增量写 Store |

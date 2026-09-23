@@ -68,7 +68,7 @@ def test_plain_reply(monkeypatch):
 
 
 def test_executes_tool(monkeypatch):
-    """有工具调用：ToolNode 执行 read_learner_state，再进入最终回复轮。"""
+    """有工具调用：ToolNode 执行 query_proficiency，再进入最终回复轮。"""
     model = _install_fake_model(
         monkeypatch,
         [
@@ -76,7 +76,7 @@ def test_executes_tool(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "read_learner_state",
+                        "name": "query_proficiency",
                         "args": {"point_id": "aop-concept"},
                         "id": "call_1",
                         "type": "tool_call",
@@ -96,7 +96,7 @@ def test_executes_tool(monkeypatch):
     messages = result["messages"]
     tool_msgs = [m for m in messages if m.type == "tool"]
     assert len(tool_msgs) == 1
-    assert tool_msgs[0].name == "read_learner_state"
+    assert tool_msgs[0].name == "query_proficiency"
     assert "unassessed" in tool_msgs[0].content
     assert messages[-1].content == "你目前是部分掌握"
     assert model.invocations == 2

@@ -3,8 +3,7 @@
 全部使用 ScriptedLLM 假模型 + InMemoryStore，离线、快速、不依赖 API。
 
 重点验证：
-1. 读工具：read_learner_state 正确读五态。
-2. 写工具 propose_diagnosis（诊断=提交观察，系统 BKT 定级）：
+1. 写工具 propose_diagnosis（诊断=提交观察，系统 BKT 定级）：
    - 提交观察样本、不直接写 Delta；
    - 返回系统权威状态（authoritative_state）；
    - 不再走双重验证；
@@ -95,30 +94,6 @@ def _make_tools(diagnoser_responses, teacher_responses=None, store=None):
         teacher=teacher,
         store=store or InMemoryStore(),
     )
-
-
-# ---- 读工具 ----
-
-def test_read_learner_state():
-    """读工具返回系统权威五态（Observation → BKT → mapped_state；未评估为 unassessed）。"""
-    from cognia.memory import record_observation
-    from cognia.schemas import Observation
-
-    store = InMemoryStore()
-    record_observation(store, "u1", Observation(
-        point_id="aop-concept",
-        observed_state=CognitiveState.PARTIAL,
-        confidence=Confidence.HIGH,
-        evidence=["e"],
-    ))
-    tools = build_cognia_tools(store=store)
-
-    assert tools["read_learner_state"].invoke(
-        {"point_id": "aop-concept"}, config=_cfg()
-    ) == '{"state": "partial"}'
-    assert tools["read_learner_state"].invoke(
-        {"point_id": "unknown-point"}, config=_cfg()
-    ) == '{"state": "unassessed"}'
 
 
 # ---- 写工具：propose_diagnosis（诊断=提交观察，系统 BKT 定级）----

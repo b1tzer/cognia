@@ -93,7 +93,7 @@ flowchart TD
 
 > ⚠️ 本节描述的「三层闸门（诊断 → 双重验证 → 状态机裁决）」旧架构已于 2026-09 废弃，
 > 对应代码（`resolve_migration` / `run_verification` / `can_transition`）已删除。
-> 现行架构：`propose_diagnosis` / `record_observation` 只提交「观察样本」（Observation），
+> 现行架构：`propose_diagnosis` 内部通过 `memory.record_observation` 提交「观察样本」（Observation），
 > 权威认知状态由系统 BKT 算法融合观察历史后算出（`proficiency_engine` /
 > `memory.query_proficiency`），AI 只能提交观察值、无权直接改写。
 

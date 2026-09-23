@@ -33,7 +33,6 @@ def test_teacher_prompt_keeps_diagnosis_guardrail():
     """教学 Agent 不得直接改掌握状态，只能提交观察值，由系统 BKT 定级。"""
     assert "不能直接判定或修改学生的掌握状态" in TEACHER_SYSTEM_PROMPT
     assert "propose_diagnosis" in TEACHER_SYSTEM_PROMPT
-    assert "record_observation" in TEACHER_SYSTEM_PROMPT
     assert "query_proficiency" in TEACHER_SYSTEM_PROMPT
 
 

@@ -8,7 +8,7 @@
    - 返回系统权威状态（authoritative_state）；
    - 不再走双重验证；
    - store 缺失安全降级。
-3. record_observation / query_proficiency skill（提交观察值 + 查询权威状态）。
+3. query_proficiency（查询系统 BKT 融合后的权威状态）。
 4. 教学工具 generate_probe / explain 生成文本。
 5. build_learning_goal 的 load-or-build 复用。
 """
@@ -234,109 +234,7 @@ def test_build_learning_goal_builds_then_reuses(monkeypatch):
     assert second["first_point_id"] == first_id
 
 
-# ---- 写工具：record_observation（观察样本，只追加不改结论）----
-
-def test_record_observation_appends_only():
-    """record_observation 只追加观察，不直接写 proficiency 结论。"""
-    store = InMemoryStore()
-    tools = build_cognia_tools(store=store)
-
-    result = json.loads(tools["record_observation"].invoke({
-        "point_id": "aop-concept",
-        "observed_state": "partial",
-        "confidence": "high",
-        "evidence": ["用户说 AOP 是切面，但说不清代理"],
-    }, config=_cfg()))
-
-    assert result["recorded"] is True
-
-    from cognia.memory import query_observations
-    obs = query_observations(store, "u1", "aop-concept")
-    assert len(obs) == 1
-    assert obs[0]["observed_state"] == "partial"
-
-
-def test_record_observation_unassessed_skipped():
-    """unassessed 不产生观测。"""
-    store = InMemoryStore()
-    tools = build_cognia_tools(store=store)
-
-    result = json.loads(tools["record_observation"].invoke({
-        "point_id": "aop-concept",
-        "observed_state": "unassessed",
-        "confidence": "high",
-        "evidence": ["x"],
-    }, config=_cfg()))
-
-    assert result["recorded"] is False
-
-    from cognia.memory import query_observations
-    assert query_observations(store, "u1", "aop-concept") == []
-
-
-def test_record_observation_empty_evidence_rejected():
-    """空 evidence 拒绝写入。"""
-    store = InMemoryStore()
-    tools = build_cognia_tools(store=store)
-
-    result = json.loads(tools["record_observation"].invoke({
-        "point_id": "aop-concept",
-        "observed_state": "partial",
-        "confidence": "high",
-        "evidence": [],
-    }, config=_cfg()))
-
-    assert result["recorded"] is False
-
-
-def test_record_observation_invalid_state():
-    """非法 observed_state 返回错误，不落库。"""
-    store = InMemoryStore()
-    tools = build_cognia_tools(store=store)
-
-    result = json.loads(tools["record_observation"].invoke({
-        "point_id": "aop-concept",
-        "observed_state": "nonsense",
-        "confidence": "high",
-        "evidence": ["x"],
-    }, config=_cfg()))
-
-    assert result["recorded"] is False
-    assert "error" in result
-
-
-def test_record_observation_invalid_confidence():
-    """非法 confidence 返回错误。"""
-    store = InMemoryStore()
-    tools = build_cognia_tools(store=store)
-
-    result = json.loads(tools["record_observation"].invoke({
-        "point_id": "aop-concept",
-        "observed_state": "partial",
-        "confidence": "nonsense",
-        "evidence": ["x"],
-    }, config=_cfg()))
-
-    assert result["recorded"] is False
-    assert "error" in result
-
-
-def test_record_observation_store_none_degrades():
-    """store 为 None 时安全降级，recorded=False。"""
-    tools = build_cognia_tools(store=None)
-
-    result = json.loads(tools["record_observation"].invoke({
-        "point_id": "aop-concept",
-        "observed_state": "partial",
-        "confidence": "high",
-        "evidence": ["x"],
-    }, config=_cfg()))
-
-    assert result["recorded"] is False
-
-
 # ---- 读工具：query_proficiency（查询权威状态）----
-
 def test_query_proficiency_unassessed():
     """无观察 → 返回 unassessed，latent_value 为 BKT 先验 0.4，observation_count=0。"""
     store = InMemoryStore()
@@ -353,15 +251,20 @@ def test_query_proficiency_unassessed():
 
 def test_query_proficiency_with_observation():
     """有观察 → 返回系统 BKT 融合后的权威状态。"""
+    from cognia.memory import record_observation
+    from cognia.schemas import Observation
+
     store = InMemoryStore()
     tools = build_cognia_tools(store=store)
 
-    tools["record_observation"].invoke({
-        "point_id": "aop-concept",
-        "observed_state": "mastered",
-        "confidence": "high",
-        "evidence": ["用户准确解释切面"],
-    }, config=_cfg())
+    # 直接用底层 memory.record_observation 提交观察样本（record_observation 已不再
+    # 暴露为 LLM 工具，由 propose_diagnosis 内部调用）
+    record_observation(store, "u1", Observation(
+        point_id="aop-concept",
+        observed_state=CognitiveState.MASTERED,
+        confidence=Confidence.HIGH,
+        evidence=["用户准确解释切面"],
+    ))
 
     result = json.loads(tools["query_proficiency"].invoke(
         {"point_id": "aop-concept"}, config=_cfg()
@@ -387,17 +290,20 @@ def test_query_proficiency_store_none_degrades():
 
 def test_query_proficiency_reads_authoritative_not_raw():
     """查询的是系统权威状态，不是 AI 观察值本身（latent_value 为 BKT 后验）。"""
+    from cognia.memory import record_observation
+    from cognia.schemas import Observation
+
     store = InMemoryStore()
     tools = build_cognia_tools(store=store)
 
     # 提交一次 misconception 观察：AI 观察值是 misconception，但系统权威状态
     # 由 BKT 后验 + 离散化得出，mapped_state 应为 misconception（负向观察优先）。
-    tools["record_observation"].invoke({
-        "point_id": "aop-concept",
-        "observed_state": "misconception",
-        "confidence": "high",
-        "evidence": ["用户认为 @Around 修改字节码"],
-    }, config=_cfg())
+    record_observation(store, "u1", Observation(
+        point_id="aop-concept",
+        observed_state=CognitiveState.MISCONCEPTION,
+        confidence=Confidence.HIGH,
+        evidence=["用户认为 @Around 修改字节码"],
+    ))
 
     result = json.loads(tools["query_proficiency"].invoke(
         {"point_id": "aop-concept"}, config=_cfg()

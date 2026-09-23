@@ -259,7 +259,7 @@ query_point(point_id: str) -> KnowledgePoint
 query_prerequisites(point_id: str) -> list[KnowledgePoint]
 query_dependents(point_id: str) -> list[KnowledgePoint]
 
-# 能力域 B：观察记录
+# 能力域 B：观察记录（memory 层能力，由 propose_diagnosis 内部调用，非 LLM 暴露工具）
 record_observation(observation: Observation) -> None
 query_observations(point_id: str) -> list[Observation]
 

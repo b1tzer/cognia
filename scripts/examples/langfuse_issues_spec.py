@@ -207,7 +207,7 @@ LangChain request-time callback 自动向下传播到所有子 runnable（含 to
 **任务级验收标准**
 - T5.1 上述 5 个工具的内部 LLM 调用均透传 config。
 - T5.2 保留 `propose_diagnosis` 现有 try/except 降级（config=None 或 handler=None 时降级行为不变）。
-- T5.3 不触碰 web_search / query_proficiency / record_observation（它们不调 LLM）。""",
+- T5.3 不触碰 web_search / query_proficiency（它们不调 LLM）。""",
         },
         {
             "title": "T6 wiki 透传层：wiki_summarize._summarize 加 config=None 透传",

@@ -168,6 +168,19 @@ function isJsonBlob(text: string): boolean {
   }
 }
 
+// 渲染诊断探针开关：默认关闭（生产 / 日常零噪音）。需排查渲染问题（幽灵 JSON 气泡、
+// 对话重复渲染等）时开启——在浏览器 Console 执行：
+//   localStorage.setItem('cognia_render_debug', '1'); location.reload();
+// 即可在 Console 看到 [renderItem] 前缀的结构化日志；关闭则移除该 key 后刷新。
+function RENDER_ITEM_DEBUG(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("cognia_render_debug") === "1";
+  } catch {
+    return false;
+  }
+}
+
 function buildDisplayMessages(messages: any[], isRunning: boolean) {
   // toolCallId -> 工具名
   const toolNames = new Map<string, string>();
@@ -206,7 +219,7 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
   }
 
   const display: Array<{
-    message: any;
+    message?: any;
     toolName?: string;
     isActiveReasoning?: boolean;
     toolCall?: any;
@@ -224,6 +237,25 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
     // 以保证它位于最终回答之前。
     if (m.role === "tool") continue;
 
+    // 跳过流式期间 CopilotKit/AG-UI 以 assistant 身份「回显」的工具结构化结果。
+    // 例如 build_learning_goal 返回的 points 数组，会被运行时伪装成一条
+    // role=assistant、id 前缀为 "lc_run--" 的临时消息推入 agent.messages，
+    // 其内容为纯 JSON。该消息最终稳定态会被回收（与知识模型卡片重复），
+    // 若在此渲染会先冒出一个 ```json 气泡、跑完又消失（幽灵渲染）。
+    // 仅当「run-scoped 临时消息 + 无 toolCalls + 内容纯 JSON」三者同时成立才跳过，
+    // 真实的自然语言回答（如「好的…」）不会命中，不会被误伤。
+    const _contentStr =
+      typeof m.content === "string" ? m.content : "";
+    if (
+      typeof m.id === "string" &&
+      m.id.startsWith("lc_run") &&
+      !(Array.isArray(m.toolCalls) && m.toolCalls.length > 0) &&
+      _contentStr.trim() !== "" &&
+      isJsonBlob(_contentStr)
+    ) {
+      continue;
+    }
+
     if (
       m.role === "assistant" &&
       Array.isArray(m.toolCalls) &&
@@ -233,8 +265,12 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
       for (const tc of m.toolCalls) {
         if (consumedToolCallIds.has(tc.id)) continue;
         const result = toolResultByCallId.get(tc.id);
+        // 注意：带 toolCall 的项不再塞 message。该项的渲染完全交给
+        // renderToolCall（Generative UI 卡片）。若此处保留 message=result，
+        // CopilotKit 在 toolCall 刚出现、renderer 尚未匹配（renderToolCall 返回
+        // undefined）的极短窗口内，会 fallback 到 MessageBubble，把工具返回的
+        // JSON 原文渲染成 ```json 气泡（幽灵渲染，最终重排后消失）。
         display.push({
-          message: result,
           toolName: toolNames.get(tc.id),
           toolCall: tc,
           toolMessage: result,
@@ -700,7 +736,33 @@ function ChatApp() {
     return null;
   }, [displayMessages, agent?.isRunning, runError]);
 
+  // [临时诊断] 会话级递增序号，抓取每次 render 的全量证据（含流式中间态）。
+  const renderSeqRef = useRef(0);
   const renderMessageItem = (item: (typeof displayMessages)[number]) => {
+    // [渲染诊断探针] 仅当开启 RENDER_ITEM_DEBUG 时打印每条 display 项的来源，
+    // 用于定位 JSON 气泡由哪条 item 产生、对话是否重复加载等渲染问题。
+    // 默认关闭，零噪音；排查时见 RENDER_ITEM_DEBUG 上方注释的开启方式。
+    if (RENDER_ITEM_DEBUG()) {
+      const rawContent = item.message?.content;
+      const contentStr =
+        typeof rawContent === "string"
+          ? rawContent
+          : rawContent == null
+          ? ""
+          : JSON.stringify(rawContent);
+      const dbg: any = {
+        seq: renderSeqRef.current++,
+        running: agent?.isRunning ?? false,
+        hasToolCall: !!item.toolCall,
+        toolName: item.toolName,
+        msgRole: item.message?.role,
+        msgId: item.message?.id,
+        contentLen: contentStr.length,
+        contentHead: contentStr.slice(0, 80),
+        isJson: typeof rawContent === "string" && isJsonBlob(rawContent),
+      };
+      console.log("[renderItem]", JSON.stringify(dbg));
+    }
     if (item.toolCall) {
       const rendered = renderToolCall({
         toolCall: item.toolCall,

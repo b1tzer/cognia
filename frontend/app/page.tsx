@@ -316,6 +316,9 @@ function ChatApp() {
   const isProgrammaticScrollRef = useRef(false);
   // 输入框 ref：根据内容行数动态调整高度（参考 ChatGPT 多行输入体验）。
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 草稿态发送首条消息时标记「正在从草稿创建会话」，用于让「加载历史」
+  // effect 跳过本次 currentThreadId 变化，避免竞态清空刚发送的消息。
+  const creatingFromDraftRef = useRef(false);
   // 内容是否超出 max-h-48（192px）：未超出时用 overflow-hidden（不显示滚动条），
   // 超出后才切换为 overflow-y-auto 允许内部滚动。
   const [inputOverflowing, setInputOverflowing] = useState(false);
@@ -351,25 +354,26 @@ function ChatApp() {
     [persistCurrentThreadId],
   );
 
-  // 初始化：拉线程列表 + 恢复当前线程。
+  // 初始化：拉线程列表 + 恢复当前线程。列表为空时不自动创建会话，
+  // 而是进入「新对话」草稿态（currentThreadId 保持 null），
+  // 只有用户真正发送第一条消息时才创建后端会话。
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const saved = window.localStorage.getItem(THREAD_ID_KEY);
-        let list = await refreshThreads();
-
-        if (list.length === 0) {
-          const created = await createThread();
-          list = [created];
-          setThreads(list);
-        }
+        const list = await refreshThreads();
 
         const exists = list.some((t) => t.thread_id === saved);
-        const selected = exists && saved ? saved : list[0].thread_id;
+        const selected =
+          list.length > 0 && exists && saved
+            ? saved
+            : list.length > 0
+              ? list[0].thread_id
+              : null;
         if (!cancelled) {
           setCurrentThreadId(selected);
-          persistCurrentThreadId(selected);
+          if (selected) persistCurrentThreadId(selected);
           setReady(true);
         }
       } catch (err) {
@@ -385,6 +389,12 @@ function ChatApp() {
   // 就绪且 agent 可用时，加载当前会话历史（初始化 + 切换共用这一条路径）。
   useEffect(() => {
     if (!ready || !currentThreadId || !agent) return;
+    // 草稿态发送首条消息触发的 currentThreadId 变化：跳过历史加载，
+    // 否则会竞态清空 handleSend 刚 addMessage 的用户消息。
+    if (creatingFromDraftRef.current) {
+      creatingFromDraftRef.current = false;
+      return;
+    }
     let cancelled = false;
     setLoadingThread(true);
     (async () => {
@@ -495,12 +505,16 @@ function ChatApp() {
     switchThread(threadId);
   };
 
-  const handleCreate = async () => {
-    const created = await createThread();
-    setThreads((prev) => [created, ...prev]);
-    // 新建会话后回到对话视图，确保新对话「真的开启」而非停留在知识版图 / Wiki。
+  const handleCreate = () => {
+    // 「新建会话」不立即创建后端会话：仅进入「新对话」草稿态（currentThreadId = null）。
+    // 已在草稿态（尚未发送消息）时只切回对话视图，不重复创建草稿。
+    if (currentThreadId === null) {
+      setView("chat");
+      return;
+    }
     setView("chat");
-    switchThread(created.thread_id);
+    agent?.setMessages([]);
+    setCurrentThreadId(null);
   };
 
   const handleRename = async (threadId: string, title: string) => {
@@ -515,18 +529,14 @@ function ChatApp() {
     const remaining = threads.filter((t) => t.thread_id !== threadId);
     setThreads(remaining);
 
-    // 2. 若删除的是当前会话，立即切换到列表第一个（或新建），不阻塞 UI。
+    // 2. 若删除的是当前会话，立即切换到列表第一个（或进入草稿态），不阻塞 UI。
     if (threadId === currentThreadId) {
       if (remaining.length > 0) {
         switchThread(remaining[0].thread_id);
       } else {
-        try {
-          const created = await createThread();
-          setThreads([created]);
-          switchThread(created.thread_id);
-        } catch (err) {
-          console.error("新建会话失败", err);
-        }
+        // 删除的是最后一个会话：进入「新对话」草稿态，不立即创建后端会话。
+        agent?.setMessages([]);
+        setCurrentThreadId(null);
       }
     }
 
@@ -549,6 +559,17 @@ function ChatApp() {
     setInput("");
     setSending(true);
     try {
+      // 草稿态（尚未真正创建会话）下，发送第一条消息时才创建后端会话，
+      // 并把 agent.threadId 指向新会话，后续消息才能正确归档到该会话。
+      if (currentThreadId === null) {
+        creatingFromDraftRef.current = true;
+        const created = await createThread();
+        setThreads((prev) => [created, ...prev]);
+        setCurrentThreadId(created.thread_id);
+        persistCurrentThreadId(created.thread_id);
+        agent.threadId = created.thread_id;
+      }
+
       // 若上一道练习有作答结果，先作为一条隐藏的「练习作答记录」注入，
       // 让 Agent 在下一轮能读到学生选了哪个、对错如何（非阻塞方案）。
       const practice = consumePendingPracticeAnswer();
@@ -747,6 +768,46 @@ function ChatApp() {
     );
   };
 
+  // 对话输入框（发送/停止按钮 + 多行 textarea）。新对话空态居中显示、
+  // 继续对话时固定在底部，两种场景复用同一份输入框。
+  const chatInput = (
+    <div className="flex gap-2">
+      <textarea
+        ref={textareaRef}
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            void handleSend();
+          }
+        }}
+        placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+        rows={1}
+        className={`max-h-48 flex-1 resize-none rounded-xl border border-line px-4 py-2 text-sm leading-relaxed text-foreground outline-none focus:border-accent ${
+          inputOverflowing ? "overflow-y-auto" : "overflow-hidden"
+        }`}
+      />
+      {sending ? (
+        <button
+          onClick={handleStop}
+          className="inline-flex items-center gap-1.5 rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90"
+        >
+          <Square className="h-3.5 w-3.5 fill-current" aria-hidden />
+          停止
+        </button>
+      ) : (
+        <button
+          onClick={() => void handleSend()}
+          disabled={!input.trim()}
+          className="rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90 disabled:opacity-40"
+        >
+          发送
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <div className="flex h-screen w-full">
       <ThreadSidebar
@@ -797,12 +858,11 @@ function ChatApp() {
           <div className="min-h-0 flex-1 bg-surface">
             <WikiView currentThreadId={currentThreadId} />
           </div>
-        ) : (
-        <div
-          ref={scrollContainerRef}
-          className="min-h-0 flex-1 overflow-y-auto bg-surface"
-        >
-          {view === "map" ? (
+        ) : view === "map" ? (
+          <div
+            ref={scrollContainerRef}
+            className="min-h-0 flex-1 overflow-y-auto bg-surface"
+          >
             <div className="p-6">
               {mapLoading ? (
                 <div className="text-sm text-muted">加载中…</div>
@@ -816,85 +876,60 @@ function ChatApp() {
                 <KnowledgeMap goals={mapData} />
               )}
             </div>
-          ) : !isReady || !ready || loadingThread ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted">
-              加载中…
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted">
-              开始一段新对话吧
-            </div>
-          ) : (
-            <div>
-              {displayMessages.map((item, index) => {
-                const key =
-                  item.toolCall?.id ?? item.message?.id ?? `item-${index}`;
-                return (
-                  <div key={key}>
-                    {renderMessageItem(item)}
-                  </div>
-                );
-              })}
-              {runError && !agent?.isRunning && (
-                <div className="flex justify-start px-4 py-2">
-                  <div className="flex max-w-[85%] flex-col items-start gap-1.5">
-                    <div className="rounded-2xl bg-surface-muted px-4 py-2 text-sm text-muted">
-                      回答意外中断，请重新生成
-                    </div>
-                    <button
-                      onClick={() => void handleRetry()}
-                      title="重新生成"
-                      className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted transition hover:bg-surface-muted hover:text-foreground"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      重新生成
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        )}
-
-        {view === "chat" && (
-          <div className="border-t border-line bg-surface p-4">
-            <div className="flex gap-2">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    void handleSend();
-                  }
-                }}
-                placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-                rows={1}
-                className={`max-h-48 flex-1 resize-none rounded-xl border border-line px-4 py-2 text-sm leading-relaxed text-foreground outline-none focus:border-accent ${
-                  inputOverflowing ? "overflow-y-auto" : "overflow-hidden"
-                }`}
-              />
-              {sending ? (
-                <button
-                  onClick={handleStop}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90"
-                >
-                  <Square className="h-3.5 w-3.5 fill-current" aria-hidden />
-                  停止
-                </button>
-              ) : (
-                <button
-                  onClick={() => void handleSend()}
-                  disabled={!input.trim()}
-                  className="rounded-xl bg-ink px-5 py-2 text-sm font-medium text-white transition hover:bg-ink/90 disabled:opacity-40"
-                >
-                  发送
-                </button>
-              )}
-            </div>
           </div>
+        ) : !isReady || !ready || loadingThread ? (
+          <div className="flex h-full items-center justify-center text-sm text-muted">
+            加载中…
+          </div>
+        ) : messages.length === 0 ? (
+          // 新对话空态：欢迎引导 + 输入框居中。
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-surface px-4">
+            <h2 className="text-xl font-semibold text-foreground">
+              开始一段新对话吧
+            </h2>
+            <p className="mt-2 text-sm text-muted">
+              输入你想学习的内容，Enter 发送
+            </p>
+            <div className="mt-6 w-full max-w-2xl">{chatInput}</div>
+          </div>
+        ) : (
+          // 继续对话：消息列表 + 底部输入框。
+          <>
+            <div
+              ref={scrollContainerRef}
+              className="min-h-0 flex-1 overflow-y-auto bg-surface"
+            >
+              <div>
+                {displayMessages.map((item, index) => {
+                  const key =
+                    item.toolCall?.id ?? item.message?.id ?? `item-${index}`;
+                  return (
+                    <div key={key}>
+                      {renderMessageItem(item)}
+                    </div>
+                  );
+                })}
+                {runError && !agent?.isRunning && (
+                  <div className="flex justify-start px-4 py-2">
+                    <div className="flex max-w-[85%] flex-col items-start gap-1.5">
+                      <div className="rounded-2xl bg-surface-muted px-4 py-2 text-sm text-muted">
+                        回答意外中断，请重新生成
+                      </div>
+                      <button
+                        onClick={() => void handleRetry()}
+                        title="重新生成"
+                        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted transition hover:bg-surface-muted hover:text-foreground"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        重新生成
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="border-t border-line bg-surface p-4">{chatInput}</div>
+          </>
         )}
       </div>
     </div>

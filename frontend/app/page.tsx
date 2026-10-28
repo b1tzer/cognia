@@ -247,8 +247,9 @@ function buildDisplayMessages(messages: any[], isRunning: boolean) {
     const _contentStr =
       typeof m.content === "string" ? m.content : "";
     if (
+      m.role === "assistant" &&
       typeof m.id === "string" &&
-      m.id.startsWith("lc_run") &&
+      m.id.startsWith("lc_run--") &&
       !(Array.isArray(m.toolCalls) && m.toolCalls.length > 0) &&
       _contentStr.trim() !== "" &&
       isJsonBlob(_contentStr)

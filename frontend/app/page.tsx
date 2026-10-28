@@ -899,7 +899,11 @@ function ChatApp() {
 
 export default function Home() {
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit" renderToolCalls={cogniaToolRenderers}>
+    <CopilotKit
+      runtimeUrl="/api/copilotkit"
+      renderToolCalls={cogniaToolRenderers}
+      enableInspector={false}
+    >
       <ChatApp />
     </CopilotKit>
   );

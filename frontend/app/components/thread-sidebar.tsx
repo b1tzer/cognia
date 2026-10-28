@@ -68,8 +68,16 @@ export default function ThreadSidebar({
       </div>
 
       <nav className="flex-1 overflow-y-auto p-2 space-y-1">
-        {threads.length === 0 && (
+        {threads.length === 0 && currentThreadId !== null && (
           <p className="px-2 py-4 text-center text-sm text-zinc-400">暂无会话</p>
+        )}
+        {currentThreadId === null && (
+          <div className="rounded-lg bg-zinc-200 px-3 py-2">
+            <div className="truncate text-sm font-medium text-zinc-800">
+              新对话
+            </div>
+            <div className="text-xs text-zinc-400">未开始</div>
+          </div>
         )}
         {threads.map((t) => {
           const active = t.thread_id === currentThreadId;

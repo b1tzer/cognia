@@ -7,8 +7,51 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByText("测试会话", { exact: true })).toBeVisible();
 });
 
-test("新建会话在侧边栏新增一条", async ({ page }) => {
+test("新建会话后真的开启新对话", async ({ page }) => {
   await page.getByRole("button", { name: "+ 新建会话" }).click();
+
+  // 侧边栏新增一条「新对话」
+  await expect(page.getByText("新对话", { exact: true })).toBeVisible();
+  // 当前选中会话切换为新会话（持久化的 threadId 变为 thread-new-1）
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("cognia:threadId")))
+    .toBe("thread-new-1");
+  // 对话输入框可见，可立即输入
+  await expect(
+    page.getByPlaceholder("输入消息，Enter 发送，Shift+Enter 换行"),
+  ).toBeVisible();
+});
+
+test("在 Wiki 页面点击侧边栏会话跳转回对话视图", async ({ page }) => {
+  await page.getByRole("button", { name: "Wiki" }).click();
+  await expect(page.getByText("暂无 wiki 页面", { exact: true })).toBeVisible();
+
+  await page.getByText("测试会话", { exact: true }).click();
+  await expect(
+    page.getByPlaceholder("输入消息，Enter 发送，Shift+Enter 换行"),
+  ).toBeVisible();
+});
+
+test("在知识版图页面点击侧边栏会话跳转回对话视图", async ({ page }) => {
+  await page.getByRole("button", { name: "知识版图" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Java 并发基础" }),
+  ).toBeVisible();
+
+  await page.getByText("测试会话", { exact: true }).click();
+  await expect(
+    page.getByPlaceholder("输入消息，Enter 发送，Shift+Enter 换行"),
+  ).toBeVisible();
+});
+
+test("在 Wiki 页面新建会话跳转回对话视图", async ({ page }) => {
+  await page.getByRole("button", { name: "Wiki" }).click();
+  await expect(page.getByText("暂无 wiki 页面", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "+ 新建会话" }).click();
+  await expect(
+    page.getByPlaceholder("输入消息，Enter 发送，Shift+Enter 换行"),
+  ).toBeVisible();
   await expect(page.getByText("新对话", { exact: true })).toBeVisible();
 });
 

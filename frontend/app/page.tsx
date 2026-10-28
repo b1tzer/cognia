@@ -490,12 +490,16 @@ function ChatApp() {
   }, [userMessageCount, scrollToBottom]);
 
   const handleSelect = (threadId: string) => {
+    // 点击侧边栏会话时回到对话视图，确保在知识版图 / Wiki 页面也能跳转回对话。
+    setView("chat");
     switchThread(threadId);
   };
 
   const handleCreate = async () => {
     const created = await createThread();
     setThreads((prev) => [created, ...prev]);
+    // 新建会话后回到对话视图，确保新对话「真的开启」而非停留在知识版图 / Wiki。
+    setView("chat");
     switchThread(created.thread_id);
   };
 

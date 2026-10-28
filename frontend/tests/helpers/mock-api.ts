@@ -11,6 +11,23 @@ export type ThreadFixture = {
   updated_at: string;
 };
 
+// mock 的 wiki 页面结构：与前端 WikiPage 对齐（含正文），用于在进程内
+// 模拟「新建 / 更新 / 删除 / 读取」的持久化契约，保证测试验证真实 API 语义。
+export type WikiMockPage = {
+  page_id: string;
+  title: string;
+  path: string;
+  tags: string[];
+  parent_page_id: string | null;
+  author: string;
+  source_thread_id: string | null;
+  source_turns: number[];
+  evidence: string[];
+  updated_at: string;
+  commit_hash: string;
+  content_markdown: string;
+};
+
 export const THREAD_1: ThreadFixture = {
   thread_id: "thread-1",
   title: "测试会话",
@@ -71,7 +88,7 @@ export async function mockApi(page: Page): Promise<void> {
 
   // 每个测试独立的进程内状态，保证「新建 / 重命名 / 删除」后列表能反映变更。
   let threads: ThreadFixture[] = [THREAD_1];
-  let wikiPages: Array<Record<string, unknown>> = [];
+  let wikiPages: WikiMockPage[] = [];
   let seq = 0;
 
   const now = "2026-01-04T00:00:00.000Z";
@@ -155,27 +172,54 @@ const body = (req.postDataJSON() ?? {}) as {
     }
 
     // ---- feedback ----
+    // GET /api/feedback 需要 thread_id + user_id query（对齐后端 feedback 路由：
+    // 缺失返回 400）。PUT/DELETE 的 user_id 走请求体，不在此校验。
     if (path === "/api/feedback" && method === "GET") {
+      const threadId = url.searchParams.get("thread_id");
+      const feedbackUserId = url.searchParams.get("user_id");
+      if (!threadId || !feedbackUserId) {
+        return route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "缺少 thread_id / user_id 参数" }),
+        });
+      }
       return route.fulfill({ json: {} });
     }
 
     // ---- knowledge-map ----
     if (path === "/api/knowledge-map" && method === "GET") {
+      if (!url.searchParams.get("user_id")) {
+        return route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "缺少 user_id 参数" }),
+        });
+      }
       return route.fulfill({ json: KNOWLEDGE_MAP });
     }
 
     // ---- wiki ----
+    // 所有 wiki 端点都要求 user_id query（后端 _require_user：缺失 → 400）。
+    if (path.startsWith("/api/wiki") && !url.searchParams.get("user_id")) {
+      return route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "缺少 user_id 参数" }),
+      });
+    }
+
     if (path === "/api/wiki" && method === "GET") {
       return route.fulfill({ json: { pages: wikiPages } });
     }
     if (path === "/api/wiki" && method === "POST") {
-const body = (req.postDataJSON() ?? {}) as {
+      const body = (req.postDataJSON() ?? {}) as {
         page_id?: string;
         title?: string;
         content_markdown?: string;
       };
       const pageId = body.page_id ?? `page-${++seq}`;
-      const meta = {
+      const page: WikiMockPage = {
         page_id: pageId,
         title: body.title ?? "未命名",
         path: `/${pageId}`,
@@ -187,50 +231,50 @@ const body = (req.postDataJSON() ?? {}) as {
         evidence: [],
         updated_at: now,
         commit_hash: "abc1234",
+        content_markdown: body.content_markdown ?? "",
       };
-      wikiPages = [meta, ...wikiPages];
-      return route.fulfill({ json: meta });
+      wikiPages = [page, ...wikiPages];
+      return route.fulfill({ json: page });
     }
 
     const wikiById = path.match(/^\/api\/wiki\/([^/]+)$/);
     if (wikiById && method === "GET") {
-      return route.fulfill({
-        json: {
-          page_id: wikiById[1],
-          title: "我的 Wiki",
-          path: `/${wikiById[1]}`,
-          tags: [],
-          parent_page_id: null,
-          author: "user",
-          source_thread_id: null,
-          source_turns: [],
-          evidence: [],
-          updated_at: now,
-          commit_hash: "abc1234",
-          content_markdown: "# 内容",
-        },
-      });
+      const stored = wikiPages.find((p) => p.page_id === wikiById[1]);
+      if (!stored) {
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "页面不存在" }),
+        });
+      }
+      return route.fulfill({ json: stored });
     }
     if (wikiById && method === "PUT") {
-const body = (req.postDataJSON() ?? {}) as {
+      const body = (req.postDataJSON() ?? {}) as {
+        page_id?: string;
         title?: string;
+        content_markdown?: string;
       };
-      const meta = {
+      const existing = wikiPages.find((p) => p.page_id === wikiById[1]);
+      const updated: WikiMockPage = {
         page_id: wikiById[1],
-        title: body.title ?? "未命名",
+        title: body.title ?? existing?.title ?? "未命名",
         path: `/${wikiById[1]}`,
-        tags: [],
-        parent_page_id: null,
-        author: "user",
-        source_thread_id: null,
-        source_turns: [],
-        evidence: [],
+        tags: existing?.tags ?? [],
+        parent_page_id: existing?.parent_page_id ?? null,
+        author: existing?.author ?? "user",
+        source_thread_id: existing?.source_thread_id ?? null,
+        source_turns: existing?.source_turns ?? [],
+        evidence: existing?.evidence ?? [],
         updated_at: now,
         commit_hash: "abc1234",
+        content_markdown: body.content_markdown ?? existing?.content_markdown ?? "",
       };
-      return route.fulfill({ json: meta });
+      wikiPages = wikiPages.map((p) => (p.page_id === wikiById[1] ? updated : p));
+      return route.fulfill({ json: updated });
     }
     if (wikiById && method === "DELETE") {
+      wikiPages = wikiPages.filter((p) => p.page_id !== wikiById[1]);
       return route.fulfill({ status: 200, body: "" });
     }
 

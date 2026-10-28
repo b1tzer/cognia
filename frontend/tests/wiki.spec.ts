@@ -35,6 +35,11 @@ test("填写完整后保存并显示页面内容", async ({ page }) => {
   await expect(
     page.locator("aside").getByText("我的第一篇 Wiki", { exact: true }),
   ).toBeVisible();
+  // 保存的 Markdown 正文被渲染（# Hello Cognia → h1），确保正文真正落库并展示，
+  // 而非仅标题保存成功、正文丢失。
+  await expect(
+    page.getByRole("heading", { name: "Hello Cognia" }),
+  ).toBeVisible();
 });
 
 test("取消编辑返回查看模式且不保存", async ({ page }) => {
@@ -47,4 +52,9 @@ test("取消编辑返回查看模式且不保存", async ({ page }) => {
   await expect(
     page.getByText("不应保存的页面", { exact: true }),
   ).toHaveCount(0);
+
+  // 重新加载页面（重新拉取服务端列表），确认取消操作没有把草稿持久化到后端。
+  await page.reload();
+  await page.getByRole("button", { name: "Wiki" }).click();
+  await expect(page.getByText("暂无 wiki 页面", { exact: true })).toBeVisible();
 });

@@ -152,7 +152,7 @@ export default function ThreadSidebar({
                   className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
                     active
                       ? "bg-surface-muted font-medium text-foreground"
-                      : "text-muted hover:bg-surface-muted hover:text-foreground"
+                      : "text-foreground hover:bg-surface-muted"
                   }`}
                 >
                   <Icon className="h-4 w-4" aria-hidden />

@@ -24,6 +24,10 @@ test("新建会话进入空态，不立即创建后端会话", async ({ page }) 
   await expect(page.getByText("测试会话", { exact: true })).toBeVisible();
   // 侧边栏不得新增「新对话」草稿条目（草稿不应出现在列表里）
   await expect(page.getByText("新对话", { exact: true })).toHaveCount(0);
+  // 「测试会话」不再是当前选中项（currentThreadId 被清空，进入草稿态）
+  await expect(
+    page.getByText("测试会话", { exact: true }).locator("xpath=ancestor::li"),
+  ).not.toHaveAttribute("aria-current", "true");
   // 未触发后端创建
   expect(createCalled).toBe(false);
 });
@@ -45,6 +49,10 @@ test("重复点击新建会话仍停留在空态，不产生多余会话", async
   ).toBeVisible();
   // 侧边栏不得出现「新对话」草稿条目
   await expect(page.getByText("新对话", { exact: true })).toHaveCount(0);
+  // 「测试会话」不再是当前选中项
+  await expect(
+    page.getByText("测试会话", { exact: true }).locator("xpath=ancestor::li"),
+  ).not.toHaveAttribute("aria-current", "true");
   // 未触发后端创建
   expect(createCalled).toBe(false);
 });

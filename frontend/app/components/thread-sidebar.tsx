@@ -146,6 +146,7 @@ export default function ThreadSidebar({
             return (
               <li
                 key={t.thread_id}
+                aria-current={active ? "true" : undefined}
                 className={`group rounded-lg px-3 py-2 transition ${
                   active
                     ? "bg-surface-muted"

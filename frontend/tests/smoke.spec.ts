@@ -15,6 +15,9 @@ test("应用启动后首页关键内容可见", async ({ page }) => {
   await expect(page.getByRole("button", { name: "知识版图" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Wiki" })).toBeVisible();
 
+  // 旧的「新建会话」大按钮已移除，只保留侧边栏导航里的「新建对话」入口
+  await expect(page.getByRole("button", { name: "新建会话" })).toHaveCount(0);
+
   // 会话侧边栏
   await expect(page.getByText("测试会话", { exact: true })).toBeVisible();
 

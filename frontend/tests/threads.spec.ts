@@ -22,6 +22,8 @@ test("新建会话进入空态，不立即创建后端会话", async ({ page }) 
     page.getByRole("heading", { name: "开始一段新对话吧" }),
   ).toBeVisible();
   await expect(page.getByText("测试会话", { exact: true })).toBeVisible();
+  // 侧边栏不得新增「新对话」草稿条目（草稿不应出现在列表里）
+  await expect(page.getByText("新对话", { exact: true })).toHaveCount(0);
   // 未触发后端创建
   expect(createCalled).toBe(false);
 });
@@ -41,6 +43,8 @@ test("重复点击新建会话仍停留在空态，不产生多余会话", async
   await expect(
     page.getByRole("heading", { name: "开始一段新对话吧" }),
   ).toBeVisible();
+  // 侧边栏不得出现「新对话」草稿条目
+  await expect(page.getByText("新对话", { exact: true })).toHaveCount(0);
   // 未触发后端创建
   expect(createCalled).toBe(false);
 });

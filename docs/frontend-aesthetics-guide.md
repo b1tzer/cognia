@@ -22,13 +22,13 @@
 | 边框/分隔线 | `--line` | `border-line` |
 | 强调（唯一彩色） | `--accent` | `bg-accent` / `text-accent` / `border-accent` |
 | 强调 hover | `--accent-hover` | `bg-accent-hover` |
-| 墨色（气泡/主按钮） | `--ink` | `bg-ink` |
+| 墨色（主按钮） | `--ink` | `bg-ink` |
 
 > 例外：卡片类型区分色（`violet` 练习 / `blue` 诊断 / `emerald` 知识讲解）与认知状态五态色（见第 4 节）是「信息编码色」，允许直接使用 Tailwind 默认彩色，无需 token。它们不是装饰。
 
 ## 3. 强制规则（MUST / NEVER）
 
-1. MUST 全站「装饰彩色」只有 `--accent` 一个。链接、focus 环、选中高亮用 accent；大面积深色元素（消息气泡、主按钮）用 `ink` 墨色，不用 accent。
+1. MUST 全站「装饰彩色」只有 `--accent` 一个。链接、focus 环、选中高亮用 accent；用户消息气泡用 accent 淡色底（`bg-accent/10` + `text-foreground`）；大面积深色元素（主按钮、标题文字）用 `ink` 墨色，不用 accent。
 2. NEVER 新增第 4 节「信息编码色」之外的彩色。卡片类型三色（violet/blue/emerald）+ 认知状态五色（emerald/amber/rose/sky/zinc）是信息编码（不是装饰），各司其职、不许混用；除此之外不引入其他彩色。
 3. MUST 中性色只用 token 映射（`bg-background` / `bg-surface` / `text-foreground` / `text-muted` / `border-line`），不要写 `bg-white` / `text-zinc-*`。
 4. MUST 支持深浅两种模式：写样式时用 token，禁止写死 `bg-white`、`text-black`。
@@ -39,7 +39,8 @@
 - **交互强调色**（唯一装饰彩色）：`--accent`，只用于链接、focus 环、选中高亮等「可点击/正在交互」的动作。
 - **卡片类型语义区分色**（信息编码，三种）：交互练习 `violet`、认知诊断 `blue`、知识模型/讲解 `emerald`。用于让用户一眼识别「这是哪类卡片」，只出现在卡片标题 + 淡色底 + 边框。
 - **认知状态语义色**（信息编码，五种）：已掌握 `emerald`、部分掌握 `amber`、错误理解 `rose`、盲区 `sky`、未评估 `zinc`。只用于知识图谱节点 / 状态徽标。
-- **深色元素**（消息气泡 / 主按钮 / 标题文字）：`--ink` 墨色，中性非彩色。
+- **深色元素**（主按钮 / 标题文字）：`--ink` 墨色，中性非彩色。
+- **用户消息气泡**：accent 淡色底（`bg-accent/10`）+ 正文色 `text-foreground`，与助手浅灰气泡（`bg-surface-muted`）区分。
 - **中性色**：`background` / `surface` / `surface-muted` / `foreground` / `muted` / `line`。
 
 判据：这个颜色在传达什么？
@@ -73,7 +74,8 @@
 | `text-zinc-900` / `text-zinc-800` | `text-foreground` |
 | `text-zinc-500` / `text-zinc-400` / `text-zinc-600` | `text-muted` |
 | `border-zinc-200` / `border-zinc-300` | `border-line` |
-| `bg-zinc-900`（发消息按钮/气泡） | `bg-ink` + `text-white` |
+| `bg-zinc-900`（发消息按钮） | `bg-ink` + `text-white` |
+| `bg-zinc-900`（用户消息气泡） | `bg-accent/10` + `text-foreground` |
 | `violet-*`（选择题交互）、`blue-*`（诊断面板）、`emerald-*`（知识模型/讲解面板） | 保留为「卡片类型区分色」各司其职；认知状态五态色（emerald/amber/rose/sky/zinc）保留不动 |
 
 ## 8. 派活 prompt 模板（复制即用）
@@ -82,7 +84,7 @@
 ## 约束
 - 视觉遵循 docs/frontend-aesthetics-guide.md，先读该文件。
 - 颜色只用 globals.css 的 token，禁止硬编码 hex/rgb。
-- 装饰彩色只有 --accent 一个（链接/focus/选中高亮）；气泡、主按钮用 ink 墨色。
+- 装饰彩色只有 --accent 一个（链接/focus/选中高亮）；用户气泡用 accent 淡色底（bg-accent/10 + text-foreground）；主按钮用 ink 墨色。
 - 卡片类型区分色固定为 violet(练习)/blue(诊断)/emerald(知识讲解)，认知状态五态色(emerald/amber/rose/sky/zinc)只用于节点/徽标；不新增其他彩色。
 - 中性色禁止写 bg-white / text-zinc-*，一律用 bg-surface / text-foreground / text-muted / border-line。
 - 正文字号 text-sm，间距只用 4/8/12/16/24/32，圆角只用 rounded/rounded-lg/rounded-xl。

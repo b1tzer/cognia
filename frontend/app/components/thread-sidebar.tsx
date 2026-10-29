@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import {
   BookOpen,
+  Brain,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
@@ -81,18 +82,26 @@ export default function ThreadSidebar({
     setEditingId(null);
   };
 
-  // 折叠态：收缩成 52px 窄图标栏（对齐 ChatGPT 收起 sidebar 的展示效果），
-  // 只保留图标按钮，展开按钮在顶部，功能导航图标竖排其下。
+  // 折叠态：收缩成 52px 窄图标栏（对齐 ChatGPT 收起 sidebar 的展示效果）。
+  // 顶部默认显示 Cognia logo，鼠标悬浮到窄栏时 logo 淡出、展开箭头淡入；
+  // 其余功能导航图标竖排其下，悬浮时有背景高亮。
   if (collapsed) {
     return (
-      <aside className="flex w-[52px] shrink-0 flex-col items-center border-r border-line bg-surface py-2">
+      <aside className="group/sidebar-rail flex w-[52px] shrink-0 flex-col items-center border-r border-line bg-surface py-2">
         <button
           onClick={onToggleCollapse}
           aria-label="展开侧边栏"
           title="展开侧边栏"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted transition hover:bg-surface-muted hover:text-foreground"
+          className="relative inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-foreground transition hover:bg-surface-muted"
         >
-          <PanelLeftOpen className="h-5 w-5" aria-hidden />
+          <Brain
+            className="h-5 w-5 transition-opacity duration-150 group-hover/sidebar-rail:opacity-0"
+            aria-hidden
+          />
+          <PanelLeftOpen
+            className="absolute h-5 w-5 opacity-0 transition-opacity duration-150 group-hover/sidebar-rail:opacity-100"
+            aria-hidden
+          />
         </button>
         <div className="mt-4 flex flex-col items-center gap-1">
           {NAV_ITEMS.map(({ key, label, icon: Icon }) => (
@@ -101,7 +110,7 @@ export default function ThreadSidebar({
               onClick={() => (key === "chat" ? onCreate() : onNavigate(key))}
               aria-label={label}
               title={label}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted transition hover:bg-surface-muted hover:text-foreground"
+              className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-surface-muted hover:text-foreground"
             >
               <Icon className="h-5 w-5" aria-hidden />
             </button>

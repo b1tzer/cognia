@@ -73,6 +73,21 @@ test("发送第一条消息时才真正创建后端会话", async ({ page }) => 
   await createReqPromise;
 });
 
+test("发送首条消息后异步生成的标题刷新到侧栏", async ({ page }) => {
+  await page.getByRole("button", { name: "新建对话" }).click();
+
+  await page
+    .getByPlaceholder("输入消息，Enter 发送，Shift+Enter 换行")
+    .fill("学习 Spring AOP");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  // 标题由后端异步生成（mock 延迟 2 次轮询），前端有界轮询刷新侧栏：
+  // 最终应显示「AI 精炼标题」而非停留在「新对话」占位。
+  await expect(page.getByText("AI 精炼标题", { exact: true })).toBeVisible({
+    timeout: 8000,
+  });
+});
+
 test("在 Wiki 页面点击侧边栏会话跳转回对话视图", async ({ page }) => {
   await page.getByRole("button", { name: "Wiki" }).click();
   await expect(page.getByText("暂无 wiki 页面", { exact: true })).toBeVisible();

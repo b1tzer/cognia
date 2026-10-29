@@ -391,6 +391,23 @@ function ChatApp() {
     return list;
   }, []);
 
+  // 有界轮询刷新会话标题：标题由后端异步生成（fire-and-forget，不阻塞 SSE 流），
+  // runAgent 完成时标题可能尚未写库。这里轮询几次、标题非空即停止，
+  // 避免新建会话在侧栏一直显示「新对话」占位（对应 Sourcery issue #5）。
+  const refreshTitleWithPolling = useCallback(async (threadId: string) => {
+    const MAX_RETRIES = 6;
+    const INTERVAL_MS = 1500;
+    for (let i = 0; i < MAX_RETRIES; i++) {
+      const list = await listThreads().catch(() => [] as Thread[]);
+      setThreads(list);
+      const target = list.find((t) => t.thread_id === threadId);
+      if (target?.title) return; // 标题已生成，停止轮询
+      if (i < MAX_RETRIES - 1) {
+        await new Promise((resolve) => setTimeout(resolve, INTERVAL_MS));
+      }
+    }
+  }, []);
+
   const switchThread = useCallback(
     (threadId: string) => {
       // 只做「选中会话」的状态切换；历史消息的统一加载交给下方
@@ -605,12 +622,16 @@ function ChatApp() {
     if (!text || !agent || sending) return;
     setInput("");
     setSending(true);
+    // 记录本次发送归属的会话 id：草稿态发送时会新建会话，需要在
+    // runAgent 完成后用它对侧栏标题做有界轮询刷新（标题由后端异步生成）。
+    let targetThreadId = currentThreadId;
     try {
       // 草稿态（尚未真正创建会话）下，发送第一条消息时才创建后端会话，
       // 并把 agent.threadId 指向新会话，后续消息才能正确归档到该会话。
       if (currentThreadId === null) {
         creatingFromDraftRef.current = true;
         const created = await createThread();
+        targetThreadId = created.thread_id;
         setThreads((prev) => [created, ...prev]);
         setCurrentThreadId(created.thread_id);
         persistCurrentThreadId(created.thread_id);
@@ -655,6 +676,11 @@ function ChatApp() {
       console.error("发送失败", err);
     } finally {
       setSending(false);
+    }
+    // 标题由后端异步生成（fire-and-forget），runAgent 结束时可能尚未写库；
+    // 对本次发送归属的会话做有界轮询，标题生成后侧栏立即更新，不再停留在「新对话」。
+    if (targetThreadId) {
+      void refreshTitleWithPolling(targetThreadId);
     }
   };
 

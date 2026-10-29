@@ -90,6 +90,9 @@ export async function mockApi(page: Page): Promise<void> {
   let threads: ThreadFixture[] = [THREAD_1];
   let wikiPages: WikiMockPage[] = [];
   let seq = 0;
+  // 模拟「标题异步生成」：新建会话后标题并非立即写库，需经过若干次
+  // listThreads 轮询才由 null 变为 AI 精炼标题。为 0 表示无待生成的标题。
+  let pendingTitlePollCount = 0;
 
   const now = "2026-01-04T00:00:00.000Z";
 
@@ -134,16 +137,30 @@ export async function mockApi(page: Page): Promise<void> {
 
     // ---- threads ----
     if (path === "/api/threads" && method === "GET") {
+      // 模拟标题异步生成：待生成计数递减，归零时把新建会话的 null 标题
+      // 补为 AI 精炼标题，随后前端有界轮询即可看到更新。
+      if (pendingTitlePollCount > 0) {
+        pendingTitlePollCount -= 1;
+        if (pendingTitlePollCount === 0) {
+          threads = threads.map((t) =>
+            t.title === null ? { ...t, title: "AI 精炼标题" } : t,
+          );
+        }
+      }
       return route.fulfill({ json: threads });
     }
     if (path === "/api/threads" && method === "POST") {
       const created: ThreadFixture = {
         thread_id: `thread-new-${++seq}`,
-        title: "新对话",
+        // 对齐真实后端 createThread：新建会话 title 初始为 null，
+        // 由后端异步生成，前端轮询刷新。
+        title: null,
         created_at: now,
         updated_at: now,
       };
       threads = [created, ...threads];
+      // 模拟标题需经过 2 次 listThreads 轮询后才生成（非立即写库）。
+      pendingTitlePollCount = 2;
       return route.fulfill({ json: created });
     }
 

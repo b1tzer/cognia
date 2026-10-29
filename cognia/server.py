@@ -157,7 +157,7 @@ def _extract_user_id(input_data: RunAgentInput) -> str:
 # 等价，但多了「进入时自动生成会话标题」这一步；健康检查端点一并保留。
 @app.post("/")
 async def cognia_agent_endpoint(input_data: RunAgentInput, request: Request):
-    await auto_title_thread(request, input_data)
+    auto_title_thread(request, input_data)
 
     accept_header = request.headers.get("accept")
     encoder = EventEncoder(accept=accept_header)

@@ -7,6 +7,8 @@
 注入（由 server.py 的 lifespan 设置），不依赖 server 的全局 agent 对象。
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
@@ -14,7 +16,7 @@ from pydantic import BaseModel
 from ag_ui.core.types import RunAgentInput
 from ag_ui_langgraph.utils import langchain_messages_to_agui
 
-from cognia import threads
+from cognia import models, threads
 
 router = APIRouter()
 
@@ -50,10 +52,63 @@ def _extract_first_user_text(input_data: RunAgentInput) -> str | None:
     return None
 
 
-async def auto_title_thread(request: Request, input_data: RunAgentInput) -> None:
-    """thread title 为空时，用首条用户消息截断作为临时标题。
+_TITLE_SYSTEM_PROMPT = (
+    "你是会话标题生成助手。根据用户的第一条消息，提炼一个不超过15个字的"
+    "精炼中文标题，直接概括用户的核心意图或问题。只输出标题本身，"
+    "不要加引号、句号等标点，不要输出任何解释。"
+)
 
-    只调用一次即可：auto_title_if_empty 在 SQL 层保证 title 非空时不覆盖，
+def _fallback_title(text: str) -> str:
+    """AI 生成失败时的降级标题：截断首条用户消息前 30 字。"""
+    return text[:30] + ("…" if len(text) > 30 else "")
+
+async def _generate_ai_title(text: str) -> str:
+    """调用 LLM 生成精炼标题；失败或空结果抛异常，由调用方降级。"""
+    model = models.get_planner_model()
+    resp = await model.ainvoke([
+        ("system", _TITLE_SYSTEM_PROMPT),
+        ("human", text),
+    ])
+    title = (resp.content or "").strip()
+    if not title:
+        raise ValueError("模型返回空标题")
+    # 与 prompt 声明的「不超过 15 个字」上限对齐：超长时截断到 15 字。
+    return title[:15] + ("…" if len(title) > 15 else "")
+
+async def _auto_title_task(pool, thread_id: str, text: str) -> None:
+    """后台生成并写入会话标题（不阻塞对话流）。
+
+    先查标题是否已存在：已有标题（含用户手动命名）直接跳过，避免对同一
+    会话的每次请求都重复调用 LLM（SQL 层的 auto_title_if_empty 只防覆盖、
+    不省模型调用）。LLM 生成失败时降级为截断标题；查询/写入失败只告警
+    不中断，避免后台任务异常无人捕获（"Task exception was never retrieved"）。
+    """
+    try:
+        existing = await threads.get_thread_title(pool, thread_id)
+    except Exception as exc:
+        print(f"[Cognia] 查询会话标题失败，跳过本次自动标题：{exc}")
+        return
+    if existing:  # 非空标题（None / '' 均视为无标题，继续生成）
+        return
+    try:
+        title = await _generate_ai_title(text)
+    except Exception as exc:
+        print(f"[Cognia] AI 生成会话标题失败，降级为截断：{exc}")
+        title = _fallback_title(text)
+    try:
+        await threads.auto_title_if_empty(pool, thread_id, title)
+    except Exception as exc:
+        print(f"[Cognia] 写入自动标题失败：{exc}")
+
+# 持有后台任务强引用，防止 asyncio.create_task 返回的任务被 GC 提前回收。
+# 任务完成后通过 done_callback 自动从集合移除，不累积内存。
+_background_tasks: set[asyncio.Task] = set()
+
+def auto_title_thread(request: Request, input_data: RunAgentInput) -> None:
+    """thread title 为空时，后台用 AI 精炼首条用户消息生成标题。
+
+    异步方案：用 asyncio.create_task 后台执行，不阻塞当前对话请求的 SSE 流，
+    本函数立即返回。auto_title_if_empty 在 SQL 层保证 title 非空时不覆盖，
     用户手动重命名后保持不被改写。
     """
     app_state = request.app.state
@@ -65,8 +120,9 @@ async def auto_title_thread(request: Request, input_data: RunAgentInput) -> None
     text = _extract_first_user_text(input_data)
     if not text:
         return
-    title = text[:30] + ("…" if len(text) > 30 else "")
-    await threads.auto_title_if_empty(app_state.pool, thread_id, title)
+    task = asyncio.create_task(_auto_title_task(app_state.pool, thread_id, text))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def _history_to_agui(messages) -> list:

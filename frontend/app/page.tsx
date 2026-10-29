@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCw, Square, ThumbsDown, ThumbsUp, Wrench } from "lucide-react";
+import { PanelLeftOpen, RefreshCw, Square, ThumbsDown, ThumbsUp, Wrench } from "lucide-react";
 import {
   CopilotKit,
   useAgent,
@@ -352,6 +352,7 @@ function ChatApp() {
   const [feedbackMap, setFeedbackMap] = useState<FeedbackMap>({});
   // 视图切换：chat（对话）/ map（知识版图）/ wiki（个人 Wiki）
   const [view, setView] = useState<"chat" | "map" | "wiki">("chat");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mapData, setMapData] = useState<KnowledgeMapGoal[]>([]);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
@@ -898,14 +899,28 @@ function ChatApp() {
         threads={threads}
         currentThreadId={currentThreadId}
         view={view}
+        collapsed={sidebarCollapsed}
         onSelect={handleSelect}
         onCreate={handleCreate}
         onRename={handleRename}
         onDelete={handleDelete}
         onNavigate={handleNavigate}
+        onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
+        {sidebarCollapsed && (
+          <div className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2">
+            <button
+              onClick={() => setSidebarCollapsed(false)}
+              aria-label="展开侧边栏"
+              title="展开侧边栏"
+              className="inline-flex items-center justify-center rounded-lg p-1.5 text-muted transition hover:bg-surface-muted hover:text-foreground"
+            >
+              <PanelLeftOpen className="h-5 w-5" aria-hidden />
+            </button>
+          </div>
+        )}
         {view === "wiki" ? (
           <div className="min-h-0 flex-1 bg-surface">
             <WikiView currentThreadId={currentThreadId} />

@@ -5,7 +5,6 @@ import {
   BookOpen,
   Network,
   PanelLeftClose,
-  PanelLeftOpen,
   Pencil,
   Plus,
   Trash2,
@@ -16,11 +15,13 @@ type ThreadSidebarProps = {
   threads: Thread[];
   currentThreadId: string | null;
   view: "chat" | "map" | "wiki";
+  collapsed: boolean;
   onSelect: (threadId: string) => void;
   onCreate: () => void;
   onRename: (threadId: string, title: string) => void;
   onDelete: (threadId: string) => void;
   onNavigate: (view: "chat" | "map" | "wiki") => void;
+  onToggleCollapse: () => void;
 };
 
 // 侧边栏功能导航项：对齐 ChatGPT 的「功能入口」信息架构，
@@ -50,17 +51,17 @@ export default function ThreadSidebar({
   threads,
   currentThreadId,
   view,
+  collapsed,
   onSelect,
   onCreate,
   onRename,
   onDelete,
   onNavigate,
+  onToggleCollapse,
 }: ThreadSidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
-  // 侧边栏折叠状态：折叠后只留一个「展开」按钮，主区自动扩展。
-  const [collapsed, setCollapsed] = useState(false);
   // 防止 Enter 提交后又触发 input 的 onBlur 造成重复提交
   const editingRef = useRef(false);
 
@@ -79,20 +80,9 @@ export default function ThreadSidebar({
     setEditingId(null);
   };
 
-  // 折叠态：只渲染一个「展开」按钮，主区自动扩展。
+  // 折叠态：侧边栏完全消失（宽度 0），展开按钮由主区顶部渲染（对齐 ChatGPT）。
   if (collapsed) {
-    return (
-      <aside className="flex shrink-0 flex-col border-r border-line bg-surface">
-        <button
-          onClick={() => setCollapsed(false)}
-          aria-label="展开侧边栏"
-          title="展开侧边栏"
-          className="m-2 inline-flex items-center justify-center rounded-lg p-2 text-muted transition hover:bg-surface-muted hover:text-foreground"
-        >
-          <PanelLeftOpen className="h-5 w-5" aria-hidden />
-        </button>
-      </aside>
-    );
+    return null;
   }
 
   return (
@@ -101,7 +91,7 @@ export default function ThreadSidebar({
       <div className="flex items-center justify-between px-3 py-3">
         <h1 className="text-base font-semibold text-foreground">Cognia</h1>
         <button
-          onClick={() => setCollapsed(true)}
+          onClick={onToggleCollapse}
           aria-label="收起侧边栏"
           title="收起侧边栏"
           className="inline-flex items-center justify-center rounded-lg p-1.5 text-muted transition hover:bg-surface-muted hover:text-foreground"

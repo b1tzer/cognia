@@ -67,3 +67,22 @@ test("空态建议卡片点击后预填输入框", async ({ page }) => {
     page.getByPlaceholder("输入消息，Enter 发送，Shift+Enter 换行"),
   ).toHaveValue("学习 Java 线程与并发");
 });
+
+test("收起侧边栏收缩为窄图标栏，展开后恢复", async ({ page }) => {
+  // 初始：侧边栏完整，会话列表可见
+  await expect(page.getByText("测试会话", { exact: true })).toBeVisible();
+
+  // 点击收起
+  await page.getByRole("button", { name: "收起侧边栏" }).click();
+
+  // 窄图标栏：会话列表消失、展开按钮出现、功能图标仍在
+  await expect(page.getByText("测试会话", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "展开侧边栏" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "新建对话" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "知识版图" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Wiki" })).toBeVisible();
+
+  // 再点展开，侧边栏恢复（会话列表回归）
+  await page.getByRole("button", { name: "展开侧边栏" }).click();
+  await expect(page.getByText("测试会话", { exact: true })).toBeVisible();
+});

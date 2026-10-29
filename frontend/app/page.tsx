@@ -352,6 +352,7 @@ function ChatApp() {
   const [feedbackMap, setFeedbackMap] = useState<FeedbackMap>({});
   // 视图切换：chat（对话）/ map（知识版图）/ wiki（个人 Wiki）
   const [view, setView] = useState<"chat" | "map" | "wiki">("chat");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mapData, setMapData] = useState<KnowledgeMapGoal[]>([]);
   const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
@@ -898,11 +899,13 @@ function ChatApp() {
         threads={threads}
         currentThreadId={currentThreadId}
         view={view}
+        collapsed={sidebarCollapsed}
         onSelect={handleSelect}
         onCreate={handleCreate}
         onRename={handleRename}
         onDelete={handleDelete}
         onNavigate={handleNavigate}
+        onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">

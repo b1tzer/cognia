@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import {
   BookOpen,
+  Brain,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
@@ -16,11 +17,13 @@ type ThreadSidebarProps = {
   threads: Thread[];
   currentThreadId: string | null;
   view: "chat" | "map" | "wiki";
+  collapsed: boolean;
   onSelect: (threadId: string) => void;
   onCreate: () => void;
   onRename: (threadId: string, title: string) => void;
   onDelete: (threadId: string) => void;
   onNavigate: (view: "chat" | "map" | "wiki") => void;
+  onToggleCollapse: () => void;
 };
 
 // 侧边栏功能导航项：对齐 ChatGPT 的「功能入口」信息架构，
@@ -50,17 +53,17 @@ export default function ThreadSidebar({
   threads,
   currentThreadId,
   view,
+  collapsed,
   onSelect,
   onCreate,
   onRename,
   onDelete,
   onNavigate,
+  onToggleCollapse,
 }: ThreadSidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
-  // 侧边栏折叠状态：折叠后只留一个「展开」按钮，主区自动扩展。
-  const [collapsed, setCollapsed] = useState(false);
   // 防止 Enter 提交后又触发 input 的 onBlur 造成重复提交
   const editingRef = useRef(false);
 
@@ -79,18 +82,40 @@ export default function ThreadSidebar({
     setEditingId(null);
   };
 
-  // 折叠态：只渲染一个「展开」按钮，主区自动扩展。
+  // 折叠态：收缩成 52px 窄图标栏（对齐 ChatGPT 收起 sidebar 的展示效果）。
+  // 顶部默认显示 Cognia logo，鼠标悬浮到窄栏时 logo 淡出、展开箭头淡入；
+  // 其余功能导航图标竖排其下，悬浮时有背景高亮。
   if (collapsed) {
     return (
-      <aside className="flex shrink-0 flex-col border-r border-line bg-surface">
+      <aside className="group/sidebar-rail flex w-[52px] shrink-0 flex-col items-center border-r border-line bg-surface py-2">
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={onToggleCollapse}
           aria-label="展开侧边栏"
           title="展开侧边栏"
-          className="m-2 inline-flex items-center justify-center rounded-lg p-2 text-muted transition hover:bg-surface-muted hover:text-foreground"
+          className="relative inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-foreground transition hover:bg-surface-muted"
         >
-          <PanelLeftOpen className="h-5 w-5" aria-hidden />
+          <Brain
+            className="h-5 w-5 transition-opacity duration-150 group-hover/sidebar-rail:opacity-0"
+            aria-hidden
+          />
+          <PanelLeftOpen
+            className="absolute h-5 w-5 opacity-0 transition-opacity duration-150 group-hover/sidebar-rail:opacity-100"
+            aria-hidden
+          />
         </button>
+        <div className="mt-4 flex flex-col items-center gap-1">
+          {NAV_ITEMS.map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => (key === "chat" ? onCreate() : onNavigate(key))}
+              aria-label={label}
+              title={label}
+              className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-surface-muted hover:text-foreground"
+            >
+              <Icon className="h-5 w-5" aria-hidden />
+            </button>
+          ))}
+        </div>
       </aside>
     );
   }
@@ -101,7 +126,7 @@ export default function ThreadSidebar({
       <div className="flex items-center justify-between px-3 py-3">
         <h1 className="text-base font-semibold text-foreground">Cognia</h1>
         <button
-          onClick={() => setCollapsed(true)}
+          onClick={onToggleCollapse}
           aria-label="收起侧边栏"
           title="收起侧边栏"
           className="inline-flex items-center justify-center rounded-lg p-1.5 text-muted transition hover:bg-surface-muted hover:text-foreground"
@@ -127,7 +152,7 @@ export default function ThreadSidebar({
                   className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
                     active
                       ? "bg-surface-muted font-medium text-foreground"
-                      : "text-muted hover:bg-surface-muted hover:text-foreground"
+                      : "text-foreground hover:bg-surface-muted"
                   }`}
                 >
                   <Icon className="h-4 w-4" aria-hidden />
@@ -181,7 +206,7 @@ export default function ThreadSidebar({
                 ) : (
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-foreground">
+                      <div className="truncate text-sm text-foreground">
                         {t.title || "新对话"}
                       </div>
                       <div className="text-xs text-muted">

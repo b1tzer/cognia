@@ -206,7 +206,7 @@ export default function ThreadSidebar({
                 ) : (
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium text-foreground">
+                      <div className="truncate text-sm text-foreground">
                         {t.title || "新对话"}
                       </div>
                       <div className="text-xs text-muted">

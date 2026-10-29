@@ -3,7 +3,6 @@
 import { useRef, useState } from "react";
 import {
   BookOpen,
-  MessageSquare,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
@@ -27,7 +26,7 @@ type ThreadSidebarProps = {
 // 侧边栏功能导航项：对齐 ChatGPT 的「功能入口」信息架构，
 // 把原先顶部的三个视图 tab 下沉到侧边栏，主区不再放导航。
 const NAV_ITEMS = [
-  { key: "chat", label: "对话", icon: MessageSquare },
+  { key: "chat", label: "新建对话", icon: Plus },
   { key: "map", label: "知识版图", icon: Network },
   { key: "wiki", label: "Wiki", icon: BookOpen },
 ] as const;
@@ -111,24 +110,13 @@ export default function ThreadSidebar({
         </button>
       </div>
 
-      {/* 新建会话 */}
-      <div className="px-3 pb-2">
-        <button
-          onClick={onCreate}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white transition hover:bg-ink/90"
-        >
-          <Plus className="h-4 w-4" aria-hidden />
-          新建会话
-        </button>
-      </div>
-
-      {/* 功能导航：对话 / 知识版图 / Wiki */}
+      {/* 功能导航：新建对话 / 知识版图 / Wiki */}
       <nav aria-label="功能导航" className="px-3 py-2">
         <ul className="space-y-1">
           {NAV_ITEMS.map(({ key, label, icon: Icon }) => (
             <li key={key}>
               <button
-                onClick={() => onNavigate(key)}
+                onClick={() => (key === "chat" ? onCreate() : onNavigate(key))}
                 className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
                   view === key
                     ? "bg-surface-muted font-medium text-foreground"

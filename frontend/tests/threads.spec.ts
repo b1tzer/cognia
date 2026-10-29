@@ -15,7 +15,7 @@ test("新建会话进入空态，不立即创建后端会话", async ({ page }) 
     }
   });
 
-  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByRole("button", { name: "新建对话" }).click();
 
   // 进入「新对话」空态，侧边栏列表不变、原会话仍在
   await expect(
@@ -36,8 +36,8 @@ test("重复点击新建会话仍停留在空态，不产生多余会话", async
     }
   });
 
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByRole("button", { name: "新建对话" }).click();
+  await page.getByRole("button", { name: "新建对话" }).click();
 
   // 仍停留在「新对话」空态
   await expect(
@@ -50,7 +50,7 @@ test("重复点击新建会话仍停留在空态，不产生多余会话", async
 });
 
 test("发送第一条消息时才真正创建后端会话", async ({ page }) => {
-  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByRole("button", { name: "新建对话" }).click();
 
   const createReqPromise = page.waitForRequest(
     (req) => req.method() === "POST" && req.url().includes("/api/threads"),
@@ -91,7 +91,7 @@ test("在 Wiki 页面新建会话跳转回对话视图", async ({ page }) => {
   await page.getByRole("button", { name: "Wiki" }).click();
   await expect(page.getByText("暂无 wiki 页面", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "新建会话" }).click();
+  await page.getByRole("button", { name: "新建对话" }).click();
   await expect(
     page.getByPlaceholder("输入消息，Enter 发送，Shift+Enter 换行"),
   ).toBeVisible();

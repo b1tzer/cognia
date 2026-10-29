@@ -113,21 +113,29 @@ export default function ThreadSidebar({
       {/* 功能导航：新建对话 / 知识版图 / Wiki */}
       <nav aria-label="功能导航" className="px-3 py-2">
         <ul className="space-y-1">
-          {NAV_ITEMS.map(({ key, label, icon: Icon }) => (
-            <li key={key}>
-              <button
-                onClick={() => (key === "chat" ? onCreate() : onNavigate(key))}
-                className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
-                  view === key
-                    ? "bg-surface-muted font-medium text-foreground"
-                    : "text-muted hover:bg-surface-muted hover:text-foreground"
-                }`}
-              >
-                <Icon className="h-4 w-4" aria-hidden />
-                {label}
-              </button>
-            </li>
-          ))}
+          {NAV_ITEMS.map(({ key, label, icon: Icon }) => {
+            // 「新建对话」只在空态（未选中任何历史会话）高亮；
+            // 知识版图 / Wiki 按当前视图高亮。
+            const active =
+              key === "chat"
+                ? view === "chat" && currentThreadId === null
+                : view === key;
+            return (
+              <li key={key}>
+                <button
+                  onClick={() => (key === "chat" ? onCreate() : onNavigate(key))}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
+                    active
+                      ? "bg-surface-muted font-medium text-foreground"
+                      : "text-muted hover:bg-surface-muted hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="h-4 w-4" aria-hidden />
+                  {label}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </nav>
 

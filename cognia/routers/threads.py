@@ -72,14 +72,24 @@ async def _generate_ai_title(text: str) -> str:
     title = (resp.content or "").strip()
     if not title:
         raise ValueError("模型返回空标题")
-    return title[:30] + ("…" if len(title) > 30 else "")
+    # 与 prompt 声明的「不超过 15 个字」上限对齐：超长时截断到 15 字。
+    return title[:15] + ("…" if len(title) > 15 else "")
 
 async def _auto_title_task(pool, thread_id: str, text: str) -> None:
     """后台生成并写入会话标题（不阻塞对话流）。
 
-    LLM 生成失败时降级为截断标题；写入失败只告警不中断，避免后台任务异常
-    无人捕获（避免 "Task exception was never retrieved"）。
+    先查标题是否已存在：已有标题（含用户手动命名）直接跳过，避免对同一
+    会话的每次请求都重复调用 LLM（SQL 层的 auto_title_if_empty 只防覆盖、
+    不省模型调用）。LLM 生成失败时降级为截断标题；查询/写入失败只告警
+    不中断，避免后台任务异常无人捕获（"Task exception was never retrieved"）。
     """
+    try:
+        existing = await threads.get_thread_title(pool, thread_id)
+    except Exception as exc:
+        print(f"[Cognia] 查询会话标题失败，跳过本次自动标题：{exc}")
+        return
+    if existing:  # 非空标题（None / '' 均视为无标题，继续生成）
+        return
     try:
         title = await _generate_ai_title(text)
     except Exception as exc:

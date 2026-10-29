@@ -72,23 +72,22 @@ RETURNING thread_id, title, created_at, updated_at
 
 _DELETE_THREAD_META_SQL = "DELETE FROM cognia_threads WHERE thread_id = %s"
 
-# 自动标题 UPSERT：仅在 title 为空（NULL 或 ''）时才写入，用户手动重命名后
-# 保持不被覆盖。旧会话（升级前只有 checkpoint）首次进来也会补建元数据记录。
+# 自动标题写入：纯 UPDATE，仅更新「已存在且 title 为空」的行。
+# 相比旧 UPSERT，这里有两个关键保证：
+# 1. 防覆盖：WHERE title IS NULL OR title = '' 保证用户手动重命名后不被改写。
+# 2. 防复活：线程被删除（cognia_threads 行已 DELETE）后，后台标题任务再执行
+#    UPDATE 时无行可匹配、不插入新行，被删除的会话不会凭空回到列表。
+# 副作用：升级前只有 checkpoint、无 cognia_threads 行的旧会话，首次自动标题
+# 不会补建元数据（这类会话标题为空，仍可在前端 rename 时经 _RENAME_THREAD_SQL
+# 的 UPSERT 补建，不影响手动命名路径）。
 _AUTO_TITLE_SQL = """
-INSERT INTO cognia_threads (thread_id, title, created_at, updated_at)
-VALUES (%s, %s, now(), now())
-ON CONFLICT (thread_id) DO UPDATE SET
-    title = CASE
-        WHEN cognia_threads.title IS NULL OR cognia_threads.title = ''
-        THEN EXCLUDED.title
-        ELSE cognia_threads.title
-    END,
-    updated_at = CASE
-        WHEN cognia_threads.title IS NULL OR cognia_threads.title = ''
-        THEN now()
-        ELSE cognia_threads.updated_at
-    END
+UPDATE cognia_threads
+SET title = %s, updated_at = now()
+WHERE thread_id = %s
+  AND (title IS NULL OR title = '')
 """
+
+_GET_THREAD_TITLE_SQL = "SELECT title FROM cognia_threads WHERE thread_id = %s"
 
 
 def _iso(value: Any) -> str | None:
@@ -156,12 +155,33 @@ async def delete_thread(pool, checkpointer, thread_id: str) -> None:
     await checkpointer.adelete_thread(thread_id)
 
 
-async def auto_title_if_empty(pool, thread_id: str, title: str) -> None:
-    """仅当会话尚无 title 时设置自动标题（首条用户消息截断）。
+async def get_thread_title(pool, thread_id: str) -> str | None:
+    """读会话标题；线程不存在或无标题（NULL/''）时返回 None。
 
-    - title 已存在（用户手动命名过）时保持不变，不会被覆盖。
-    - 升级前只有 checkpoint 的旧会话首次进来会补建元数据记录。
+    供自动标题任务在调用 LLM 前判断「是否已有标题」，避免对已命名会话
+    重复调用模型（auto_title_if_empty 的 SQL 只防覆盖、不省模型调用）。
     """
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(_AUTO_TITLE_SQL, (thread_id, title))
+            await cur.execute(_GET_THREAD_TITLE_SQL, (thread_id,))
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    title = row["title"]
+    return title if title else None
+
+
+async def auto_title_if_empty(pool, thread_id: str, title: str) -> None:
+    """仅当会话尚无 title 时，写入调用方传入的自动标题。
+
+    写入的 title 可能是 AI 精炼的语义标题，也可能是截断首条用户消息的
+    降级标题——由调用方（routers/threads._auto_title_task）决定，本函数
+    不关心其来源，只负责「空则写、非空则保留」的持久化语义。
+
+    - title 已存在（用户手动命名过）时保持不变，不会被覆盖。
+    - 线程行已被删除时，纯 UPDATE 不匹配任何行、不插入新行，避免复活
+      已删除会话。
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_AUTO_TITLE_SQL, (title, thread_id))

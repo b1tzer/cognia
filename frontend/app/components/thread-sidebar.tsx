@@ -5,6 +5,7 @@ import {
   BookOpen,
   Network,
   PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Plus,
   Trash2,
@@ -80,9 +81,34 @@ export default function ThreadSidebar({
     setEditingId(null);
   };
 
-  // 折叠态：侧边栏完全消失（宽度 0），展开按钮由主区顶部渲染（对齐 ChatGPT）。
+  // 折叠态：收缩成 52px 窄图标栏（对齐 ChatGPT 收起 sidebar 的展示效果），
+  // 只保留图标按钮，展开按钮在顶部，功能导航图标竖排其下。
   if (collapsed) {
-    return null;
+    return (
+      <aside className="flex w-[52px] shrink-0 flex-col items-center border-r border-line bg-surface py-2">
+        <button
+          onClick={onToggleCollapse}
+          aria-label="展开侧边栏"
+          title="展开侧边栏"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted transition hover:bg-surface-muted hover:text-foreground"
+        >
+          <PanelLeftOpen className="h-5 w-5" aria-hidden />
+        </button>
+        <div className="mt-4 flex flex-col items-center gap-1">
+          {NAV_ITEMS.map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => (key === "chat" ? onCreate() : onNavigate(key))}
+              aria-label={label}
+              title={label}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted transition hover:bg-surface-muted hover:text-foreground"
+            >
+              <Icon className="h-5 w-5" aria-hidden />
+            </button>
+          ))}
+        </div>
+      </aside>
+    );
   }
 
   return (

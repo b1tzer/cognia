@@ -1,16 +1,36 @@
 "use client";
 
 import { useRef, useState } from "react";
+import {
+  BookOpen,
+  MessageSquare,
+  Network,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pencil,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import type { Thread } from "../lib/threads";
 
 type ThreadSidebarProps = {
   threads: Thread[];
   currentThreadId: string | null;
+  view: "chat" | "map" | "wiki";
   onSelect: (threadId: string) => void;
   onCreate: () => void;
   onRename: (threadId: string, title: string) => void;
   onDelete: (threadId: string) => void;
+  onNavigate: (view: "chat" | "map" | "wiki") => void;
 };
+
+// 侧边栏功能导航项：对齐 ChatGPT 的「功能入口」信息架构，
+// 把原先顶部的三个视图 tab 下沉到侧边栏，主区不再放导航。
+const NAV_ITEMS = [
+  { key: "chat", label: "对话", icon: MessageSquare },
+  { key: "map", label: "知识版图", icon: Network },
+  { key: "wiki", label: "Wiki", icon: BookOpen },
+] as const;
 
 function formatRelativeTime(iso: string | null): string {
   if (!iso) return "";
@@ -30,14 +50,18 @@ function formatRelativeTime(iso: string | null): string {
 export default function ThreadSidebar({
   threads,
   currentThreadId,
+  view,
   onSelect,
   onCreate,
   onRename,
   onDelete,
+  onNavigate,
 }: ThreadSidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  // 侧边栏折叠状态：折叠后只留一个「展开」按钮，主区自动扩展。
+  const [collapsed, setCollapsed] = useState(false);
   // 防止 Enter 提交后又触发 input 的 onBlur 造成重复提交
   const editingRef = useRef(false);
 
@@ -56,121 +80,173 @@ export default function ThreadSidebar({
     setEditingId(null);
   };
 
-  return (
-    <aside className="w-64 shrink-0 border-r border-zinc-200 bg-zinc-50 flex flex-col">
-      <div className="p-3 border-b border-zinc-200">
+  // 折叠态：只渲染一个「展开」按钮，主区自动扩展。
+  if (collapsed) {
+    return (
+      <aside className="flex shrink-0 flex-col border-r border-line bg-surface">
         <button
-          onClick={onCreate}
-          className="w-full rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-700"
+          onClick={() => setCollapsed(false)}
+          aria-label="展开侧边栏"
+          title="展开侧边栏"
+          className="m-2 inline-flex items-center justify-center rounded-lg p-2 text-muted transition hover:bg-surface-muted hover:text-foreground"
         >
-          + 新建会话
+          <PanelLeftOpen className="h-5 w-5" aria-hidden />
+        </button>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-surface">
+      {/* 品牌区 + 折叠按钮 */}
+      <div className="flex items-center justify-between px-3 py-3">
+        <h1 className="text-base font-semibold text-foreground">Cognia</h1>
+        <button
+          onClick={() => setCollapsed(true)}
+          aria-label="收起侧边栏"
+          title="收起侧边栏"
+          className="inline-flex items-center justify-center rounded-lg p-1.5 text-muted transition hover:bg-surface-muted hover:text-foreground"
+        >
+          <PanelLeftClose className="h-5 w-5" aria-hidden />
         </button>
       </div>
 
-      <nav className="flex-1 overflow-y-auto p-2 space-y-1">
-        {threads.length === 0 && currentThreadId !== null && (
-          <p className="px-2 py-4 text-center text-sm text-zinc-400">暂无会话</p>
-        )}
-        {currentThreadId === null && (
-          <div className="rounded-lg bg-zinc-200 px-3 py-2">
-            <div className="truncate text-sm font-medium text-zinc-800">
-              新对话
-            </div>
-            <div className="text-xs text-zinc-400">未开始</div>
-          </div>
-        )}
-        {threads.map((t) => {
-          const active = t.thread_id === currentThreadId;
-          const isEditing = editingId === t.thread_id;
-          const isConfirming = confirmingDeleteId === t.thread_id;
+      {/* 新建会话 */}
+      <div className="px-3 pb-2">
+        <button
+          onClick={onCreate}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-ink px-3 py-2 text-sm font-medium text-white transition hover:bg-ink/90"
+        >
+          <Plus className="h-4 w-4" aria-hidden />
+          新建会话
+        </button>
+      </div>
 
-          return (
-            <div
-              key={t.thread_id}
-              className={`group rounded-lg px-3 py-2 transition ${
-                active ? "bg-zinc-200" : "cursor-pointer hover:bg-zinc-100"
-              }`}
-              onClick={() => {
-                if (!isEditing && !isConfirming) onSelect(t.thread_id);
-              }}
-            >
-              {isEditing ? (
-                <input
-                  autoFocus
-                  value={draftTitle}
-                  onChange={(e) => setDraftTitle(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") finishEdit(true);
-                    if (e.key === "Escape") finishEdit(false);
-                  }}
-                  onBlur={() => finishEdit(true)}
-                  className="w-full rounded border border-zinc-300 px-1.5 py-0.5 text-sm text-zinc-800"
-                  onClick={(e) => e.stopPropagation()}
-                  placeholder="输入会话标题"
-                />
-              ) : (
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-zinc-800">
-                      {t.title || "新对话"}
-                    </div>
-                    <div className="text-xs text-zinc-400">
-                      {formatRelativeTime(t.updated_at)}
-                    </div>
-                  </div>
-
-                  {isConfirming ? (
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <button
-                        className="text-xs text-red-600 hover:underline"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDelete(t.thread_id);
-                          setConfirmingDeleteId(null);
-                        }}
-                      >
-                        删除
-                      </button>
-                      <button
-                        className="text-xs text-zinc-500 hover:underline"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmingDeleteId(null);
-                        }}
-                      >
-                        取消
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="hidden shrink-0 items-center gap-1.5 group-hover:flex">
-                      <button
-                        aria-label="重命名"
-                        className="text-xs text-zinc-500 hover:text-zinc-900"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startEdit(t);
-                        }}
-                      >
-                        重命名
-                      </button>
-                      <button
-                        aria-label="删除"
-                        className="text-xs text-red-500 hover:text-red-700"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmingDeleteId(t.thread_id);
-                        }}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
+      {/* 功能导航：对话 / 知识版图 / Wiki */}
+      <nav aria-label="功能导航" className="px-3 py-2">
+        <ul className="space-y-1">
+          {NAV_ITEMS.map(({ key, label, icon: Icon }) => (
+            <li key={key}>
+              <button
+                onClick={() => onNavigate(key)}
+                className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
+                  view === key
+                    ? "bg-surface-muted font-medium text-foreground"
+                    : "text-muted hover:bg-surface-muted hover:text-foreground"
+                }`}
+              >
+                <Icon className="h-4 w-4" aria-hidden />
+                {label}
+              </button>
+            </li>
+          ))}
+        </ul>
       </nav>
+
+      {/* 会话列表 */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
+        <p className="px-2 pb-1 text-xs font-medium text-muted">会话</p>
+        {threads.length === 0 && (
+          <p className="px-2 py-4 text-center text-sm text-muted">暂无会话</p>
+        )}
+        <ul className="space-y-1">
+          {threads.map((t) => {
+            const active = t.thread_id === currentThreadId;
+            const isEditing = editingId === t.thread_id;
+            const isConfirming = confirmingDeleteId === t.thread_id;
+
+            return (
+              <li
+                key={t.thread_id}
+                className={`group rounded-lg px-3 py-2 transition ${
+                  active
+                    ? "bg-surface-muted"
+                    : "cursor-pointer hover:bg-surface-muted"
+                }`}
+                onClick={() => {
+                  if (!isEditing && !isConfirming) onSelect(t.thread_id);
+                }}
+              >
+                {isEditing ? (
+                  <input
+                    autoFocus
+                    value={draftTitle}
+                    onChange={(e) => setDraftTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") finishEdit(true);
+                      if (e.key === "Escape") finishEdit(false);
+                    }}
+                    onBlur={() => finishEdit(true)}
+                    className="w-full rounded border border-line px-1.5 py-0.5 text-sm text-foreground"
+                    onClick={(e) => e.stopPropagation()}
+                    placeholder="输入会话标题"
+                  />
+                ) : (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-foreground">
+                        {t.title || "新对话"}
+                      </div>
+                      <div className="text-xs text-muted">
+                        {formatRelativeTime(t.updated_at)}
+                      </div>
+                    </div>
+
+                    {isConfirming ? (
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          className="text-xs text-red-600 hover:underline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete(t.thread_id);
+                            setConfirmingDeleteId(null);
+                          }}
+                        >
+                          删除
+                        </button>
+                        <button
+                          className="text-xs text-muted hover:underline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmingDeleteId(null);
+                          }}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="hidden shrink-0 items-center gap-1.5 group-hover:flex">
+                        <button
+                          aria-label="重命名"
+                          title="重命名"
+                          className="inline-flex items-center justify-center rounded p-1 text-muted transition hover:bg-surface-muted hover:text-foreground"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEdit(t);
+                          }}
+                        >
+                          <Pencil className="h-3.5 w-3.5" aria-hidden />
+                        </button>
+                        <button
+                          aria-label="删除"
+                          title="删除"
+                          className="inline-flex items-center justify-center rounded p-1 text-muted transition hover:bg-surface-muted hover:text-red-600"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmingDeleteId(t.thread_id);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </aside>
   );
 }

@@ -42,6 +42,15 @@ import { getOrCreateUserId } from "./lib/user-id";
 // 都在服务端 PostgreSQL；localStorage 不保存线程列表。
 const THREAD_ID_KEY = "cognia:threadId";
 
+// 空态「快速开始」建议卡片：给新手一个明确的下一步，点击后预填输入框。
+// 内容对齐 Cognia 定位（程序员学习新框架 / 语言）。
+const SUGGESTIONS = [
+  "学习 Java 线程与并发",
+  "理解 React Hooks 的原理",
+  "搞懂协程与线程的区别",
+  "梳理 Spring 源码结构",
+] as const;
+
 const MessageBubble = memo(function MessageBubble({
   message,
   toolName,
@@ -739,6 +748,18 @@ function ChatApp() {
     void loadKnowledgeMap();
   }, [loadKnowledgeMap]);
 
+  // 侧边栏功能导航统一入口：map 视图需额外加载知识版图数据。
+  const handleNavigate = useCallback(
+    (nextView: "chat" | "map" | "wiki") => {
+      if (nextView === "map") {
+        showMap();
+      } else {
+        setView(nextView);
+      }
+    },
+    [showMap],
+  );
+
   const messages = agent?.messages ?? [];
   const displayMessages = useMemo(
     () => buildDisplayMessages(messages, agent?.isRunning ?? false),
@@ -876,47 +897,15 @@ function ChatApp() {
       <ThreadSidebar
         threads={threads}
         currentThreadId={currentThreadId}
+        view={view}
         onSelect={handleSelect}
         onCreate={handleCreate}
         onRename={handleRename}
         onDelete={handleDelete}
+        onNavigate={handleNavigate}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-line bg-surface px-6 py-3">
-          <div>
-            <h1 className="text-lg font-semibold text-foreground">
-              Cognia · AI 学习教练
-            </h1>
-            <p className="text-sm text-muted">
-              主动发现认知盲区，动态引导掌握知识点
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {(
-              [
-                { key: "chat", label: "对话" },
-                { key: "map", label: "知识版图" },
-                { key: "wiki", label: "Wiki" },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() =>
-                  tab.key === "map" ? showMap() : setView(tab.key)
-                }
-                className={`rounded-lg px-3 py-1.5 text-sm transition ${
-                  view === tab.key
-                    ? "bg-ink text-white"
-                    : "text-foreground hover:bg-surface-muted"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </header>
-
         {view === "wiki" ? (
           <div className="min-h-0 flex-1 bg-surface">
             <WikiView currentThreadId={currentThreadId} />
@@ -945,7 +934,7 @@ function ChatApp() {
             加载中…
           </div>
         ) : messages.length === 0 ? (
-          // 新对话空态：欢迎引导 + 输入框居中。
+          // 新对话空态：欢迎引导 + 快速开始建议 + 输入框居中。
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-surface px-4">
             <h2 className="text-xl font-semibold text-foreground">
               开始一段新对话吧
@@ -953,6 +942,17 @@ function ChatApp() {
             <p className="mt-2 text-sm text-muted">
               输入你想学习的内容，Enter 发送
             </p>
+            <div className="mt-6 grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setInput(s)}
+                  className="rounded-lg border border-line bg-surface px-4 py-3 text-left text-sm text-foreground transition hover:bg-surface-muted"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
             <div className="mt-6 w-full max-w-2xl">{chatInput}</div>
           </div>
         ) : (

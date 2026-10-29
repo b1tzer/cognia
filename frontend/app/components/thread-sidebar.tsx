@@ -118,7 +118,7 @@ export default function ThreadSidebar({
               <button
                 onClick={() => (key === "chat" ? onCreate() : onNavigate(key))}
                 className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
-                  view === key && key !== "chat"
+                  view === key && key === "chat"
                     ? "bg-surface-muted font-medium text-foreground"
                     : "text-muted hover:bg-surface-muted hover:text-foreground"
                 }`}

@@ -201,6 +201,44 @@ def test_explain():
     assert "AOP" in result
 
 
+def test_generate_probe_passes_context_to_submodel():
+    """generate_probe 把 context 注入子模型的 human message，供针对性出题。"""
+    teacher = ScriptedLLM([_Msg("请说说 happens-before 是不是时间先后？")])
+    tools = build_cognia_tools(
+        diagnoser=ScriptedLLM([]),
+        planner=ScriptedLLM([]),
+        teacher=teacher,
+        store=InMemoryStore(),
+    )
+    tools["generate_probe"].invoke({
+        "point_name": "Java内存模型(JMM)",
+        "point_description": "描述多线程环境下变量访问的抽象规则",
+        "context": "验证 happens-before 不等于物理时间先后，而是可见性保证",
+    })
+    human_msgs = [m[1] for m in teacher.calls[0] if m[0] == "human"]
+    assert any("happens-before 不等于物理时间先后" in h for h in human_msgs)
+
+
+def test_explain_passes_context_to_submodel(monkeypatch):
+    """explain 把 context 注入子模型的 human message，供针对性补缺口。"""
+    monkeypatch.setattr("cognia.tools.search_web", lambda *a, **k: [])
+    teacher = ScriptedLLM([_Msg("happens-before 是可见性保证，而非时间先后……")])
+    tools = build_cognia_tools(
+        diagnoser=ScriptedLLM([]),
+        planner=ScriptedLLM([]),
+        teacher=teacher,
+        store=InMemoryStore(),
+    )
+    tools["explain"].invoke({
+        "point_name": "Java内存模型(JMM)",
+        "point_description": "描述多线程环境下变量访问的抽象规则",
+        "user_state": "partial",
+        "context": "缺口：把 happens-before 当成物理时间先后；已讲过的可见性不要重复",
+    })
+    human_msgs = [m[1] for m in teacher.calls[0] if m[0] == "human"]
+    assert any("把 happens-before 当成物理时间先后" in h for h in human_msgs)
+
+
 # ---- 知识模型 load-or-build ----
 
 def test_build_learning_goal_builds_then_reuses(monkeypatch):

@@ -237,22 +237,30 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
         }, ensure_ascii=False)
 
     @tool
-    def generate_probe(point_name: str, point_description: str, config: RunnableConfig) -> str:
-        """生成一个针对某知识点的开放式探针问题，引导用户用自己的话表达理解。
+    def generate_probe(point_name: str, point_description: str, context: str = "", config: RunnableConfig | None = None) -> str:
+        """生成一个针对某知识点的开放式探针问题，引导学生用自己的话表达理解。
 
         Args:
             point_name: 知识点名称。
             point_description: 知识点一句话描述。
+            context: 教学上下文（本次要验证的认知缺口 / 已讲过的内容 / 提问焦点）。
+                由主 Agent 根据诊断结果与对话历史填写；为空表示首次探测、无针对性焦点。
         """
+        context = str(context or "").strip()
+        human_msg = f"知识点：{point_name}（{point_description}）"
+        if context:
+            human_msg += (
+                f"\n\n教学上下文（本次探针要验证的焦点）：\n{context}"
+            )
         result = _get_teacher().invoke([
             ("system", PROBE_GENERATOR_SYSTEM_PROMPT),
-            ("human", f"知识点：{point_name}（{point_description}）"),
+            ("human", human_msg),
         ], config)
         content = result.content if hasattr(result, "content") else str(result)
         return content.strip()
 
     @tool
-    def explain(point_name: str, point_description: str, user_state: str, config: RunnableConfig) -> str:
+    def explain(point_name: str, point_description: str, user_state: str, context: str = "", config: RunnableConfig | None = None) -> str:
         """针对用户当前认知状态，用通俗方式讲解一个知识点。
 
         本工具会**先强制联网检索官方 / 权威资料**，再基于检索结果讲解，
@@ -262,7 +270,10 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
             point_name: 知识点名称。
             point_description: 知识点一句话描述。
             user_state: 用户当前认知状态（partial 用引导式；misconception 用颠覆式；unknown 从零建立）。
+            context: 教学上下文（诊断出的认知缺口 / 学生错误理解 / 已讲过的内容 / 本次讲解目标）。
+                由主 Agent 根据诊断结果与对话历史填写；为空表示首次讲解、无针对性缺口。
         """
+        context = str(context or "").strip()
         style_hint = {
             CognitiveState.PARTIAL.value: "引导式：渐进补全细节，追问澄清边界",
             CognitiveState.MISCONCEPTION.value: "颠覆式：先指出认知冲突，再重建正确模型",
@@ -277,11 +288,19 @@ def build_cognia_tools(diagnoser=None, planner=None, teacher=None, store=None, c
         if not refs:
             refs = "（本次未检索到外部资料，请仅基于已确定的技术事实谨慎讲解，不确定处明确说明。）"
 
+        context_block = ""
+        if context:
+            context_block = (
+                f"\n\n教学上下文（本次讲解要针对的缺口，已掌握/已讲过的内容不要重复）：\n"
+                f"{context}"
+            )
+
         result = _get_teacher().invoke([
             ("system", EXPLAINER_SYSTEM_PROMPT),
             ("human", (
                 f"知识点：{point_name}（{point_description}）\n"
-                f"教学策略：{style_hint}\n\n"
+                f"教学策略：{style_hint}"
+                f"{context_block}\n\n"
                 f"检索资料：\n{refs}"
             )),
         ], config)

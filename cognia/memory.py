@@ -441,6 +441,11 @@ def merge_knowledge_model_concepts(store, user_id: str, km: KnowledgeModel) -> K
 
     这是「以 user 为单位构建知识星图」的落点：同一概念跨对话复用同一 point_id，
     熟练度 / 观察历史按全局 id 自然聚合。
+
+    关键：语义比对基准只取「跨对话历史概念」（list_concepts 的快照），本批新建
+    的概念不得参与本批内的比对——否则同一知识模型里「同一主体的不同侧面」
+    （如 happens-before 原则定义 / 具体规则 / 原则的应用，cosine 高达 0.89~0.92）
+    会被误合并成同一 id，导致三者的熟练度 / 观察历史互相污染。
     """
     if store is None or not user_id:
         return km
@@ -454,7 +459,9 @@ def merge_knowledge_model_concepts(store, user_id: str, km: KnowledgeModel) -> K
         if is_new:
             vec = embedding.embed_text(canonical)
             put_concept(store, user_id, global_id, canonical, vec)
-            existing.append({"id": global_id, "name": canonical, "embedding": vec})
+            # 不把新概念 append 回 existing：本批内的点即使语义接近，也是 planner
+            # 精心拆分的独立教学单元，应各自独立 id（同名点因 concept_id 基于 name
+            # 的 sha1，本就天然归一，无需语义合并介入）。
         p.id = global_id
 
     # 重写前置依赖引用：旧裸 id → 全局 id（跨 goal 的历史点 id 不在本批，保持不变）

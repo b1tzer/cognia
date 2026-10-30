@@ -128,6 +128,22 @@ def _json_safe(value):
     return str(value)
 
 
+# 前台渲染（Generative UI）的 Cognia 后端工具：这些工具的 tool 结果在
+# frontend/app/components/cognia-frontend-tools.tsx 注册了 defineToolCallRenderer，
+# 会渲染成结构化卡片（诊断卡 / 知识模型卡 / 讲解卡），属于「前台显示内容」；
+# 其余工具（generate_probe / query_proficiency / web_search 等）结果在前端只显示
+# 「工具 调用完成」灰字、正文被折叠，属于「过程内容」。
+_FOREGROUND_TOOLS = {"propose_diagnosis", "build_learning_goal", "explain"}
+
+# 消息三分类：display 字段取值语义（对齐前端 page.tsx / cognia-frontend-tools.tsx 渲染规则）。
+# - foreground：前台显示内容（用户气泡 / AI 最终回复 / 结构化工具卡片）
+# - process   ：过程中的内容（思考链折叠 / 工具结果灰字隐藏正文 / 过渡思考）
+# - hidden    ：完全隐藏（system 提示词，后端 /threads/{id}/messages 回填时已过滤）
+_DISPLAY_FOREGROUND = "foreground"
+_DISPLAY_PROCESS = "process"
+_DISPLAY_HIDDEN = "hidden"
+
+
 def _tool_calls_to_list(msg) -> list[dict]:
     """把 AIMessage 的 tool_calls 归一为 [{id, name, arguments}]。"""
     out = []
@@ -152,8 +168,20 @@ def _messages_to_dicts(messages: list) -> list[dict]:
 
     与 server._history_to_agui 语义对齐：
     - AIMessage 的 reasoning_content（DeepSeek 思考链）拆成独立 role="reasoning"；
-    - 其余按 user / assistant / tool / system 分类，tool 消息带 toolCallId。
+    - 其余按 user / assistant / tool / system 分类，tool 消息带 toolCallId 与 toolName；
+    - 每条消息带 display 字段，标记「前台显示 / 过程内容 / 完全隐藏」（三分类见顶部常量）。
     """
+    # 先建 tool_call_id -> tool_name 映射（来自 AIMessage.tool_calls），
+    # 供 tool 消息补 toolName 并判断是否前台渲染（有 Generative UI 卡片）。
+    tool_name_by_id: dict = {}
+    for raw in messages:
+        if getattr(raw, "type", None) == "ai":
+            for tc in _tool_calls_to_list(raw):
+                tc_id = tc.get("id")
+                tc_name = tc.get("name")
+                if tc_id and tc_name:
+                    tool_name_by_id[tc_id] = tc_name
+
     out = []
     for raw in messages:
         mtype = getattr(raw, "type", None)
@@ -168,37 +196,53 @@ def _messages_to_dicts(messages: list) -> list[dict]:
                     "id": f"{getattr(raw, 'id', None)}-reasoning",
                     "role": "reasoning",
                     "content": reasoning,
+                    "display": _DISPLAY_PROCESS,
                 })
+            tool_calls = _tool_calls_to_list(raw)
+            # 带工具调用的 assistant 消息，其 content 是「过渡思考」而非最终回复
+            # （前端 page.tsx 会把它折叠成 reasoning）；不带工具调用的才是前台正文。
             out.append({
                 "id": getattr(raw, "id", None),
                 "role": "assistant",
                 "content": content,
-                "toolCalls": _tool_calls_to_list(raw),
+                "toolCalls": tool_calls,
+                "display": _DISPLAY_FOREGROUND if not tool_calls else _DISPLAY_PROCESS,
             })
         elif mtype == "tool":
+            tool_call_id = getattr(raw, "tool_call_id", None)
+            tool_name = tool_name_by_id.get(tool_call_id)
             out.append({
                 "id": getattr(raw, "id", None),
                 "role": "tool",
                 "content": content,
-                "toolCallId": getattr(raw, "tool_call_id", None),
+                "toolCallId": tool_call_id,
+                "toolName": tool_name,
+                "display": (
+                    _DISPLAY_FOREGROUND
+                    if tool_name in _FOREGROUND_TOOLS
+                    else _DISPLAY_PROCESS
+                ),
             })
         elif mtype == "human":
             out.append({
                 "id": getattr(raw, "id", None),
                 "role": "user",
                 "content": content,
+                "display": _DISPLAY_FOREGROUND,
             })
         elif mtype == "system":
             out.append({
                 "id": getattr(raw, "id", None),
                 "role": "system",
                 "content": content,
+                "display": _DISPLAY_HIDDEN,
             })
         else:
             out.append({
                 "id": getattr(raw, "id", None),
                 "role": mtype or "unknown",
                 "content": content,
+                "display": _DISPLAY_PROCESS,
             })
     return out
 

@@ -63,3 +63,54 @@ def test_concept_id_stable():
     assert a == b
     assert a != c
     assert a.startswith("concept:")
+
+
+def test_merge_knowledge_model_does_not_merge_within_batch(monkeypatch):
+    """本批内语义接近的点（同一主体不同侧面）不应互相合并成同一 id。
+
+    回归背景：merge_knowledge_model_concepts 曾把本批新建概念 append 回比对列表，
+    导致「happens-before 原则定义 / 具体规则 / 原则的应用」三个语义接近的点
+    （cosine 0.89~0.92）被误合并成同一 id，熟练度互相污染。
+    """
+    from cognia import memory
+    from cognia.schemas import KnowledgeModel, KnowledgePoint
+    from langgraph.store.memory import InMemoryStore
+
+    # embedding 可用且 cosine 恒高（模拟「同一主体的不同侧面」语义接近）
+    monkeypatch.setattr("cognia.embedding.embed_text", lambda t: [1.0])
+    monkeypatch.setattr("cognia.embedding.cosine", lambda a, b: 0.95)
+
+    km = KnowledgeModel(goal="test", points=[
+        KnowledgePoint(id="p1", name="happens-before 原则定义", description=""),
+        KnowledgePoint(id="p2", name="happens-before 具体规则", description=""),
+        KnowledgePoint(id="p3", name="happens-before 原则的应用", description=""),
+    ])
+    store = InMemoryStore()
+    result = memory.merge_knowledge_model_concepts(store, "u1", km)
+
+    ids = [p.id for p in result.points]
+    assert len(set(ids)) == 3, f"本批内不应互相合并，实际 ids={ids}"
+
+
+def test_merge_knowledge_model_merges_across_calls(monkeypatch):
+    """跨调用：历史概念存在时，同义 name 仍应合并到同一 id（归一语义保留）。"""
+    from cognia import memory
+    from cognia.schemas import KnowledgeModel, KnowledgePoint
+    from langgraph.store.memory import InMemoryStore
+
+    monkeypatch.setattr("cognia.embedding.embed_text", lambda t: [1.0])
+    monkeypatch.setattr("cognia.embedding.cosine", lambda a, b: 0.95)
+
+    store = InMemoryStore()
+    km1 = KnowledgeModel(goal="g1", points=[
+        KnowledgePoint(id="p1", name="happens-before 原则定义", description=""),
+    ])
+    memory.merge_knowledge_model_concepts(store, "u1", km1)
+    first_id = km1.points[0].id
+
+    # 第二次（新 goal）出现同一概念 → 应复用 first_id，而非新建
+    km2 = KnowledgeModel(goal="g2", points=[
+        KnowledgePoint(id="p2", name="happens-before 原则定义", description=""),
+    ])
+    memory.merge_knowledge_model_concepts(store, "u1", km2)
+    assert km2.points[0].id == first_id

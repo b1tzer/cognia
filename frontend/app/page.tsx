@@ -36,7 +36,7 @@ import {
   upsertFeedback,
   type FeedbackMap,
 } from "./lib/feedback";
-import { getOrCreateUserId } from "./lib/user-id";
+import { getOrCreateUserId, generateUuid } from "./lib/user-id";
 
 // localStorage 只保存「当前选中的 threadId」。会话列表与历史消息的权威数据
 // 都在服务端 PostgreSQL；localStorage 不保存线程列表。
@@ -654,7 +654,7 @@ function ChatApp() {
             ? "答对了。"
             : `答错了，正确答案是「${correctOpt}」。`);
         agent.addMessage({
-          id: crypto.randomUUID(),
+          id: generateUuid(),
           role: "user",
           content: recordText,
           hidden: true,
@@ -662,7 +662,7 @@ function ChatApp() {
       }
 
       agent.addMessage({
-        id: crypto.randomUUID(),
+        id: generateUuid(),
         role: "user",
         content: text,
       });

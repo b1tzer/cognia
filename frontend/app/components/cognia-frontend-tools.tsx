@@ -240,8 +240,12 @@ const diagnosisRenderer = defineToolCallRenderer({
     const data = parseToolResult(result);
     if (!data) return null;
 
-    const diagnosed = String(data.diagnosed_state ?? "");
-    const meta = STATE_META[diagnosed] ?? { label: diagnosed || "未知", color: "text-muted bg-surface-muted" };
+    // 展示系统权威状态（authoritative_state，BKT 融合历史观察后得出），
+    // 而非本次诊断候选（diagnosed_state）。二者在「单次答对但历史有负向观察」时
+    // 会不一致（如 diagnosed=mastered 但 authoritative=misconception），
+    // 卡片必须与 agent 回复（同样基于 authoritative_state）保持一致，避免矛盾。
+    const authoritative = String(data.authoritative_state ?? "");
+    const meta = STATE_META[authoritative] ?? { label: authoritative || "未知", color: "text-muted bg-surface-muted" };
 
     return (
       <div className="my-2 overflow-hidden rounded-xl border border-blue-200 bg-blue-50/50">

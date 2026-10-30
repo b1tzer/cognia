@@ -241,10 +241,6 @@ const diagnosisRenderer = defineToolCallRenderer({
     if (!data) return null;
 
     const diagnosed = String(data.diagnosed_state ?? "");
-    const confidence = String(data.confidence ?? "");
-    const migrated = Boolean(data.migrated);
-    const finalState = String(data.final_state ?? "");
-    const evidence = Array.isArray(data.evidence) ? (data.evidence as string[]) : [];
     const meta = STATE_META[diagnosed] ?? { label: diagnosed || "未知", color: "text-muted bg-surface-muted" };
 
     return (
@@ -255,28 +251,10 @@ const diagnosisRenderer = defineToolCallRenderer({
             认知诊断 · {args.point_name ?? args.point_id ?? ""}
           </span>
         </div>
-        <div className="space-y-2 px-4 py-3 text-sm">
-          <div className="flex items-center gap-2">
-            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${meta.color}`}>
-              {meta.label}
-            </span>
-            <span className="text-xs text-muted">置信度 {confidence}</span>
-            {migrated && (
-              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                状态已迁移 → {STATE_META[finalState]?.label ?? finalState}
-              </span>
-            )}
-          </div>
-          {evidence.length > 0 && (
-            <div className="text-xs text-muted">
-              <span className="font-medium text-muted">依据：</span>
-              {evidence.map((e, i) => (
-                <span key={i} className="mr-2 inline-block rounded bg-surface px-1.5 py-0.5">
-                  “{e}”
-                </span>
-              ))}
-            </div>
-          )}
+        <div className="px-4 py-3 text-sm">
+          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${meta.color}`}>
+            {meta.label}
+          </span>
         </div>
       </div>
     );
